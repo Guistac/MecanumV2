@@ -1,0 +1,389 @@
+
+#include "RobotBoard.h"
+
+//#include "Utilities/SafetyNumber.h"
+
+
+ServoMotor frontLeftServo(
+    FRONTLEFT_PULSE_PIN,
+    FRONTLEFT_DIRECTION_PIN,
+    FRONTLEFT_ENABLE_PIN,
+    FRONTLEFT_ALARM_PIN,
+    FRONTLEFT_PENDING_PIN);
+ServoMotor frontRightServo(
+    FRONTRIGHT_PULSE_PIN,
+    FRONTRIGHT_DIRECTION_PIN,
+    FRONTRIGHT_ENABLE_PIN,
+    FRONTRIGHT_ALARM_PIN,
+    FRONTRIGHT_PENDING_PIN);
+ServoMotor backLeftServo(
+    BACKLEFT_PULSE_PIN,
+    BACKLEFT_DIRECTION_PIN,
+    BACKLEFT_ENABLE_PIN,
+    BACKLEFT_ALARM_PIN,
+    BACKLEFT_PENDING_PIN);
+ServoMotor backRightServo(
+    BACKRIGHT_PULSE_PIN,
+    BACKRIGHT_DIRECTION_PIN,
+    BACKRIGHT_ENABLE_PIN,
+    BACKRIGHT_ALARM_PIN,
+    BACKRIGHT_PENDING_PIN);
+std::vector<ServoMotor*> motors = {
+  &frontLeftServo,
+  &frontRightServo,
+  &backLeftServo,
+  &backRightServo
+};
+
+void enableAllMotors(){
+  for(auto motor : motors) motor->enable();
+}
+
+void disableAllMotors(){
+  for(auto motor : motors) motor->disable();
+}
+
+bool areAllMotorsEnabled(){
+  for(auto motor : motors) {
+    if(!motor->isEnabled()) return false;
+  }
+  return true;
+}
+
+bool hasAnyMotorFault(){
+  for(auto motor : motors) {
+    if(motor->hasAlarm()) return true;
+  }
+  return false;
+}
+
+void updateAllMotors(){
+  for(auto motor : motors) motor->update();
+}
+
+
+
+
+void RobotBoard::initialize(){
+  for(int i = 0; i < 9; i++) ioDevices[i]->initialize();
+  
+  if(!radio.initialize(100)) {
+    Serial.println("Failed Radio Configuration");
+    return;
+  }Serial.println("Configured Radio");
+
+  if(!motionControl.configure(configuration)){
+    Serial.println("Failed Motion Control Configuration");
+    return;
+  }Serial.println("Configured Motion Control");
+
+  frontLeftServo.wheelPosition_mm =  configuration.frontLeft_wheelPosition_mm;
+  backLeftServo.wheelPosition_mm =   configuration.backLeft_wheelPosition_mm;
+  frontRightServo.wheelPosition_mm = configuration.frontRight_wheelPosition_mm;
+  backRightServo.wheelPosition_mm =  configuration.backRight_wheelPosition_mm;
+  frontLeftServo.wheelFrictionVector_mmPerRev =   configuration.frontLeft_wheelFrictionVector_mmprev;
+  backLeftServo.wheelFrictionVector_mmPerRev =    configuration.backLeft_wheelFrictionVector_mmprev;
+  frontRightServo.wheelFrictionVector_mmPerRev =  configuration.frontRight_wheelFrictionVector_mmprev;
+  backRightServo.wheelFrictionVector_mmPerRev =   configuration.backRight_wheelFrictionVector_mmprev;
+  for(auto motor : motors) motor->disable();
+  frontLeftServo.initialize([]{ frontLeftServo.isr(); });
+  frontRightServo.initialize([]{ frontRightServo.isr(); });
+  backLeftServo.initialize([]{ backLeftServo.isr(); });
+  backRightServo.initialize([]{ backRightServo.isr(); });
+
+  //startup animation
+  for(int i = 0; i < 6; i++){
+    for(int j = 0; j < 6; j++) leds[j]->set(i == j);
+    delay(100);
+  }
+  for(int i = 0; i < 6; i++) leds[i]->turnOff();
+}
+
+
+void RobotBoard::update(){
+  updateIO();
+  receiveData();
+  updateRobotLogic();
+  updateAllMotors();
+  motionControl.updateMotionControl();
+
+  //static FrequencyTimer vBatPrint(5.0);
+  //if(vBatPrint.shouldTrigger()) Serial.printf("VBat: %.2fV (%i)\n", batteryReading.getVoltage() * 0.99207, millis());
+}
+
+
+
+void RobotBoard::receiveData(){
+  uint8_t incomingBuffer[20];
+  uint8_t length = 20;
+  if(radio.receive(incomingBuffer, &length)){
+    if(length != 8) return;
+
+    uint16_t controlword = incomingBuffer[0] | incomingBuffer[1] << 8;
+
+    //check if the header matches
+    uint8_t header = controlword & 0x7;
+    if(header != 0x7) return;
+
+    remoteProxy.lastReceiveTimeMillis = millis();
+    if(!remoteProxy.b_connected){
+      if(DEBUG_PRINTS) Serial.printf("Remote Connected! (%i)\n", millis());
+      remoteProxy.b_connected = true;
+    }
+
+    remoteProxy.b_shouldDisable = controlword & 0x8;
+    remoteProxy.b_shouldEnable = controlword & 0x10;
+    remoteProxy.speedSelection = SpeedMode((controlword >> 5) & 0x3);
+    if(uint8_t(remoteProxy.speedSelection) == 0x3) remoteProxy.speedSelection = SpeedMode::LOW_SPEED;
+    remoteProxy.b_directionToggle = controlword & 0x80;
+    remoteProxy.b_leftButton = controlword & 0x100;
+    remoteProxy.b_rightButton = controlword & 0x200;
+    remoteProxy.b_leftJoystick = controlword & 0x400;  
+    remoteProxy.b_rightJoystick = controlword & 0x800;
+    remoteProxy.txCounter = (controlword >> 12) & 0xF;
+
+    if(incomingBuffer[2] == 127) remoteProxy.leftJoystickX = 0.0;
+    else remoteProxy.leftJoystickX = map((float)incomingBuffer[2], 0.0, 255.0, -1.0, 1.0);
+    if(incomingBuffer[3] == 127) remoteProxy.leftJoystickY = 0.0;
+    else remoteProxy.leftJoystickY = map((float)incomingBuffer[3], 0.0, 255.0, -1.0, 1.0);
+    if(incomingBuffer[4] == 127) remoteProxy.rightJoystickX = 0.0;
+    else remoteProxy.rightJoystickX = map((float)incomingBuffer[4], 0.0, 255.0, -1.0, 1.0);
+    if(incomingBuffer[5] == 127) remoteProxy.rightJoystickY = 0.0;
+    else remoteProxy.rightJoystickY = map((float)incomingBuffer[5], 0.0, 255.0, -1.0, 1.0);
+
+    //uint16_t safetyNumber = incomingBuffer[7] << 8 | incomingBuffer[6];
+    //remoteProxy.b_safetyClear = Safety::isNumberClear(safetyNumber);
+
+    if(false){
+      Serial.printf("%.2f %.2f %.2f %.2f\n",
+        remoteProxy.leftJoystickX,
+        remoteProxy.leftJoystickY,
+        remoteProxy.rightJoystickX,
+        remoteProxy.rightJoystickY);
+      Serial.printf("dis%i ena%i ss%i dir%i lb%i rb%i lj%i rj%i count%i\n",
+        remoteProxy.b_shouldDisable,
+        remoteProxy.b_shouldEnable,
+        remoteProxy.speedSelection,
+        remoteProxy.b_directionToggle,
+        remoteProxy.b_leftButton,
+        remoteProxy.b_rightButton,
+        remoteProxy.b_leftJoystick,
+        remoteProxy.b_rightJoystick,
+        remoteProxy.txCounter);
+    }
+
+    sendData();
+  }
+  else if(remoteProxy.b_connected && millis() - remoteProxy.lastReceiveTimeMillis > 500) {
+    remoteProxy.b_connected = false;
+    if(DEBUG_PRINTS) Serial.printf("Remote Disconnected... (%i)\n", millis());
+  }
+}
+  
+
+
+void RobotBoard::sendData(){
+  uint8_t outBuffer[8];
+
+  uint8_t header = 0x7;
+  uint16_t statusword = header & 0x7; //3 bit header
+  statusword |= (uint8_t(state) & 0x7) << 3;
+  statusword |= (uint8_t(motionControl.speedMode) & 0x3) << 6;
+  if(motionControl.directionMode) statusword |= 0x100;
+  if(functionButton.isPressed()) statusword |= 0x200;
+  //two bytes free 0b00001100 00000000
+  statusword |= (remoteProxy.txCounter & 0xF) << 12;
+
+  uint8_t motorStatusWord = 0x0;
+  if(frontLeftServo.hasAlarm())     motorStatusWord |= 0x1;
+  if(backLeftServo.hasAlarm())      motorStatusWord |= 0x2;
+  if(frontRightServo.hasAlarm())    motorStatusWord |= 0x4;
+  if(backRightServo.hasAlarm())     motorStatusWord |= 0x8;
+  if(frontLeftServo.isEnabled())    motorStatusWord |= 0x10;
+  if(backLeftServo.isEnabled())     motorStatusWord |= 0x20;
+  if(frontRightServo.isEnabled())   motorStatusWord |= 0x40;
+  if(backRightServo.isEnabled())    motorStatusWord |= 0x80;
+
+  outBuffer[0] = statusword & 0xFF;
+  outBuffer[1] = (statusword >> 8) & 0xFF;
+  outBuffer[2] = motorStatusWord;
+  outBuffer[3] = map(motionControl.getXVelocityNormalized(), -1.0, 1.0, -127, 127);
+  outBuffer[4] = map(motionControl.getYVelocityNormalized(), -1.0, 1.0, -127, 127);
+  outBuffer[5] = map(motionControl.getRVelocityNormalized(), -1.0, 1.0, -127, 127);
+  outBuffer[6] = radio.getSignalStrength() + 150;
+  outBuffer[7] = uint8_t(batteryReading.getVoltage());
+
+  radio.send(outBuffer, 8);
+}
+
+
+
+void RobotBoard::updateIO(){
+  for(int i = 0; i < 9; i++) ioDevices[i]->updateInputs();
+
+  if(channelSelector.positionChanged()) radio.setChannel(channelSelector.getPosition());
+
+  //blink status led
+  static FrequencyTimer ledTimer(100.0);
+  if(ledTimer.shouldTrigger()) statusLED.set(millis() % 500 > 250);
+
+  //refresh motor leds
+  double channelShowTime = 2.0;
+  if(channelSelector.timeSinceLastInputChangeSeconds() < channelShowTime){
+    uint8_t pos = channelSelector.getPosition();
+    float br = map(channelShowTime - channelSelector.timeSinceLastInputChangeSeconds(), 0, channelShowTime, 0, 1.0);
+    if(pos != 0){
+      brLED.setBrightness((pos & 0x8) ? br : 0);
+      blLED.setBrightness((pos & 0x4) ? br : 0);
+      frLED.setBrightness((pos & 0x2) ? br : 0);
+      flLED.setBrightness((pos & 0x1) ? br : 0);
+    }
+    else{
+      uint32_t period = 200;
+      uint32_t t = millis() % period;
+      brLED.setBrightness((t > 0 && t < period / 4) ? br : 0);
+      blLED.setBrightness((t > period / 4 && t < period / 2) ? br : 0);
+      frLED.setBrightness((t > period / 2 && t < 3 * period / 4) ? br : 0);
+      flLED.setBrightness((t > 3 * period / 4 && t < period) ? br : 0);
+    }
+  }
+  else{
+
+    auto setMotorLed = [](ServoMotor* motor, LED* led){
+      if(motor->isEnabled()) led->turnOn();
+      else if(motor->isEnabling()) led->set(millis() % 200 > 100 ? true : false);
+      else led->turnOff();
+    };
+    setMotorLed(&backRightServo, &brLED);
+    setMotorLed(&backLeftServo, &blLED);
+    setMotorLed(&frontRightServo, &frLED);
+    setMotorLed(&frontLeftServo, &flLED);
+  }
+
+  //refresh remote led
+  if(remoteProxy.b_connected) remoteLED.setBrightness(remoteProxy.txCounter % 2 == 0 ? 1.0 : 0.2);
+  else remoteLED.turnOff();
+}
+
+void RobotBoard::updateRobotLogic(){
+
+  if(!remoteProxy.b_safetyClear){
+      if(state != RobotState::EMERGENCY_STOPPED && state != RobotState::EMERGENCY_STOPPING){
+          motionControl.requestEmergencyDeceleration();
+          state = RobotState::EMERGENCY_STOPPING;
+          Serial.println("——— Emergency Stop Requested.");
+      }
+  }
+
+  if(remoteProxy.speedSelection != motionControl.speedMode) motionControl.setSpeedMode(remoteProxy.speedSelection);
+
+  motionControl.setSpeedMode(remoteProxy.speedSelection);
+
+  switch(state){
+      case RobotState::ENABLING:{
+          uint32_t timeSinceEnableRequestMillis = millis() - enableRequestMillis;
+          bool b_timeout = timeSinceEnableRequestMillis > 2000;
+          if(areAllMotorsEnabled() && !hasAnyMotorFault() && timeSinceEnableRequestMillis > 1500){
+              state = RobotState::ENABLED;
+              Serial.printf("——— Robot Enabled. (took %ims)\n", timeSinceEnableRequestMillis);
+              Serial.printf("——— FL:%i FR:%i BL:%i BR:%i\n", frontLeftServo.isEnabled(), frontRightServo.isEnabled(), backLeftServo.isEnabled(), backRightServo.isEnabled());
+          }
+          else if(remoteProxy.b_shouldDisable || !remoteProxy.b_connected || timeSinceEnableRequestMillis > 2000){
+              disableAllMotors();
+              state = RobotState::DISABLED;
+              if(b_timeout)                         Serial.println("——— Enable Request Timed Out.");
+              else if(!remoteProxy.b_connected)     Serial.println("——— Enable Request Aborted : remote was disconnected.");
+              else if(remoteProxy.b_shouldDisable)  Serial.println("——— Cancelled Enable Request.");
+          }
+      }break;
+      case RobotState::ENABLED:{
+          if(hasAnyMotorFault() || !areAllMotorsEnabled() || remoteProxy.b_shouldDisable || !remoteProxy.b_connected){
+              motionControl.setControlTargetsNormalized(0.0,0.0,0.0);
+              state = RobotState::DISABLING;
+              if(hasAnyMotorFault())                Serial.println("——— Disabling Robot : Not all servos were alarm free.");
+              else if(!areAllMotorsEnabled()){
+                Serial.println("——— Disabling Robot : Not all servos were enabled.");
+                Serial.printf("——— FL:%i FR:%i BL:%i BR:%i\n", frontLeftServo.isEnabled(), frontRightServo.isEnabled(), backLeftServo.isEnabled(), backRightServo.isEnabled());
+              }
+              else if(!remoteProxy.b_connected)     Serial.println("——— Disabling Robot : Remote was disconnected.");
+              else if(remoteProxy.b_shouldDisable)  Serial.println("——— Disabling Robot by user request.");
+          }
+          else {
+              float xCommand = remoteProxy.leftJoystickX;
+              float yCommand = remoteProxy.leftJoystickY;
+              float rCommand = remoteProxy.rightJoystickX;
+              motionControl.setControlTargetsNormalized(xCommand, yCommand, rCommand);
+          }
+      }break;
+      case RobotState::DISABLING:{
+        motionControl.setControlTargetsNormalized(0.0,0.0,0.0);
+          if(motionControl.isStopped()){
+              disableAllMotors();
+              state = RobotState::DISABLED;
+              Serial.println("——— Robot Disabled.");
+          }
+      }break;
+      case RobotState::DISABLED:{
+          motionControl.reset();
+          if(remoteProxy.b_shouldEnable) {
+              enableAllMotors();
+              enableRequestMillis = millis();
+              state = RobotState::ENABLING;
+              Serial.println("——— Enabling Robot ...");
+          }
+      }break;
+      case RobotState::EMERGENCY_STOPPING:{
+          motionControl.requestEmergencyDeceleration();
+          if(motionControl.isStopped()){
+              disableAllMotors();
+              state = RobotState::EMERGENCY_STOPPED;
+              Serial.println("——— Emergency Stopped.");
+          }
+      }break;
+      case RobotState::EMERGENCY_STOPPED:{
+          motionControl.reset();
+          disableAllMotors();
+          if(remoteProxy.b_safetyClear) {
+              state = RobotState::DISABLED;
+              Serial.println("——— Emergency Stop Released.");
+          }
+      }break;
+  }
+}
+
+void RobotBoard::pinTest(){
+  uint8_t outputPins[13] = {
+    FRONTLEFT_ENABLE_PIN,
+    FRONTLEFT_PULSE_PIN,
+    FRONTLEFT_DIRECTION_PIN,
+    FRONTRIGHT_ENABLE_PIN,
+    FRONTRIGHT_PULSE_PIN,
+    FRONTRIGHT_DIRECTION_PIN,
+    BACKLEFT_ENABLE_PIN,
+    BACKLEFT_PULSE_PIN,
+    BACKLEFT_DIRECTION_PIN,
+    BACKRIGHT_ENABLE_PIN,
+    BACKRIGHT_PULSE_PIN,
+    BACKRIGHT_DIRECTION_PIN,
+    13
+  };
+
+  uint8_t pwmPins[7] = {
+    1,
+    2,
+    3,
+    4,
+    5,
+    28,
+    29
+  };
+
+ for(int i = 0; i < 7; i++) pinMode(pwmPins[i], OUTPUT);
+ for(int i = 0; i < 13; i++) pinMode(outputPins[i], OUTPUT);
+  while(true){
+    for(int i = 0; i < 7; i++) analogWrite(pwmPins[i], (sin(millis() * 0.01 + 4.0 * i * 3.14 / 7.0) + 1.0) * 128.0);
+    for(int i = 0; i < 13; i++) digitalWrite(outputPins[i], millis() % 1000 > 500);
+    delay(10);
+  }
+
+}
