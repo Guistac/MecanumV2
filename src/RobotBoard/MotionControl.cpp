@@ -23,6 +23,10 @@ bool RobotBoard::MotionControl::configure(RobotConfiguration& config){
     lowSetting_rotationVelocityLimit_degps = config.lowSetting_rotationVelocityLimit_degps;
     transAccTarg_mmpss = translationDecelerationEmergency_mmpss;
     rotAccTarg_degpss = rotationDecelerationEmergency_degpss;
+    b_swapXandY = config.b_swapXandY;
+    b_invertX = config.b_invertX;
+    b_invertY = config.b_invertY;
+    b_invertR = config.b_invertR;
     reset();
     setSpeedMode(SpeedMode::LOW_SPEED);
     return true;

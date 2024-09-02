@@ -12,18 +12,21 @@
 #define ROBOT_RADIO_INTERRUPT 9
 #define ROBOT_RADIO_SELECT 10
 
-#define ROBOT_STATUS_LED_PIN 31
 #define ROBOT_REMOTE_LED_PIN 1
 #define ROBOT_FL_LED_PIN 2
 #define ROBOT_FR_LED_PIN 3
 #define ROBOT_BL_LED_PIN 4
 #define ROBOT_BR_LED_PIN 5
+#define ROBOT_STATUS_LED_PIN 28
+#define ROBOT_FUNCTION_LED_PIN 29
+
 #define ROBOT_CHANNELSELECT_1_PIN 25
 #define ROBOT_CHANNELSELECT_2_PIN 7
 #define ROBOT_CHANNELSELECT_4_PIN 24
 #define ROBOT_CHANNELSELECT_8_PIN 6
-#define ROBOT_FUNCTIONBUTTON_PIN 30
-#define ROBOT_BATTERYREADING_PIN A12
+#define ROBOT_FUNCTION1BUTTON_PIN 30
+#define ROBOT_FUNCTION2BUTTON_PIN 31
+#define ROBOT_BATTERYREADING_PIN  26
 
 #define FRONTLEFT_ENABLE_PIN        19
 #define FRONTLEFT_PULSE_PIN         20
@@ -35,16 +38,16 @@
 #define FRONTRIGHT_DIRECTION_PIN     16
 #define FRONTRIGHT_PENDING_PIN       17
 #define FRONTRIGHT_ALARM_PIN         18
-#define BACKLEFT_ENABLE_PIN        37
-#define BACKLEFT_PULSE_PIN         38
-#define BACKLEFT_DIRECTION_PIN     39
-#define BACKLEFT_PENDING_PIN       40
-#define BACKLEFT_ALARM_PIN         41
-#define BACKRIGHT_ENABLE_PIN        32
-#define BACKRIGHT_PULSE_PIN         33
-#define BACKRIGHT_DIRECTION_PIN     34
-#define BACKRIGHT_PENDING_PIN       35
-#define BACKRIGHT_ALARM_PIN         36
+#define BACKLEFT_ENABLE_PIN         37
+#define BACKLEFT_PULSE_PIN          38
+#define BACKLEFT_DIRECTION_PIN      39
+#define BACKLEFT_PENDING_PIN        40
+#define BACKLEFT_ALARM_PIN          41
+#define BACKRIGHT_ENABLE_PIN         32
+#define BACKRIGHT_PULSE_PIN          33
+#define BACKRIGHT_DIRECTION_PIN      34
+#define BACKRIGHT_PENDING_PIN        35
+#define BACKRIGHT_ALARM_PIN          36
 
 extern ServoMotor frontLeftServo;
 extern ServoMotor frontRightServo;
@@ -61,14 +64,16 @@ class RobotBoard{
 private:
 
     Radio radio;
-    LED statusLED;
     LED remoteLED;
+    LED functionLED;
+    LED statusLED;
     LED flLED;
     LED frLED;
     LED blLED;
     LED brLED;
     RotaryDipSwitch4Bit channelSelector;
-    PushButton functionButton;
+    PushButton function1Button;
+    PushButton function2Button;
     BatteryLevel batteryReading;
     std::vector<IODevice*> ioDevices;
     std::vector<LED*> leds;
@@ -159,14 +164,16 @@ public:
 
     RobotBoard(RobotConfiguration configuration_) :
         radio(ROBOT_RADIO_SHUTDOWN, ROBOT_RADIO_SELECT, ROBOT_RADIO_INTERRUPT),
-        statusLED(ROBOT_STATUS_LED_PIN, false),
         remoteLED(ROBOT_REMOTE_LED_PIN, true),
+        functionLED(ROBOT_FUNCTION_LED_PIN, true),
+        statusLED(ROBOT_STATUS_LED_PIN, true),
         flLED(ROBOT_FL_LED_PIN, true),
         frLED(ROBOT_FR_LED_PIN, true),
         blLED(ROBOT_BL_LED_PIN, true),
         brLED(ROBOT_BR_LED_PIN, true),
         channelSelector(ROBOT_CHANNELSELECT_1_PIN, ROBOT_CHANNELSELECT_2_PIN, ROBOT_CHANNELSELECT_4_PIN, ROBOT_CHANNELSELECT_8_PIN, INPUT_PULLUP),
-        functionButton(ROBOT_FUNCTIONBUTTON_PIN, INPUT_PULLUP, false),
+        function1Button(ROBOT_FUNCTION1BUTTON_PIN, INPUT_PULLUP, false),
+        function2Button(ROBOT_FUNCTION2BUTTON_PIN, INPUT_PULLUP, false),
         batteryReading(ROBOT_BATTERYREADING_PIN, 21.2121, 0.0, 70.0),
         ioDevices({
             &statusLED,
@@ -175,13 +182,16 @@ public:
             &frLED,
             &blLED,
             &brLED,
+            &functionLED,
             &channelSelector,
-            &functionButton,
+            &function1Button,
+            &function2Button,
             &batteryReading
         }),
         leds({
-            &statusLED,
             &remoteLED,
+            &functionLED,
+            &statusLED,
             &flLED,
             &frLED,
             &blLED,
@@ -192,10 +202,12 @@ public:
 
     static void run(RobotConfiguration& config){
         static RobotBoard robotboard(config);
-        robotboard.pinTest();
-        //robotboard.initialize();
-        //while(true) robotboard.update();
+        //robotboard.pinTest();
+        robotboard.initialize();
+        while(true) robotboard.update();
     }
+
+    void startupAnimation();
 
     void pinTest();
 

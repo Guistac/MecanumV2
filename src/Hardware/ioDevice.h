@@ -194,6 +194,42 @@ public:
     };
 };
 
+class EstopButton : public IODevice{
+    public:
+
+    EstopButton(uint8_t noPin_, uint8_t ncPin_, bool invert_){
+        noPin = noPin_;
+        ncPin = ncPin_;
+        b_invert = invert_;
+    }
+
+    virtual void initialize() override {
+        pinMode(noPin, INPUT_PULLUP);
+        pinMode(ncPin, INPUT_PULLUP);
+    }
+
+    virtual bool updateInputs() override {
+        if(!IODevice::updateInputs()) return false;
+        bool newState = digitalRead(noPin) && !digitalRead(ncPin);
+        if(b_invert) newState = !newState;
+        if(newState != b_state){
+            b_stateChanged = true;
+            b_state = newState;
+            lastInputChange_millis = millis();
+        }
+        //Serial.printf("%i %i %s\n", digitalRead(noPin), digitalRead(ncPin), b_state ? "Clear" : "Safe");
+        return true;
+    }
+
+    bool isClear(){ return b_state; }
+
+private:
+    bool b_state;
+    uint8_t noPin;
+    uint8_t ncPin;
+    bool b_invert;
+    bool b_stateChanged = false;
+};
 
 
 class ToggleSwitch : public IODevice{

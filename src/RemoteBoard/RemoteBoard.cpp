@@ -1,7 +1,7 @@
 #include "RemoteBoard.h"
 #include "Utilities/SafetyNumber.h"
 #include <EEPROM.h>
-
+#include "Utilities/RobotStates.h"
 
 bool RemoteBoard::areJoysticksReleased(){
     float joystickReleasedThreshold = 0.1;
@@ -95,10 +95,46 @@ void RemoteBoard::update(){
     if(robotProxy.functionButtonPressed){
         leftLedButton.set(millis() % 100 < 50);
         rightLedButton.set(millis() % 100 > 50);
-    }else{
-        leftLedButton.set(leftLedButton.isPressed());
-        rightLedButton.set(rightLedButton.isPressed());
     }
+    else if(!robotProxy.b_connected){
+        leftLedButton.set(millis() % 2000 < 100);
+        rightLedButton.set((millis() - 100) % 2000 < 100);
+    }
+    else{
+        RobotState status = RobotState(robotProxy.status);
+        switch(status){
+            case RobotState::ENABLED:
+                leftLedButton.turnOff();
+                rightLedButton.turnOn();
+                break;
+            case RobotState::ENABLING:
+                leftLedButton.turnOff();
+                rightLedButton.set(millis() % 200 < 100);
+                break;
+            case RobotState::DISABLED:
+                leftLedButton.turnOn();
+                rightLedButton.turnOff();
+                break;
+            case RobotState::DISABLING:
+                leftLedButton.set(millis() % 200 < 100);
+                rightLedButton.turnOff();
+                break;
+            case RobotState::EMERGENCY_STOPPING:
+                leftLedButton.turnOn();
+                rightLedButton.turnOn();
+                break;
+            case RobotState::EMERGENCY_STOPPED:
+                leftLedButton.set(millis() % 500 < 250);
+                rightLedButton.set((millis() + 250) % 500 < 250);
+                break;
+            default:
+                leftLedButton.turnOff();
+                leftLedButton.turnOn();
+                break;
+        }
+    }
+    if(leftLedButton.isPressed()) leftLedButton.turnOn();
+    if(rightLedButton.isPressed()) rightLedButton.turnOn();
 
     //display refresh
     if(guiRefreshEvent.shouldTrigger()) refreshGui();
@@ -138,8 +174,9 @@ void RemoteBoard::sendData(){
         if(b_rightJoystickPressed)  controlWord |= 0x800;
         controlWord |= (robotProxy.txCounter & 0xF) << 12;
 
-        uint16_t safetyNumber = Safety::generateClearNumber();
-        //else safetyNumber = Safety::generateSafeNumber();
+        uint16_t safetyNumber;
+        if(estopButton.isClear()) safetyNumber = Safety::generateClearNumber();
+        else safetyNumber = Safety::generateSafeNumber();
 
         uint8_t outgoingFrame[8];
         outgoingFrame[0] = controlWord & 0xFF;

@@ -41,18 +41,18 @@ RobotConfiguration testConfig{
 
 RobotConfiguration robotRectangle{
     //Speed Settings
-    .highSetting_translationVelocitLimit_mmps = 1200.0,
-    .mediumSetting_translationVelocityLimit_mmps = 600.0,
-    .lowSetting_translationVelocityLimit_mmps = 300.0,
+    .highSetting_translationVelocitLimit_mmps = 500.0,
+    .mediumSetting_translationVelocityLimit_mmps = 250.0,
+    .lowSetting_translationVelocityLimit_mmps = 125.0,
     .highSetting_rotationVelocityLimit_degps = 60.0,
-    .mediumSetting_rotationVelocityLimit_degps = 30.0,
-    .lowSetting_rotationVelocityLimit_degps = 15.0,
+    .mediumSetting_rotationVelocityLimit_degps = 40.0,
+    .lowSetting_rotationVelocityLimit_degps = 20.0,
 
     //Fixed Acceleration Values
-    .translationAccelerationOperational_mmpss = 600.0,
-    .rotationAccelerationOperational_degpss = 60.0,
+    .translationAccelerationOperational_mmpss = 300.0,
+    .rotationAccelerationOperational_degpss = 30.0,
     .translationDecelerationEmergency_mmpss = 1000.0,
-    .rotationDecelerationEmergency_degpss = 80.0,
+    .rotationDecelerationEmergency_degpss = 120.0,
 
     //Wheel Positions
     .frontLeft_wheelPosition_mm = Vec2f(-275.0, 130.0),
@@ -68,23 +68,23 @@ RobotConfiguration robotRectangle{
 
     //Inversions
     .b_swapXandY = false,
-    .b_invertX = false,
-    .b_invertY = false,
+    .b_invertX = true,
+    .b_invertY = true,
     .b_invertR = false
 };
 
 RobotConfiguration robotCarre{
     //Speed Settings
-    .highSetting_translationVelocitLimit_mmps = 1000.0,
-    .mediumSetting_translationVelocityLimit_mmps = 500.0,
-    .lowSetting_translationVelocityLimit_mmps = 250.0,
+    .highSetting_translationVelocitLimit_mmps = 500.0,
+    .mediumSetting_translationVelocityLimit_mmps = 250.0,
+    .lowSetting_translationVelocityLimit_mmps = 125.0,
     .highSetting_rotationVelocityLimit_degps = 60.0,
-    .mediumSetting_rotationVelocityLimit_degps = 60.0,
-    .lowSetting_rotationVelocityLimit_degps = 60.0,
+    .mediumSetting_rotationVelocityLimit_degps = 40.0,
+    .lowSetting_rotationVelocityLimit_degps = 20.0,
 
     //Fixed Acceleration Values
-    .translationAccelerationOperational_mmpss = 500.0,
-    .rotationAccelerationOperational_degpss = 50.0,
+    .translationAccelerationOperational_mmpss = 300.0,
+    .rotationAccelerationOperational_degpss = 30.0,
     .translationDecelerationEmergency_mmpss = 1000.0,
     .rotationDecelerationEmergency_degpss = 120.0,
 
@@ -101,8 +101,8 @@ RobotConfiguration robotCarre{
     .backRight_wheelFrictionVector_mmprev = Vec2f(-frictionVectorUnit, -frictionVectorUnit),
 
     //Inversions
-    .b_swapXandY = false,
-    .b_invertX = false,
+    .b_swapXandY = true,
+    .b_invertX = true,
     .b_invertY = false,
     .b_invertR = false
 };
@@ -110,6 +110,7 @@ RobotConfiguration robotCarre{
 void setup() {
   RemoteBoard::run();
   //RobotBoard::run(robotCarre);
+  //RobotBoard::run(robotRectangle);
 }
 
 void loop() {}

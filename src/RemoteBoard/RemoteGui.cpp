@@ -4,8 +4,15 @@ static float easeInOutCubic(float in){
     return in < 0.5 ? (4 * pow(in,3)) : (1 - pow(-2 * in + 2, 3) / 2);
 };
 
+static uint8_t frameCounter = 0;
+
 void RemoteBoard::refreshGui(){
     display.clearDisplay();
+
+    frameCounter++;
+    if(frameCounter == 32) frameCounter = 0;
+    if(frameCounter >= 16) display.drawPixel(127, 31 - (31 - frameCounter), WHITE);
+    else display.drawPixel(127, 31 - frameCounter, WHITE);
 
     int x = map(radio.getSignalStrength(), -120, 4, 0, 127);
     if(robotProxy.b_connected) display.fillRect(0,0,x,4,WHITE);
@@ -75,7 +82,7 @@ void RemoteBoard::inputDeviceTestGui(int x, int y){
             case 1: display.drawPixel(x+3, y, WHITE); break;
             case 2: display.drawPixel(x+3, y-1, WHITE); break;
         }
-        display.drawPixel(x+4, y, WHITE);
+        display.drawPixel(x+4, y + (estopButton.isClear() ? 0 : 1), WHITE);
         display.drawPixel(x+5, y + (directionToggle.getSwitchState() ? 0 : 1), WHITE);
         display.drawPixel(x+6, y + (rightLedButton.isPressed() ? 1 : 0), WHITE);
         display.drawPixel(x+7, y + (rightPushbutton.isPressed() ? 1 : 0), WHITE);

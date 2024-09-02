@@ -3,7 +3,6 @@
 
 //#include "Utilities/SafetyNumber.h"
 
-
 ServoMotor frontLeftServo(
     FRONTLEFT_PULSE_PIN,
     FRONTLEFT_DIRECTION_PIN,
@@ -61,12 +60,24 @@ void updateAllMotors(){
   for(auto motor : motors) motor->update();
 }
 
-
-
-
 void RobotBoard::initialize(){
-  for(int i = 0; i < 9; i++) ioDevices[i]->initialize();
-  
+  for(auto device : ioDevices) device->initialize();
+
+  frontLeftServo.initialize([]{   frontLeftServo.isr(); });
+  frontRightServo.initialize([]{  frontRightServo.isr(); });
+  backLeftServo.initialize([]{    backLeftServo.isr(); });
+  backRightServo.initialize([]{   backRightServo.isr(); });
+  for(auto motor : motors) motor->disable();
+
+  frontLeftServo.wheelPosition_mm =  configuration.frontLeft_wheelPosition_mm;
+  backLeftServo.wheelPosition_mm =   configuration.backLeft_wheelPosition_mm;
+  frontRightServo.wheelPosition_mm = configuration.frontRight_wheelPosition_mm;
+  backRightServo.wheelPosition_mm =  configuration.backRight_wheelPosition_mm;
+  frontLeftServo.wheelFrictionVector_mmPerRev =   configuration.frontLeft_wheelFrictionVector_mmprev;
+  backLeftServo.wheelFrictionVector_mmPerRev =    configuration.backLeft_wheelFrictionVector_mmprev;
+  frontRightServo.wheelFrictionVector_mmPerRev =  configuration.frontRight_wheelFrictionVector_mmprev;
+  backRightServo.wheelFrictionVector_mmPerRev =   configuration.backRight_wheelFrictionVector_mmprev;
+
   if(!radio.initialize(100)) {
     Serial.println("Failed Radio Configuration");
     return;
@@ -77,28 +88,36 @@ void RobotBoard::initialize(){
     return;
   }Serial.println("Configured Motion Control");
 
-  frontLeftServo.wheelPosition_mm =  configuration.frontLeft_wheelPosition_mm;
-  backLeftServo.wheelPosition_mm =   configuration.backLeft_wheelPosition_mm;
-  frontRightServo.wheelPosition_mm = configuration.frontRight_wheelPosition_mm;
-  backRightServo.wheelPosition_mm =  configuration.backRight_wheelPosition_mm;
-  frontLeftServo.wheelFrictionVector_mmPerRev =   configuration.frontLeft_wheelFrictionVector_mmprev;
-  backLeftServo.wheelFrictionVector_mmPerRev =    configuration.backLeft_wheelFrictionVector_mmprev;
-  frontRightServo.wheelFrictionVector_mmPerRev =  configuration.frontRight_wheelFrictionVector_mmprev;
-  backRightServo.wheelFrictionVector_mmPerRev =   configuration.backRight_wheelFrictionVector_mmprev;
-  for(auto motor : motors) motor->disable();
-  frontLeftServo.initialize([]{ frontLeftServo.isr(); });
-  frontRightServo.initialize([]{ frontRightServo.isr(); });
-  backLeftServo.initialize([]{ backLeftServo.isr(); });
-  backRightServo.initialize([]{ backRightServo.isr(); });
-
-  //startup animation
-  for(int i = 0; i < 6; i++){
-    for(int j = 0; j < 6; j++) leds[j]->set(i == j);
-    delay(100);
-  }
-  for(int i = 0; i < 6; i++) leds[i]->turnOff();
+  startupAnimation();
+  delay(100);
 }
 
+void RobotBoard::startupAnimation(){
+  LengthTimer startupTimer(1.0);
+
+  while(!startupTimer.hasExpired()){
+    int ledCount = leds.size();
+    float ts = 1.0 / ledCount;
+    float ol = 4.0;
+    ts /= 1.0 + ts * ol;
+
+    float t = startupTimer.getProgress();
+    for(int i = 0; i < ledCount; i++){
+      float lt = i * ts;
+      float mlt = lt + ts * (1.0 + ol);
+      if(t >= lt && t <= mlt) {
+        float lp = map(t, lt, mlt, 0.0, 1.0);
+        float br;
+        if(lp < 0.5) br = map(lp, 0.0, 0.5, 0.0, 1.0);
+        else br = map(lp, 0.5, 1.0, 1.0, 0.0);
+        leds[i]->setBrightness(br);
+      }
+      else leds[i]->turnOff();
+    }
+    delay(10);
+  }
+  for(auto led : leds) led->turnOff();
+}
 
 void RobotBoard::update(){
   updateIO();
@@ -106,12 +125,7 @@ void RobotBoard::update(){
   updateRobotLogic();
   updateAllMotors();
   motionControl.updateMotionControl();
-
-  //static FrequencyTimer vBatPrint(5.0);
-  //if(vBatPrint.shouldTrigger()) Serial.printf("VBat: %.2fV (%i)\n", batteryReading.getVoltage() * 0.99207, millis());
 }
-
-
 
 void RobotBoard::receiveData(){
   uint8_t incomingBuffer[20];
@@ -179,8 +193,6 @@ void RobotBoard::receiveData(){
     if(DEBUG_PRINTS) Serial.printf("Remote Disconnected... (%i)\n", millis());
   }
 }
-  
-
 
 void RobotBoard::sendData(){
   uint8_t outBuffer[8];
@@ -190,7 +202,7 @@ void RobotBoard::sendData(){
   statusword |= (uint8_t(state) & 0x7) << 3;
   statusword |= (uint8_t(motionControl.speedMode) & 0x3) << 6;
   if(motionControl.directionMode) statusword |= 0x100;
-  if(functionButton.isPressed()) statusword |= 0x200;
+  if(function1Button.isPressed()) statusword |= 0x200;
   //two bytes free 0b00001100 00000000
   statusword |= (remoteProxy.txCounter & 0xF) << 12;
 
@@ -216,16 +228,17 @@ void RobotBoard::sendData(){
   radio.send(outBuffer, 8);
 }
 
-
-
 void RobotBoard::updateIO(){
-  for(int i = 0; i < 9; i++) ioDevices[i]->updateInputs();
+  for(auto device : ioDevices) device->updateInputs();
 
   if(channelSelector.positionChanged()) radio.setChannel(channelSelector.getPosition());
 
   //blink status led
   static FrequencyTimer ledTimer(100.0);
-  if(ledTimer.shouldTrigger()) statusLED.set(millis() % 500 > 250);
+  if(ledTimer.shouldTrigger()) statusLED.setBrightness(map(sin(float(millis()) * 0.01), -1.0, 1.0, 0.0, 1.0));
+
+  functionLED.set(function2Button.isPressed());
+
 
   //refresh motor leds
   double channelShowTime = 2.0;
@@ -248,7 +261,6 @@ void RobotBoard::updateIO(){
     }
   }
   else{
-
     auto setMotorLed = [](ServoMotor* motor, LED* led){
       if(motor->isEnabled()) led->turnOn();
       else if(motor->isEnabling()) led->set(millis() % 200 > 100 ? true : false);
@@ -312,6 +324,10 @@ void RobotBoard::updateRobotLogic(){
               float xCommand = remoteProxy.leftJoystickX;
               float yCommand = remoteProxy.leftJoystickY;
               float rCommand = remoteProxy.rightJoystickX;
+              if(!remoteProxy.b_directionToggle){
+                xCommand = -xCommand;
+                yCommand = -yCommand;
+              }
               motionControl.setControlTargetsNormalized(xCommand, yCommand, rCommand);
           }
       }break;
@@ -368,6 +384,15 @@ void RobotBoard::pinTest(){
     13
   };
 
+  uint8_t digitalInputPins[6] = {
+    ROBOT_CHANNELSELECT_1_PIN,
+    ROBOT_CHANNELSELECT_2_PIN,
+    ROBOT_CHANNELSELECT_4_PIN,
+    ROBOT_CHANNELSELECT_8_PIN,
+    ROBOT_FUNCTION1BUTTON_PIN,
+    ROBOT_FUNCTION2BUTTON_PIN
+  };
+
   uint8_t pwmPins[7] = {
     1,
     2,
@@ -379,10 +404,13 @@ void RobotBoard::pinTest(){
   };
 
  for(int i = 0; i < 7; i++) pinMode(pwmPins[i], OUTPUT);
+ for(int i = 0; i < 6; i++) pinMode(digitalInputPins[i], INPUT_PULLUP);
  for(int i = 0; i < 13; i++) pinMode(outputPins[i], OUTPUT);
   while(true){
     for(int i = 0; i < 7; i++) analogWrite(pwmPins[i], (sin(millis() * 0.01 + 4.0 * i * 3.14 / 7.0) + 1.0) * 128.0);
     for(int i = 0; i < 13; i++) digitalWrite(outputPins[i], millis() % 1000 > 500);
+    for(int i = 0; i < 6; i++) Serial.printf("%i ", digitalRead(digitalInputPins[i]));
+    Serial.println();
     delay(10);
   }
 

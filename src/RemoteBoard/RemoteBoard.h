@@ -15,6 +15,8 @@
 #define REMOTE_OLED_RESET_PIN 25
 #define REMOTE_OLED_CD_PIN 24
 
+#define REMOTE_ESTOP_NO_PIN 0
+#define REMOTE_ESTOP_NC_PIN 1
 #define REMOTE_BUTTON_LEFT_PIN 2
 #define REMOTE_BUTTON_RIGHT_PIN 34
 #define REMOTE_LEDBUTTON_LEFT_PIN 3
@@ -46,6 +48,7 @@ private:
     Joystick2AxisWithPushbutton leftJoystick;
     Joystick2AxisWithPushbutton rightJoystick;
     BatteryLevel batteryLevel;
+    EstopButton estopButton;
     std::vector<IODevice*> ioDevices;
 
     struct RobotProxy{
@@ -89,6 +92,7 @@ public:
         leftJoystick(REMOTE_JOYSTICKLEFT_X_PIN, REMOTE_JOYSTICKLEFT_Y_PIN, false, true, REMOTE_JOYSTICKLEFT_BUTTON_PIN, INPUT_PULLUP, false),
         rightJoystick(REMOTE_JOYSTICKRIGHT_X_PIN, REMOTE_JOYSTICKRIGHT_Y_PIN, false, true, REMOTE_JOYSTICKRIGHT_BUTTON_PIN, INPUT_PULLUP, false),
         batteryLevel(REMOTE_BATTERYREADING_PIN, 2.0, 2.6, 4.2),
+        estopButton(REMOTE_ESTOP_NO_PIN, REMOTE_ESTOP_NC_PIN, false),
         ioDevices({
             &leftPushbutton,
             &rightPushbutton,
@@ -98,6 +102,7 @@ public:
             &speedToggle,
             &leftJoystick,
             &rightJoystick,
+            &estopButton,
             &batteryLevel}
         ){
             guiRefreshEvent.setFrequency(50.0);
