@@ -1,7 +1,7 @@
 
 #include "RobotBoard.h"
 
-//#include "Utilities/SafetyNumber.h"
+#include "Utilities/SafetyNumber.h"
 
 ServoMotor frontLeftServo(
     FRONTLEFT_PULSE_PIN,
@@ -165,8 +165,8 @@ void RobotBoard::receiveData(){
     if(incomingBuffer[5] == 127) remoteProxy.rightJoystickY = 0.0;
     else remoteProxy.rightJoystickY = map((float)incomingBuffer[5], 0.0, 255.0, -1.0, 1.0);
 
-    //uint16_t safetyNumber = incomingBuffer[7] << 8 | incomingBuffer[6];
-    //remoteProxy.b_safetyClear = Safety::isNumberClear(safetyNumber);
+    uint16_t safetyNumber = incomingBuffer[7] << 8 | incomingBuffer[6];
+    remoteProxy.b_safetyClear = Safety::isNumberClear(safetyNumber);
 
     if(false){
       Serial.printf("%.2f %.2f %.2f %.2f\n",
@@ -223,7 +223,7 @@ void RobotBoard::sendData(){
   outBuffer[4] = map(motionControl.getYVelocityNormalized(), -1.0, 1.0, -127, 127);
   outBuffer[5] = map(motionControl.getRVelocityNormalized(), -1.0, 1.0, -127, 127);
   outBuffer[6] = radio.getSignalStrength() + 150;
-  outBuffer[7] = uint8_t(batteryReading.getVoltage());
+  outBuffer[7] = uint8_t(map(batteryReading.getVoltage(), 45.0, 70.0, 0.0, 255.0));
 
   radio.send(outBuffer, 8);
 }

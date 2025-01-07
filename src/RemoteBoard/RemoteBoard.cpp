@@ -61,6 +61,7 @@ void RemoteBoard::initialize(){
 }
 
 
+
 void RemoteBoard::update(){
     //update all input devices
     for(auto ioDevice : ioDevices) ioDevice->updateInputs();
@@ -235,7 +236,7 @@ void RemoteBoard::receiveData(){
         robotProxy.rVelocity = map(float(rVelocity_i8), -127.0, 127.0, -1.0, 1.0);
 
         robotProxy.robotRxSignalStrength = incomingFrame[6] - 150;
-        robotProxy.batteryVoltage = incomingFrame[7];
+        robotProxy.batteryVoltage = map(float(incomingFrame[7]), 0.0, 255.0, 45.0, 70.0);
 
         if((robotProxy.txCounter & 0xF) == mirroredTxCounter){
             uint32_t sendToReceiveTimeMicros = micros() - robotProxy.lastSendTimeMicros;

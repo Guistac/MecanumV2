@@ -75,7 +75,7 @@ private:
         float yVelocity = 0.0;
         float rVelocity = 0.0;
         int8_t robotRxSignalStrength = 0;
-        uint8_t batteryVoltage = 0;
+        float batteryVoltage = 0.0;
     }robotProxy;
 
 public:
@@ -138,6 +138,7 @@ private:
     void inputDeviceTestGui(int x, int y);
     void radioInitFailedScreen();
     void releaseJoysticksScreen(bool released);
+    void drawSignalBar(int x, int y, int w, int h);
 
     //hardware
     bool areJoysticksReleased();

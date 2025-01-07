@@ -1,10 +1,27 @@
 #include "RemoteBoard.h"
+#include "Utilities/RobotStates.h"
 
 static float easeInOutCubic(float in){
     return in < 0.5 ? (4 * pow(in,3)) : (1 - pow(-2 * in + 2, 3) / 2);
 };
 
 static uint8_t frameCounter = 0;
+
+
+void RemoteBoard::drawSignalBar(int x, int y, int w, int h){
+    display.drawLine(x,y,x,y+h,WHITE);
+    display.drawLine(x+w,y,x+w,y+h,WHITE);
+    int barWidth = map(radio.getSignalStrength(), -120, 4, 0, w);
+    if(robotProxy.b_connected) display.fillRect(x,2,barWidth,3,WHITE);
+    else{
+        float o = sin(millis()*0.005);
+        int halfW = w * 0.5;
+        int center = x + halfW;
+        int offset = o * halfW;
+        int pointWidth = (1.0 - (o < 0.0 ? -o : o)) * 50.0;
+        display.fillRect(center + 1 + offset - pointWidth*0.5, 2, pointWidth, 3, WHITE);
+    }
+}
 
 void RemoteBoard::refreshGui(){
     display.clearDisplay();
@@ -14,54 +31,84 @@ void RemoteBoard::refreshGui(){
     if(frameCounter >= 16) display.drawPixel(127, 31 - (31 - frameCounter), WHITE);
     else display.drawPixel(127, 31 - frameCounter, WHITE);
 
-    int x = map(radio.getSignalStrength(), -120, 4, 0, 127);
-    if(robotProxy.b_connected) display.fillRect(0,0,x,4,WHITE);
-    display.drawLine(0,0,0,5,WHITE);
-    display.drawLine(127,0,127,5,WHITE);
-
-    display.setTextColor(WHITE);
-    display.setTextSize(2);
-    display.setCursor(0,7);
-    display.printf("Ch%X", radio.getChannel());
-    if(robotProxy.b_connected) {
-        display.setCursor(36,7);
-        switch(robotProxy.rxCounter % 4){
-            /*
-            case 0: display.print("\x07"); break;
-            case 1: display.print("\x04"); break;
-            case 2: display.print("\x0F"); break;
-            case 3: display.print("\x04"); break;
-            */
-            case 0: display.print("\x10"); break;
-            case 1: display.print("\x1E"); break;
-            case 2: display.print("\x11"); break;
-            case 3: display.print("\x1F"); break;
-        }
-        display.setCursor(50,7);
-        display.printf("%i", radio.getSignalStrength());
+    display.setCursor(0,0);
+    display.setTextSize(1);
+    
+    display.printf("Ch#%X", radio.getChannel());
+    if(b_editingRadioChannel) {
+        display.drawLine(0, 8, 22, 8, (millis() % 200) > 100 ? WHITE : BLACK);
     }
-    else {
-        display.setCursor(36,7);
-        uint32_t t = millis() % 400;
-        const char* txt;
-        if(t > 300) txt = "...";
-        else if(t > 200) txt = ".. ";
-        else if(t > 100) txt = ".  ";
-        else txt = "   ";
-        display.print(txt);
-    }
-    if(b_editingRadioChannel) display.drawLine(0, 22, 33, 22, millis()%200 > 100 ? WHITE : BLACK);
     else if(b_channelSelectorButtonsPressed) {
         double t = min(leftPushbutton.timeSinceLastInputChangeSeconds(), rightPushbutton.timeSinceLastInputChangeSeconds());
         double n = t/frequencyEditPressDuration;
-        display.drawLine(0,22,33*n,22,WHITE);
+        display.drawLine(0,8,22*n,8,WHITE);
+    }
+
+
+
+    display.setCursor(26,0);
+    switch(robotProxy.rxCounter % 4){
+        case 0: display.print("\x10"); break;
+        case 1: display.print("\x1E"); break;
+        case 2: display.print("\x11"); break;
+        case 3: display.print("\x1F"); break;
+    }
+
+    drawSignalBar(34, 0, 93, 6);
+
+    display.setTextColor(WHITE);
+    display.setTextSize(2);
+    display.setCursor(0,9);
+
+    if(robotProxy.b_connected){
+        switch(robotProxy.status){
+            case uint8_t(RobotState::DISABLING):
+                display.setCursor(12,9);
+                display.print("Disabling");
+                break;
+            case uint8_t(RobotState::DISABLED):
+                display.setCursor(18,9);
+                display.print("Disabled");
+                break;
+            case uint8_t(RobotState::ENABLING):
+                display.setCursor(18,9);
+                display.print("Enabling");
+                break;
+            case uint8_t(RobotState::ENABLED):
+                display.setCursor(22,9);
+                display.print("Enabled");
+                break;
+            case uint8_t(RobotState::EMERGENCY_STOPPING):
+                if(millis() % 100 > 50){
+                    display.setCursor(36,9);
+                    display.print("ESTOP");
+                }
+                break;
+            case uint8_t(RobotState::EMERGENCY_STOPPED):
+                if(millis() % 500 > 250){
+                    display.setCursor(36,9);
+                    display.print("ESTOP");
+                }
+                break;
+            default:
+                display.setCursor(36,9);
+                display.print("???");
+                break;
+        }
+    }
+    else{
+        display.setCursor(22,9);
+        display.print("Offline");
     }
     
     display.setTextSize(1);
     display.setCursor(0,25);
-    display.printf("B:%.2fV T:%iC", batteryLevel.getVoltage(), radio.getTemperatureCelsius());
+    display.printf("T:%.2fV", batteryLevel.getVoltage());
+    display.setCursor(48, 25);
+    if(robotProxy.b_connected) display.printf("R:%.1fV", robotProxy.batteryVoltage);
+    else display.printf("R:xx.xV");
 
-    inputDeviceTestGui(88,26);
+    inputDeviceTestGui(95,26);
 
     if(!displayRevealTimer.hasExpired()){
         int w = 128;

@@ -163,6 +163,7 @@ void RobotBoard::MotionControl::updateMotionControl(){
     //Serial.printf("%.3f %.3f (%i)\n", transAccTarg_mmpss, rotAccTarg_degpss, micros());
     //Serial.printf("DvT: %.6f DvR:%.6f (%i)\n", deltaVTranslation_millimetersPerSecond, deltaVRotation_degreesPerSecond, micros());
     //Serial.printf("Tar X:%.3f Y:%.3f R:%.3f  Vel X:%.3f Y:%.3f R:%.3f\n", xVelocityTarget, yVelocityTarget, rVelocityTarget, xVelActual_mmps, yVelActual_mmps, rVelActual_degps);
+    //Serial.printf("Vel X:%.3f Y:%.3f R:%.3f\n", xVelActual_mmps, yVelActual_mmps, rVelActual_degps);
 
     double wheelVelocity[4];
 
