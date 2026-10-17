@@ -209,7 +209,7 @@ void RobotBoard::MotionControl::updateMotionControl(){
         wheelVelocity[i] += wheelRotationVector.y / motors[i]->wheelFrictionVector_mmPerRev.y;
     }
 
-    //Serial.printf("%.3f %.3f %.3f %.3f\n", wheelVelocity[0], wheelVelocity[1], wheelVelocity[2], wheelVelocity[3]);
+    //Serial.printf("FL:%.3f FR:%.3f BL:%.3f BR:%.3f\n", wheelVelocity[0], wheelVelocity[1], wheelVelocity[2], wheelVelocity[3]);
 
     for(int i = 0; i < 4; i++) motors[i]->setVelocityTarget(wheelVelocity[i]);
 }

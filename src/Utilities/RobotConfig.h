@@ -1,7 +1,7 @@
 #pragma once
 #include "Vector.h"
     
-#define DEBUG_PRINTS true
+#define DEBUG_PRINTS false
 
 struct RobotConfiguration{
     //Speed Settings

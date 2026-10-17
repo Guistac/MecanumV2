@@ -60,8 +60,12 @@ void disableAllMotors();
 bool areAllMotorsEnabled();
 bool hasAnyMotorFault();
 
+class Mavlink;
+
 class RobotBoard{
-private:
+public:
+
+    Mavlink* mavlink;
 
     Radio radio;
     LED remoteLED;

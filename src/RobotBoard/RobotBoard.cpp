@@ -3,6 +3,9 @@
 
 #include "Utilities/SafetyNumber.h"
 
+#include "common/mavlink.h"
+#include "MavLink.h"
+
 ServoMotor frontLeftServo(
     FRONTLEFT_PULSE_PIN,
     FRONTLEFT_DIRECTION_PIN,
@@ -61,6 +64,10 @@ void updateAllMotors(){
 }
 
 void RobotBoard::initialize(){
+
+  mavlink = new Mavlink();
+  mavlink->setRobotBoard(this);
+
   for(auto device : ioDevices) device->initialize();
 
   frontLeftServo.initialize([]{   frontLeftServo.isr(); });
@@ -79,14 +86,16 @@ void RobotBoard::initialize(){
   backRightServo.wheelFrictionVector_mmPerRev =   configuration.backRight_wheelFrictionVector_mmprev;
 
   if(!radio.initialize(100)) {
-    Serial.println("Failed Radio Configuration");
+    if(DEBUG_PRINTS) Serial.println("Failed Radio Configuration");
     return;
-  }Serial.println("Configured Radio");
+  }
+  if(DEBUG_PRINTS) Serial.println("Configured Radio");
 
   if(!motionControl.configure(configuration)){
-    Serial.println("Failed Motion Control Configuration");
+    if(DEBUG_PRINTS) Serial.println("Failed Motion Control Configuration");
     return;
-  }Serial.println("Configured Motion Control");
+  }
+  if(DEBUG_PRINTS) Serial.println("Configured Motion Control");
 
   startupAnimation();
   delay(100);
@@ -119,12 +128,23 @@ void RobotBoard::startupAnimation(){
   for(auto led : leds) led->turnOff();
 }
 
+FrequencyTimer timer_HEARTBEAT(5.0);
+FrequencyTimer timer_POSITION_TARGET_LOCAL_NED(50.0);
+mavlink_message_t msg;
+uint8_t buffer[MAVLINK_MAX_PACKET_LEN];
+bool msgrcv = false;
+LengthTimer heartbeatTimeout(0.5);
+bool b_mavConnected = false;
+
 void RobotBoard::update(){
   updateIO();
   receiveData();
   updateRobotLogic();
   updateAllMotors();
   motionControl.updateMotionControl();
+
+  mavlink->update();
+  statusLED.set(mavlink->b_online);
 }
 
 void RobotBoard::receiveData(){
@@ -167,8 +187,9 @@ void RobotBoard::receiveData(){
 
     uint16_t safetyNumber = incomingBuffer[7] << 8 | incomingBuffer[6];
     remoteProxy.b_safetyClear = Safety::isNumberClear(safetyNumber);
+    //remoteProxy.b_safetyClear = true;
 
-    if(false){
+    if(DEBUG_PRINTS && false){
       Serial.printf("%.2f %.2f %.2f %.2f\n",
         remoteProxy.leftJoystickX,
         remoteProxy.leftJoystickY,
@@ -199,7 +220,8 @@ void RobotBoard::sendData(){
 
   uint8_t header = 0x7;
   uint16_t statusword = header & 0x7; //3 bit header
-  statusword |= (uint8_t(state) & 0x7) << 3;
+  if(mavlink->b_online) statusword |= (uint8_t(mavlink->stacatoState) & 0x7) << 3;
+  else statusword |= (uint8_t(state) & 0x7) << 3;
   statusword |= (uint8_t(motionControl.speedMode) & 0x3) << 6;
   if(motionControl.directionMode) statusword |= 0x100;
   if(function1Button.isPressed()) statusword |= 0x200;
@@ -235,7 +257,7 @@ void RobotBoard::updateIO(){
 
   //blink status led
   static FrequencyTimer ledTimer(100.0);
-  if(ledTimer.shouldTrigger()) statusLED.setBrightness(map(sin(float(millis()) * 0.01), -1.0, 1.0, 0.0, 1.0));
+  //if(ledTimer.shouldTrigger()) statusLED.setBrightness(map(sin(float(millis()) * 0.01), -1.0, 1.0, 0.0, 1.0));
 
   functionLED.set(function2Button.isPressed());
 
@@ -283,7 +305,7 @@ void RobotBoard::updateRobotLogic(){
       if(state != RobotState::EMERGENCY_STOPPED && state != RobotState::EMERGENCY_STOPPING){
           motionControl.requestEmergencyDeceleration();
           state = RobotState::EMERGENCY_STOPPING;
-          Serial.println("——— Emergency Stop Requested.");
+          if(DEBUG_PRINTS) Serial.println("——— Emergency Stop Requested.");
       }
   }
 
@@ -297,28 +319,34 @@ void RobotBoard::updateRobotLogic(){
           bool b_timeout = timeSinceEnableRequestMillis > 2000;
           if(areAllMotorsEnabled() && !hasAnyMotorFault() && timeSinceEnableRequestMillis > 1500){
               state = RobotState::ENABLED;
-              Serial.printf("——— Robot Enabled. (took %ims)\n", timeSinceEnableRequestMillis);
-              Serial.printf("——— FL:%i FR:%i BL:%i BR:%i\n", frontLeftServo.isEnabled(), frontRightServo.isEnabled(), backLeftServo.isEnabled(), backRightServo.isEnabled());
+              if(DEBUG_PRINTS){
+                Serial.printf("——— Robot Enabled. (took %ims)\n", timeSinceEnableRequestMillis);
+                Serial.printf("——— FL:%i FR:%i BL:%i BR:%i\n", frontLeftServo.isEnabled(), frontRightServo.isEnabled(), backLeftServo.isEnabled(), backRightServo.isEnabled());
+              }
           }
           else if(remoteProxy.b_shouldDisable || !remoteProxy.b_connected || timeSinceEnableRequestMillis > 2000){
               disableAllMotors();
               state = RobotState::DISABLED;
-              if(b_timeout)                         Serial.println("——— Enable Request Timed Out.");
-              else if(!remoteProxy.b_connected)     Serial.println("——— Enable Request Aborted : remote was disconnected.");
-              else if(remoteProxy.b_shouldDisable)  Serial.println("——— Cancelled Enable Request.");
+              if(DEBUG_PRINTS){
+                if(b_timeout)                         Serial.println("——— Enable Request Timed Out.");
+                else if(!remoteProxy.b_connected)     Serial.println("——— Enable Request Aborted : remote was disconnected.");
+                else if(remoteProxy.b_shouldDisable)  Serial.println("——— Cancelled Enable Request.");
+              }
           }
       }break;
       case RobotState::ENABLED:{
           if(hasAnyMotorFault() || !areAllMotorsEnabled() || remoteProxy.b_shouldDisable || !remoteProxy.b_connected){
               motionControl.setControlTargetsNormalized(0.0,0.0,0.0);
               state = RobotState::DISABLING;
-              if(hasAnyMotorFault())                Serial.println("——— Disabling Robot : Not all servos were alarm free.");
-              else if(!areAllMotorsEnabled()){
-                Serial.println("——— Disabling Robot : Not all servos were enabled.");
-                Serial.printf("——— FL:%i FR:%i BL:%i BR:%i\n", frontLeftServo.isEnabled(), frontRightServo.isEnabled(), backLeftServo.isEnabled(), backRightServo.isEnabled());
+              if(DEBUG_PRINTS){
+                if(hasAnyMotorFault())                Serial.println("——— Disabling Robot : Not all servos were alarm free.");
+                else if(!areAllMotorsEnabled()){
+                  Serial.println("——— Disabling Robot : Not all servos were enabled.");
+                  Serial.printf("——— FL:%i FR:%i BL:%i BR:%i\n", frontLeftServo.isEnabled(), frontRightServo.isEnabled(), backLeftServo.isEnabled(), backRightServo.isEnabled());
+                }
+                else if(!remoteProxy.b_connected)     Serial.println("——— Disabling Robot : Remote was disconnected.");
+                else if(remoteProxy.b_shouldDisable)  Serial.println("——— Disabling Robot by user request.");
               }
-              else if(!remoteProxy.b_connected)     Serial.println("——— Disabling Robot : Remote was disconnected.");
-              else if(remoteProxy.b_shouldDisable)  Serial.println("——— Disabling Robot by user request.");
           }
           else {
               float xCommand = remoteProxy.leftJoystickX;
@@ -336,7 +364,7 @@ void RobotBoard::updateRobotLogic(){
           if(motionControl.isStopped()){
               disableAllMotors();
               state = RobotState::DISABLED;
-              Serial.println("——— Robot Disabled.");
+              if(DEBUG_PRINTS) Serial.println("——— Robot Disabled.");
           }
       }break;
       case RobotState::DISABLED:{
@@ -345,7 +373,7 @@ void RobotBoard::updateRobotLogic(){
               enableAllMotors();
               enableRequestMillis = millis();
               state = RobotState::ENABLING;
-              Serial.println("——— Enabling Robot ...");
+              if(DEBUG_PRINTS) Serial.println("——— Enabling Robot ...");
           }
       }break;
       case RobotState::EMERGENCY_STOPPING:{
@@ -353,7 +381,7 @@ void RobotBoard::updateRobotLogic(){
           if(motionControl.isStopped()){
               disableAllMotors();
               state = RobotState::EMERGENCY_STOPPED;
-              Serial.println("——— Emergency Stopped.");
+              if(DEBUG_PRINTS) Serial.println("——— Emergency Stopped.");
           }
       }break;
       case RobotState::EMERGENCY_STOPPED:{
@@ -361,7 +389,7 @@ void RobotBoard::updateRobotLogic(){
           disableAllMotors();
           if(remoteProxy.b_safetyClear) {
               state = RobotState::DISABLED;
-              Serial.println("——— Emergency Stop Released.");
+              if(DEBUG_PRINTS) Serial.println("——— Emergency Stop Released.");
           }
       }break;
   }
