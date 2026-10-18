@@ -1,6 +1,20 @@
 #include "RemoteBoard/RemoteBoard.h"
 #include "RobotBoard/RobotBoard.h"
 
+static_assert(ROBOT_RADIO_SHUTDOWN == REMOTE_RADIO_SHUTDOWN_PIN && ROBOT_RADIO_SELECT == REMOTE_RADIO_SELECT_PIN,
+  "startup_middle_hook assumes both boards use the same radio pins");
+
+//Runs a few milliseconds after reset, the core then waits ~300ms for USB before setup() is called.
+//Without this, the floating Teensy pins are passed to the radio by the level shifter during that time:
+//hold the radio in shutdown and deselected until Radio::initialize().
+extern "C" void startup_middle_hook(void){
+  //set the output level before switching to output, so the pins never glitch low
+  digitalWriteFast(ROBOT_RADIO_SELECT, HIGH);
+  pinMode(ROBOT_RADIO_SELECT, OUTPUT);
+  digitalWriteFast(ROBOT_RADIO_SHUTDOWN, HIGH);
+  pinMode(ROBOT_RADIO_SHUTDOWN, OUTPUT);
+}
+
 double wheelDiameter_mm = 203.0;
 double wheelCircumference_mm = PI * wheelDiameter_mm;
 float frictionVectorUnit = sin(45.0) * wheelCircumference_mm;

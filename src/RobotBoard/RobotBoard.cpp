@@ -63,7 +63,16 @@ void updateAllMotors(){
   for(auto motor : motors) motor->update();
 }
 
+//Runs from the watchdog interrupt when the main loop has been stuck for 1s, 0.5s before the reset.
+//The servo timer interrupts keep running in that case: ramp all motors to zero instead of
+//letting them continue at the last commanded velocity.
+static void watchdogWarning(){
+  for(auto motor : motors) motor->setVelocityTarget(0.0);
+}
+
 void RobotBoard::initialize(){
+
+  Watchdog::begin(1.5, watchdogWarning);
 
   mavlink = new Mavlink();
   mavlink->setRobotBoard(this);
@@ -85,20 +94,22 @@ void RobotBoard::initialize(){
   frontRightServo.wheelFrictionVector_mmPerRev =  configuration.frontRight_wheelFrictionVector_mmprev;
   backRightServo.wheelFrictionVector_mmPerRev =   configuration.backRight_wheelFrictionVector_mmprev;
 
-  if(!radio.initialize(100)) {
-    if(DEBUG_PRINTS) Serial.println("Failed Radio Configuration");
-    return;
-  }
-  if(DEBUG_PRINTS) Serial.println("Configured Radio");
-
   if(!motionControl.configure(configuration)){
     if(DEBUG_PRINTS) Serial.println("Failed Motion Control Configuration");
     return;
   }
   if(DEBUG_PRINTS) Serial.println("Configured Motion Control");
 
+  //Radio failures are not fatal: the robot stays disabled without a remote,
+  //and radio.update() keeps retrying in the background
+  if(DEBUG_PRINTS) radio.setDebugOutput(&Serial);
+  if(radio.initialize(5)) {
+    if(DEBUG_PRINTS) Serial.println("Configured Radio");
+  }
+  else if(DEBUG_PRINTS) Serial.println("Failed Radio Configuration, retrying in background");
+
   startupAnimation();
-  delay(100);
+  Watchdog::delayFed(100);
 }
 
 void RobotBoard::startupAnimation(){
@@ -123,7 +134,7 @@ void RobotBoard::startupAnimation(){
       }
       else leds[i]->turnOff();
     }
-    delay(10);
+    Watchdog::delayFed(10);
   }
   for(auto led : leds) led->turnOff();
 }
@@ -137,6 +148,8 @@ LengthTimer heartbeatTimeout(0.5);
 bool b_mavConnected = false;
 
 void RobotBoard::update(){
+  Watchdog::feed();
+  radio.update();
   updateIO();
   receiveData();
   updateRobotLogic();
@@ -294,8 +307,9 @@ void RobotBoard::updateIO(){
     setMotorLed(&frontLeftServo, &flLED);
   }
 
-  //refresh remote led
-  if(remoteProxy.b_connected) remoteLED.setBrightness(remoteProxy.txCounter % 2 == 0 ? 1.0 : 0.2);
+  //refresh remote led, fast double blink while the radio itself is down
+  if(!radio.isRunning()) remoteLED.set(millis() % 400 < 50 || (millis() % 400 > 100 && millis() % 400 < 150));
+  else if(remoteProxy.b_connected) remoteLED.setBrightness(remoteProxy.txCounter % 2 == 0 ? 1.0 : 0.2);
   else remoteLED.turnOff();
 }
 

@@ -96,6 +96,10 @@ void RemoteBoard::refreshGui(){
                 break;
         }
     }
+    else if(!radio.isRunning()){
+        display.setCursor(16,9);
+        display.print("No Radio");
+    }
     else{
         display.setCursor(22,9);
         display.print("Offline");
@@ -172,6 +176,7 @@ void RemoteBoard::startupAnimation(){
 
     LengthTimer screenFillTimer(.5);
     while(!screenFillTimer.hasExpired()){
+        Watchdog::feed();
         float ll;
         float rl;
         if(screenFillTimer.getProgress() < 0.5){
@@ -194,6 +199,7 @@ void RemoteBoard::startupAnimation(){
 
     LengthTimer screenClearTimer(.25);
     while(!screenClearTimer.hasExpired()){
+        Watchdog::feed();
         float ll = constrain(map(screenClearTimer.getProgress(), 0.0, 0.5, 1.0, 0.0), 0.0, 1.0);
         float rl = constrain(map(screenClearTimer.getProgress(), 0.5, 1.0, 1.0, 0.0), 0.0, 1.0);
         leftLedButton.setBrightness(ll);
@@ -208,21 +214,27 @@ void RemoteBoard::startupAnimation(){
     }
 }
 
+//keeps retrying in the background (with growing pauses) and returns once the radio runs
 void RemoteBoard::radioInitFailedScreen(){
-    display.setTextSize(1);
-    display.setTextColor(WHITE);
-    display.setCursor(5,8);
-    display.print("radio init failed...");
-    display.setCursor(5,16);
-    display.print("please reboot remote");
-    display.display();
-    while(true){
-        leftLedButton.turnOff();
-        rightLedButton.turnOn();
-        delay(500);
-        leftLedButton.turnOn();
-        rightLedButton.turnOff();
-        delay(500);
+    while(!radio.isRunning()){
+        Watchdog::feed();
+        radio.update();
+        if(guiRefreshEvent.shouldTrigger()){
+            const Radio::Diagnostics& diagnostics = radio.getDiagnostics();
+            display.clearDisplay();
+            display.setTextSize(1);
+            display.setTextColor(WHITE);
+            display.setCursor(0,0);
+            display.print("radio init failed");
+            display.setCursor(0,10);
+            display.printf("%s id:%02X", radio.getInitErrorString(), diagnostics.lastDeviceType);
+            display.setCursor(0,20);
+            display.printf("retrying... #%u", diagnostics.initAttempts);
+            display.display();
+        }
+        bool b_phase = millis() % 1000 < 500;
+        leftLedButton.set(b_phase);
+        rightLedButton.set(!b_phase);
     }
 }
 

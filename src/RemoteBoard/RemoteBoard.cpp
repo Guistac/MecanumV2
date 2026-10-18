@@ -10,6 +10,7 @@ bool RemoteBoard::areJoysticksReleased(){
 
 void RemoteBoard::saveRadioChannel(uint8_t channel){
     if(channel == savedRadioChannel) return;
+    Watchdog::feed(); //an eeprom write can trigger a flash sector erase
     EEPROM.write(0x0, channel);
     savedRadioChannel = channel;
 }
@@ -23,6 +24,8 @@ uint8_t RemoteBoard::loadRadioChannel(){
 
 void RemoteBoard::initialize(){
 
+    Watchdog::begin(1.5);
+
     //configure io devices, turn on leds to signal success
     for(auto ioDevice : ioDevices) ioDevice->initialize();
     leftLedButton.turnOn();
@@ -30,21 +33,24 @@ void RemoteBoard::initialize(){
 
     //configure display
     display.initialize();
-    delay(150); //before this the display won't show anything
+    Watchdog::delayFed(150); //before this the display won't show anything
 
     //show a nice startup animation
     startupAnimation();
 
+    //load the radio channel setting saved on eeprom, applied when the radio initializes
+    radio.setChannel(loadRadioChannel());
+
     //now that we waited a bit for power to stabilize, we can start the radio
     //this fails if we do it too soon after powerup
-    if(!radio.initialize(10)) radioInitFailedScreen();
-    //load the radio channel setting saved on eeprom
-    radio.setChannel(loadRadioChannel());
+    radio.setDebugOutput(&Serial);
+    if(!radio.initialize(5)) radioInitFailedScreen(); //returns once a background retry succeeded
 
     //check if the joysticks are released to zero them out
     bool showJoystickReleaseThankYou = false;
     if(!areJoysticksReleased()){
         while(!areJoysticksReleased()){
+            Watchdog::feed();
             if(guiRefreshEvent.shouldTrigger()) releaseJoysticksScreen(false);
         }
         showJoystickReleaseThankYou = true;
@@ -53,7 +59,7 @@ void RemoteBoard::initialize(){
     rightJoystick.captureZero();
     if(showJoystickReleaseThankYou){
         releaseJoysticksScreen(true);
-        delay(500);
+        Watchdog::delayFed(500);
     }
 
     displayRevealTimer.setLength(.4);
@@ -63,6 +69,9 @@ void RemoteBoard::initialize(){
 
 
 void RemoteBoard::update(){
+    Watchdog::feed();
+    radio.update();
+
     //update all input devices
     for(auto ioDevice : ioDevices) ioDevice->updateInputs();
 
