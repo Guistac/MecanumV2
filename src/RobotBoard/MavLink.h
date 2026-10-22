@@ -210,10 +210,12 @@ class Mavlink{
     };
 
        void sendMsg_MANUAL_CONTROLS(){
-        int16_t x = robot->remoteProxy.leftJoystickX * 1000.0;
-        int16_t y = robot->remoteProxy.leftJoystickY * 1000.0;
-        int16_t z = robot->remoteProxy.rightJoystickX * 1000.0;
-        int16_t r = robot->remoteProxy.rightJoystickY * 1000.0;
+        //D-44: while the radio link to the handheld is down the sticks read zero, never the last values received
+        bool connected = robot->remoteProxy.b_connected;
+        int16_t x = connected ? robot->remoteProxy.leftJoystickX * 1000.0 : 0;
+        int16_t y = connected ? robot->remoteProxy.leftJoystickY * 1000.0 : 0;
+        int16_t z = connected ? robot->remoteProxy.rightJoystickX * 1000.0 : 0;
+        int16_t r = connected ? robot->remoteProxy.rightJoystickY * 1000.0 : 0;
         uint16_t buttons = 0;
         buttons |= (robot->remoteProxy.b_leftButton) << 0;
         buttons |= (robot->remoteProxy.b_rightButton) << 1;
@@ -225,6 +227,7 @@ class Mavlink{
         buttons |= (robot->remoteProxy.b_safetyClear && robot->remoteProxy.b_connected) << 7;
         buttons |= (robot->remoteProxy.b_shouldDisable) << 8;
         buttons |= (robot->remoteProxy.b_shouldEnable) << 9;
+        buttons |= (connected) << 10; //D-44: radio link to the handheld up
 
         mavlink_message_t msg;
         mavlink_msg_manual_control_pack(systemId, componentId, &msg, 0, x ,y ,z, r, buttons, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
