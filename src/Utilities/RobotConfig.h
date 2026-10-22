@@ -35,4 +35,9 @@ struct RobotConfiguration{
     bool b_invertX = false;
     bool b_invertY = false;
     bool b_invertR = false;
+
+    //Battery (Li-ion pack read through the receiver board divider, sent as MAVLink BATTERY_STATUS)
+    //Calibrate against a multimeter: new factor = old factor * multimeter voltage / displayed voltage
+    float batteryVoltageDividerFactor = 21.2121;
+    uint8_t batteryCellCount = 16;
 };

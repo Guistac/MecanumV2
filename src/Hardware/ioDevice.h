@@ -605,6 +605,7 @@ public:
     virtual void initialize() override {
         pinMode(inputPin, INPUT);
         voltage = readingToVoltage(analogRead(inputPin));
+        restingVoltage = voltage;
         level = voltageToLevel(voltage);
         setInputUpdateFrequency(10.0);
     }
@@ -614,13 +615,18 @@ public:
 
         float newVoltage = readingToVoltage(analogRead(inputPin));
         voltage = voltage * smoothingFilter + newVoltage * (1.f - smoothingFilter);
+        restingVoltage = restingVoltage * slowSmoothingFilter + newVoltage * (1.f - slowSmoothingFilter);
         level = voltageToLevel(voltage);
 
         return true;
     }
 
+    void setVoltageDividerFactor(float factor){ voltageDividerFactor = factor; }
+
     float getLevel(){ return level; }
     float getVoltage(){ return voltage; }
+    //Slow filter (about 20s at 10Hz) that rides through load sag, for the state of charge estimate
+    float getRestingVoltage(){ return restingVoltage; }
 
     float readingToVoltage(uint16_t reading){
         return 3.3 * voltageDividerFactor * float(reading) / getAnalogReadResolution();
@@ -640,7 +646,9 @@ private:
     float minVoltage;
     float maxVoltage;
     float voltage;
+    float restingVoltage;
     float level;
     float smoothingFilter = 0.95;
+    float slowSmoothingFilter = 0.995;
 
 };

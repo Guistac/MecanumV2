@@ -68,6 +68,7 @@ void RobotBoard::initialize(){
   mavlink = new Mavlink();
   mavlink->setRobotBoard(this);
 
+  batteryReading.setVoltageDividerFactor(configuration.batteryVoltageDividerFactor);
   for(auto device : ioDevices) device->initialize();
 
   frontLeftServo.initialize([]{   frontLeftServo.isr(); });
@@ -245,7 +246,8 @@ void RobotBoard::sendData(){
   outBuffer[4] = map(motionControl.getYVelocityNormalized(), -1.0, 1.0, -127, 127);
   outBuffer[5] = map(motionControl.getRVelocityNormalized(), -1.0, 1.0, -127, 127);
   outBuffer[6] = radio.getSignalStrength() + 150;
-  outBuffer[7] = uint8_t(map(batteryReading.getVoltage(), 45.0, 70.0, 0.0, 255.0));
+  //45..70V on one byte for the handheld display; clamped so an out of range voltage can't wrap
+  outBuffer[7] = uint8_t(constrain(map(batteryReading.getVoltage(), 45.0, 70.0, 0.0, 255.0), 0.0, 255.0));
 
   radio.send(outBuffer, 8);
 }

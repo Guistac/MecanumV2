@@ -4,6 +4,7 @@
 #include <common/mavlink.h>
 
 #include "Utilities/Timer.h"
+#include "Utilities/LiIonBattery.h"
 #include "RobotBoard.h"
 
 class Mavlink{
@@ -28,6 +29,7 @@ class Mavlink{
     FrequencyTimer timer_HEARTBEAT = FrequencyTimer(5.0);
     FrequencyTimer timer_POSITION_TARGET_LOCAL_NED = FrequencyTimer(50.0);
     FrequencyTimer timer_MANUAL_CONTROLS = FrequencyTimer(50.0);
+    FrequencyTimer timer_BATTERY_STATUS = FrequencyTimer(1.0);
 
     bool b_online = false;
     LengthTimer heartbeatTimeout = LengthTimer(0.5);
@@ -52,6 +54,7 @@ class Mavlink{
         if(timer_HEARTBEAT.shouldTrigger()) sendMsg_Heartbeat();
         //if(timer_POSITION_TARGET_LOCAL_NED.shouldTrigger()) sendMsg_POSITION_TARGET_LOCAL_NED();
         if(timer_MANUAL_CONTROLS.shouldTrigger()) sendMsg_MANUAL_CONTROLS();
+        if(timer_BATTERY_STATUS.shouldTrigger()) sendMsg_BATTERY_STATUS();
 
         if(b_online && heartbeatTimeout.hasExpired()) onDisconnection();
 
@@ -227,6 +230,51 @@ class Mavlink{
         mavlink_msg_manual_control_pack(systemId, componentId, &msg, 0, x ,y ,z, r, buttons, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
         sendMessage(msg);
     };
+
+    //Pack voltage in voltages[0] (mV), the rest UINT16_MAX: cell voltages are not measured.
+    //Above 65.534V (a full 16S pack is 67.2V) the overflow goes in voltages[1], as the message spec says.
+    void sendMsg_BATTERY_STATUS(){
+        float packVoltage = robot->batteryReading.getVoltage();
+        uint8_t cellCount = robot->configuration.batteryCellCount;
+        float restingCellVoltage = cellCount > 0 ? robot->batteryReading.getRestingVoltage() / cellCount : 0.0;
+
+        uint16_t voltages[10];
+        for(int i = 0; i < 10; i++) voltages[i] = UINT16_MAX;
+        uint16_t voltages_ext[4] = {0, 0, 0, 0};
+        uint32_t millivolts = packVoltage > 0.0 ? uint32_t(packVoltage * 1000.0 + 0.5) : 0;
+        if(millivolts > UINT16_MAX - 1){
+            voltages[0] = UINT16_MAX - 1;
+            voltages[1] = uint16_t(min(millivolts - (UINT16_MAX - 1), uint32_t(UINT16_MAX - 1)));
+        }
+        else voltages[0] = uint16_t(millivolts);
+
+        int8_t remaining = -1;
+        uint8_t chargeState = MAV_BATTERY_CHARGE_STATE_UNDEFINED;
+        if(LiIonBattery::isPlausible(restingCellVoltage)){
+            remaining = LiIonBattery::percentFromCellVoltage(restingCellVoltage);
+            if(restingCellVoltage < LiIonBattery::criticalCellVoltage) chargeState = MAV_BATTERY_CHARGE_STATE_CRITICAL;
+            else if(restingCellVoltage < LiIonBattery::lowCellVoltage) chargeState = MAV_BATTERY_CHARGE_STATE_LOW;
+            else chargeState = MAV_BATTERY_CHARGE_STATE_OK;
+        }
+
+        mavlink_message_t msg;
+        mavlink_msg_battery_status_pack(systemId, componentId, &msg,
+            0,                              //id
+            MAV_BATTERY_FUNCTION_ALL,
+            MAV_BATTERY_TYPE_LION,
+            INT16_MAX,                      //temperature: unknown
+            voltages,
+            -1,                             //current_battery: not measured
+            -1,                             //current_consumed: not measured
+            -1,                             //energy_consumed: not measured
+            remaining,
+            0,                              //time_remaining: not estimated
+            chargeState,
+            voltages_ext,
+            MAV_BATTERY_MODE_UNKNOWN,
+            0);                             //fault_bitmask: not reported
+        sendMessage(msg);
+    }
 
     void sendMsg_PARAM_REQUEST_LIST(){
         mavlink_message_t msg;
