@@ -31,6 +31,8 @@ stiff bench supply never failed, T2 to T5), SPI or the TXB0108 (decoded clean in
 - `src/Hardware/Radio.h`: re-init after a send timeout, and from `Radio::update()` (every loop, both boards)
   after a chip reset interrupt, a changed frequency band register or nIRQ stuck low (checked once a second);
   the channel is kept. A re-init blocks for about 140 ms, retried every 2 s while the chip stays dead.
+- `src/RemoteBoard/RemoteBoard.h`: right stick Y is `A13` (D27, as on the PCB), was `13`. Teensy's
+  `analogRead(13)` already read A13, but the joystick setup called `pinMode(13, INPUT)` on the SPI clock pin.
 - `src/main.cpp`: `startup_middle_hook` drives SDN low a few ms after reset; it used to float high for
   about 319 ms at every power-up, with the PA on (see below).
 
@@ -58,8 +60,8 @@ and `env:teensy41` builds.
 ## Open
 
 - Deploying: merge into `mavlink`, flash the robot board(s) and the remotes.
-- From 01/02, not done: right joystick Y on pin 13 (SPI SCK; the PCB uses A13/D27 according to 01),
-  robot continuing with unconfigured motion control after a failed radio init, watchdog.
+- Not applicable on `mavlink`: the robot board is only a receiver talking MAVLink to Stacato, so the
+  "motion control after a failed radio init" item and the robot side of the watchdog in 01/02 do not apply.
 - Not measured: the remote's boost converter under transmit current (brown-out as the trigger for chip
   resets in the field is still a hypothesis).
 
