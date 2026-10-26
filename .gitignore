@@ -10,3 +10,4 @@
 /test
 # bench raw data (large, kept outside git)
 /bench/data/
+__pycache__/

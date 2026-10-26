@@ -142,6 +142,15 @@ void RemoteBoard::update(){
 
     //radio temperature
     if(temperatureReadingEvent.shouldTrigger()) radio.updateTemperature();
+#ifdef RADIO_BENCH_DIAG
+    //bench diagnostics (radio-bench, docs/radio/05): radio temperature once a second,
+    //range -64 to +192 C, 1 C per step, uncalibrated (see Radio::updateTemperature)
+    static uint32_t lastDiagMillis = 0;
+    if(millis() - lastDiagMillis >= 1000){
+        lastDiagMillis = millis();
+        Serial.printf("diag temp_raw=%i temp_c=%.1f\n", radio.getTemperatureRaw(), float(radio.getTemperatureCelsius()));
+    }
+#endif
 
     //radio send and receive
     sendData();

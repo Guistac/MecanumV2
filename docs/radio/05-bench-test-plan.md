@@ -265,3 +265,172 @@ of ping checks (TX_ON falling within 2.5 s). Original firmware. All probes 10x.
 - The TX length here (7.82 ms, first to last TX_ON sample below 1.65 V) uses a different definition
   from T1 (7.43 ms, TX state only): the difference is the two both-low windows (0.16 + 0.23 ms), in
   which TX_ON is already / still low.
+
+### T6b - Current with the radio on and in shutdown (2026-10-26)
+
+Run `bench/data/2026-10-26/t6b_174752/` (`bench/t6b_sdn_current.py`), firmware `bench/firmware/sdn_test`
+(branch `radio-bench`; SDN switched on serial commands, display held in reset, nothing else
+running). Current limit 0.5 A, shutdown held 3.2 s once (the second shutdown was skipped because
+the first already answered the question). Settled readings = readings 1.2 s or more after the
+command (the readback lags about 0.7 s). Readback cross-checked against the scope before the run.
+
+| Phase | Supply current (settled) | TX_ON | RX_ON | SDN | Device type |
+| --- | --- | --- | --- | --- | --- |
+| On (SDN low) | 0.144 A | 3.31 V | -0.03 V | -0.03 V | 0x08 |
+| **Shutdown (SDN high)** | **0.298 A** (0.288 to 0.299) | **0.725 V** | -0.04 V | 3.98 V | 0x00 |
+| On again | 0.126 A | 3.32 V | -0.04 V | -0.03 V | 0x08 |
+
+- **Confirmed: the PA is on in shutdown.** The board draws 0.154 A (about 0.77 W) more with the
+  radio in shutdown than with it on; the chip itself draws almost nothing in shutdown, and TX_ON
+  sits at 0.725 V. This answers the open D2 item "PA state while in shutdown".
+- Combined with T3: every power-up holds the PA on for about 319 ms while SDN floats high during
+  the Teensy boot, plus about 15 + 20 ms in the chip's power-on resets.
+- **The hardened firmware on `radio-hardening` must not be flashed as is**: its parking puts the
+  radio in shutdown (startup hook, faults, between retries), which enables the PA. The safe idle
+  state is SDN low with the GPIOs parked high (TX_ON 3.3 V, 0.13 to 0.14 A for the board).
+  The startup hook must drive SDN **low**; the PCB needs a pull-down on SDN (not the pull-up of
+  04 recommendation 3) and PA control that is off when the chip is in shutdown or reset.
+- Open: the on current was 18 mA lower after the shutdown than before (0.126 vs 0.144 A).
+- The display was blank during this test (sketch holds it in reset); board powered off afterwards.
+
+### T4a - Brown-out hold (2026-10-26)
+
+Run `bench/data/2026-10-26/t4a_175817/` (`bench/t4a_brownout_hold.py --hold 20`). Baseline firmware
+reflashed first (`bench/data/firmware/remote_baseline_eff32f8.hex`, built from eff32f8).
+Hypothesis: after switch-off the rail lingers at an intermediate voltage, so a power cycle is no
+real reset. From normal operation the 5 V rail was held at V_hold for 20 s, then set back to 5 V.
+
+| V_hold (scope) | Board current in the hold | Result |
+| --- | --- | --- |
+| 2.99 V | 58 mA | Teensy reset, init OK, pinging |
+| 2.49 V | 55 mA | Teensy reset, init OK, pinging |
+| 1.99 V | 42 mA | Teensy reset, init OK, pinging |
+| 1.49 V | 29 mA | Teensy reset, init OK, pinging |
+| 0.98 V | 1 mA | Teensy reset, init OK, pinging |
+| 0.48 V | 0 mA | Teensy reset, init OK, pinging |
+
+- **Not reproduced**: no failed init attempt after any hold. With the original firmware (SDN pulse
+  before every init) a rail that does not reach 0 V does not prevent the radio from starting.
+- The board stops drawing current below about 1 V: after a real switch-off the rail falls fast to
+  about 1 V and may then decay slowly (T4b, real power path, still to measure).
+- Summary of the baseline so far: 55 boots (T2, T3, T5, T6a, T4a), no failed init attempt.
+
+### T6c - Init under heat: FAILURE REPRODUCED (2026-10-26)
+
+Run `bench/data/2026-10-26/t6c_180635/` (`bench/t6c_heat.py`), firmware `env:remote_diag` (branch
+`radio-bench`: the original remote firmware plus, behind `RADIO_BENCH_DIAG`, the radio
+temperature once a second and the chip's answer after each failed init attempt). The owner heated
+the module with hot air (100 C, later 160 C, low airflow), no thermocouple. A power cycle
+(1 s off) every 12 s. Radio temperature from the chip's own sensor, RadioHead default range
+(-64 to +64 C, 0.5 C per step, uncalibrated, **saturates at 63.5 C**).
+
+| Cycles | Time (min) | Radio temperature | Result |
+| --- | --- | --- | --- |
+| #000 to #052 | 0.07 to 9.82 | 50.5, up to the 63.5 ceiling (5.0 to 7.8 min), cooling to 49.0 | 53 boots OK, no failed attempt |
+| **#053, #054, #055** | 10.00 to 10.37 | cooling, last reading before 49.0 C | **all 10 init attempts failed, three boots in a row** |
+| #056 | 10.55 | 45.5 C | OK again, 33 s after the first failure |
+
+- **First reproduction of the persistent init failure.** It happened **while cooling, at about 45 to
+  49 C**, not at the peak, persisted over three power cycles, and cleared by itself after about
+  30 s of further cooling: the field pattern ("stays failed across reboots, minutes later fine").
+- **Signature** (identical in the three failed boots, read after the 10th attempt):
+  `device_type=0x08 status1=0x20 status2=0x00`.
+  - Device type 0x08: SPI, level shifter and the chip's digital part work.
+  - Interrupt status 2 = 0x00: **the chip ready flag (ICHIPRDY) is not set**. RadioHead's init (with
+    the earlier local edit) waits up to 200 ms for it after the software reset and fails without it.
+    The flag reports that the 30 MHz crystal oscillator is running and stable.
+  - Status 1 = 0x20 (TX FIFO almost empty) is the normal idle value.
+- **Working hypothesis: at some temperatures the module's crystal oscillator does not start, or not
+  within 200 ms.** One event (three boots) so far: to be repeated and confirmed directly.
+- Next: wire to the RFM23BP GPIO_2 (R0 pad 8, unconnected on the PCB; it outputs the crystal-derived
+  microcontroller clock, 1 MHz, after reset) on scope CH4, temperature sensor on a wider range,
+  chip-ready wait time per attempt, crystal load capacitance register 0x09; same heating profile.
+- Consequences to check for the fix: the chip-ready wait (200 ms here, 100 ms on `radio-hardening`),
+  retry policy, crystal load capacitance setting.
+
+### T6d - Init under heat with the crystal clock on GPIO_2 (2026-10-26)
+
+Run `bench/data/2026-10-26/t6d_182545/` (`bench/t6d_heat_gpio2.py`), firmware `env:remote_diag`
+extended (temperature -64 to +192 C at 1 C per step; per attempt the chip ready time after the SDN
+pulse; after a failed attempt all status and crystal registers, then an own software reset with up to
+1 s for chip ready). CH4 on the RFM23BP GPIO_2 (R0 pad 8), which outputs the crystal-derived
+microcontroller clock after every reset.
+
+- **Failure reproduced again** (cycle #017, radio temperature 74 to 85 C while heating, all 10
+  attempts), recovered 11.2 s later at 74 C.
+- **The crystal runs** (GPIO_2 clock active 95 % of the failed attempt's capture, gap only during the
+  next SDN pulse), the chip answers (device type 0x08), and **an own single software reset after each
+  failed attempt gets chip ready in 604 us**. So the chip is fine; RadioHead's sequence fails.
+- RadioHead's init (framework copy): `RHSPIDriver::init()` with a blind 100 ms delay, then
+  `reset()` (software reset + 1 ms), device type read, software reset #2, then polls interrupt
+  status 2 back to back until ICHIPRDY, giving up after 200 ms (local edit).
+- Crystal load capacitance register 0x09 = 0x7F (chip default), register 0x62 = 0x24.
+
+### T6e - Init under heat with SPI and nIRQ on the scope: ROOT CAUSE (2026-10-26)
+
+Run `bench/data/2026-10-26/t6e_184907/` (`bench/t6e_heat_spi.py`, decoder `bench/lib/spi_decode.py`),
+same firmware. Setup E: CH1 SCK, CH2 MISO (first wired to MOSI by mistake, which validated the
+decoder: it decoded exactly RadioHead's command sequence 87 80 / 00 00 / 87 80 / 04 00...), CH3 nIRQ,
+CH4 SDN, all on the module side. One capture per boot of RadioHead's init (32 ns per point,
+109 to 141 ms after SDN falls). SPI runs at 1 MHz: 16 clocks per register access, 1.5 us between
+the bytes, about 1.9 us between accesses, one status poll every 17.4 us. The scope's own SPI
+decoder (`:BUS1`, set up by `bench/t6e_decode_check.py`) decodes only the on-screen part and
+did not match the code sequence; not used.
+
+| Boot | Radio temp | nIRQ falls (chip ready) after reset #2 | ... at this point of a 17.4 us poll read | Result |
+| --- | --- | --- | --- | --- |
+| #0 | 30 C | 607.0 us | 16.7 us | OK (next poll reads 0x02) |
+| #1 | 56 C | 604.0 us | 13.7 us | OK |
+| #2 | 70 C | 588.7 us | 15.7 us | OK |
+| #3 | 82 C | 581.7 us | 8.7 us | OK |
+| **#4** | hotter | **577.6 us** | **4.6 us** | **FAILED, 10 attempts** |
+| **#5** | hotter | **578.1 us** | **5.2 us** | **FAILED, 10 attempts** |
+| #6 | 66 C (cooling) | 583.3 us | 10.4 us | OK again, 29.5 s after the first failure |
+
+- **Root cause of the persistent init failure: a race in RadioHead's chip-ready polling.** Interrupt
+  status 2 is clear-on-read. The chip snapshots the value during the address byte and clears the
+  flags at the start of the data byte (nIRQ rises about 8.5 us into the access). When chip ready is
+  set between the two (boots #4 and #5: nIRQ low for only 3.4 to 3.9 us, inside one poll), the read
+  returns 0x00 **and** clears the flag. No second chip ready event comes, the loop times out after
+  200 ms, `init()` returns false. In the failed boots all 1719 polls read 0x00 (one 0x01).
+- **Why it persists and then goes away**: the loop timing is deterministic, so at a given temperature
+  every attempt and every boot hits the same phase. The chip ready time shifts by about -0.5 us
+  per C (607 us at 30 C, 578 us when failing): the board works again once the module has warmed or
+  cooled by a few degrees. With a 17.4 us poll period a bad band recurs about every 35 C, and each
+  module has its own offset, so the failing temperature differs between boards (first reproduction
+  T6c at about 45 to 49 C on the old scale; here above about 85 C).
+- **Not a hardware fault**: SPI, TXB0108, crystal and chip all work; the chip reports ready every time.
+- **Fix (firmware)**: do not catch a clear-on-read flag with back-to-back reads. Either wait for the
+  nIRQ pin (Teensy pin 9) to go low after the software reset and then read the status once, or wait a
+  fixed time (for example 2 ms) and read once; one software reset instead of two. On
+  `radio-hardening` the fork polls every 200 us, which makes the race rarer but does not remove it.
+
+### T7a - Race induced at room temperature, fix verified (2026-10-26)
+
+Run `bench/data/2026-10-26/t7a_185621/` (`bench/t7a_race_sweep.py`), firmware `bench/firmware/race_sweep`
+(flashed on the remote; the display is blank while it runs). Each trial repeats RadioHead's sequence
+with RadioHead's own `spiRead`/`spiWrite` (software reset #1, 1 ms, device type read, software
+reset #2), then waits an added delay d (CPU cycle counter) before the chip ready check. nIRQ is
+recorded by a pin interrupt. d swept 0 to 20 us in 250 ns steps, 20 trials per step, at room
+temperature, no heat.
+
+| d | RadioHead method (back-to-back polls, 5 ms timeout) | Fix: wait 2 ms, read once |
+| --- | --- | --- |
+| 0 to 9.25 us | 0 / 20 failed at every step | 0 failed |
+| 9.5 us | 9 / 20 failed | 0 failed |
+| **9.75 to 11.5 us** | **20 / 20 failed at every step** | 0 failed |
+| 11.75 us | 15 / 20 failed | 0 failed |
+| 12 to 20 us | 0 / 20 failed at every step | 0 failed |
+
+- **The failure is induced at will by the poll phase alone**: one contiguous band about 2 us wide in
+  the 17.4 us poll period, 100 % failure inside, 0 % outside. RadioHead method: 184 of 1620 trials
+  failed, all inside the band; nIRQ showed chip ready in all 1620 trials (about 0.6 ms after reset #2).
+  Failed trials made about 342 reads in the 5.95 ms timeout, i.e. one read every 17.4 us as in T6e.
+- **The fix "wait 2 ms after the reset, then read status 2 once" never failed**: 0 of 1620 trials, at
+  every phase. (Its trials record no nIRQ edge because nIRQ stays low from reset #1: nothing reads the
+  status during the wait. The single read found chip ready every time.)
+- This confirms the T6e mechanism independently of temperature; heat only shifts the chip ready time
+  (about -0.5 us per C) and so the phase. Room temperature on this module is about 4 to 5 us away
+  from the band, i.e. roughly 8 to 10 C.
+- Next: put the fix into the real init path (`Radio.h` / RadioHead init sequence, both boards), then
+  verify with the same sweep idea on the real code and with a heat run; then the stall (waitPacketSent).

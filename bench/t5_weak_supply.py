@@ -52,7 +52,7 @@ def main():
     rig = Rig("t5")
     failed = False
     try:
-        rig.check(on=True)
+        rig.ensure_on()
         for n, (volt, curr) in enumerate(LEVELS):
             set_level(rig, volt, curr)
             rig.setup_scope()
@@ -102,7 +102,7 @@ def main():
         if not failed:
             set_level(rig, NOMINAL["volt"], NOMINAL["curr"])
             print("supply restored to %.1f V / %.1f A" % (NOMINAL["volt"], NOMINAL["curr"]))
-        rig.close()
+        rig.close(power_off=not failed)
         print("saved", rig.run)
 
 

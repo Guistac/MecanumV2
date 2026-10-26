@@ -28,8 +28,9 @@ def main():
     order = OFF_TIMES * args.repeat
     random.Random(args.seed).shuffle(order)
     rig = Rig("t3")
+    failed = False
     try:
-        rig.check(on=True)
+        rig.ensure_on()
         rig.setup_scope()
         time.sleep(1.0)
         for n, off_s in enumerate(order):
@@ -55,9 +56,10 @@ def main():
             row["cross_check"] = rig.cross_check()
             if row["state"] not in ("OK", "RETRY_OK") or alive is False:
                 print("STOP: failure reproduced, board left powered in this state", flush=True)
+                failed = True
                 break
     finally:
-        rig.close()
+        rig.close(power_off=not failed)
         print("saved", rig.run)
 
 

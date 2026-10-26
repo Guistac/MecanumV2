@@ -176,11 +176,16 @@ RobotConfiguration newCubeGotterdammerung{
 };
 
 void setup() {
+#ifdef BOARD_REMOTE
+  //remote board build (env:remote_diag in platformio.ini)
+  RemoteBoard::run();
+#else
   //RemoteBoard::run();
   //RobotBoard::run(tenteGotterdammerung);
   //RobotBoard::run(smallCubeGotterdammerung);
   RobotBoard::run(bigCubeGotterdammerung);
   //RobotBoard::run(newCubeGotterdammerung);
+#endif
 }
 
 void loop() {}
