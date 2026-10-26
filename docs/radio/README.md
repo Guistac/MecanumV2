@@ -69,11 +69,14 @@ and `env:teensy41` builds.
 | --- | --- | --- |
 | `teensy41` (default) | robot | normal firmware |
 | `remote` | remote | normal firmware |
-| `remote_diag` | remote | bench: radio temperature and init details on USB serial, fault injection over serial (`k`, `i`, `f`, `n`, see 05 T8/T9) |
-| `remote_diag_stock` | remote | bench: as `remote_diag` with the framework's unmodified RadioHead, shows the stall |
 
 `pio run -e <env> -t upload`. On the remote the VUSB/VIN pad is cut: it must be powered from its cell
 (or the 5 V rail) while flashing over USB.
+
+The bench builds used in 05 (`remote_diag`: radio temperature and init details on USB serial, fault
+injection over serial `k`, `i`, `f`, `n`; `remote_diag_stock`: the same with the framework's unmodified
+RadioHead) were removed from the deployable code after the tests. They are in commit `99d9c4b`
+(branch `radio-bench`): check it out to repeat T8 and T9 with `bench/t8_stall.py`.
 
 ## Documents
 

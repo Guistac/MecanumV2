@@ -440,6 +440,10 @@ temperature, no heat.
 
 ### T8 - Fixes in the real driver: init, stall, heat (2026-10-26)
 
+Firmware note: `env:remote_diag` and `env:remote_diag_stock` (used in T8 and T9) were removed from the
+deployable code after the tests; they are in commit `99d9c4b`. The deployed code is the same minus the
+`RADIO_BENCH_DIAG` and `RADIO_STOCK_DRIVER` blocks (`env:remote`, `env:teensy41`).
+
 RadioHead now lives in the repo as `lib/RadioHead_RFM23BP` (the framework copy of this Mac, with its
 earlier local edits, unchanged), and `platformio.ini` ignores the framework's RadioHead, so the build
 no longer depends on a machine's framework folder. Changes, marked "RFM23BP fork" (see its README):

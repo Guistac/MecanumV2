@@ -142,24 +142,6 @@ void RemoteBoard::update(){
 
     //radio temperature
     if(temperatureReadingEvent.shouldTrigger()) radio.updateTemperature();
-#ifdef RADIO_BENCH_DIAG
-    //bench diagnostics (radio-bench, docs/radio/05): radio temperature once a second,
-    //range -64 to +192 C, 1 C per step, uncalibrated (see Radio::updateTemperature)
-    static uint32_t lastDiagMillis = 0;
-    if(millis() - lastDiagMillis >= 1000){
-        lastDiagMillis = millis();
-        Serial.printf("diag temp_raw=%i temp_c=%.1f recoveries=%i\n", radio.getTemperatureRaw(), float(radio.getTemperatureCelsius()), radio.getRecoveries());
-    }
-    //'k': reset the radio chip during the next transmit (stall test), 'i': reset it now (receiving),
-    //'f': overwrite its frequency band register (reset missed by the interrupt), 'n': stop serving nIRQ
-    if(Serial.available()){
-        char c = Serial.read();
-        if(c == 'k') radio.diagResetDuringNextSend();
-        else if(c == 'i') radio.diagResetNow();
-        else if(c == 'f') radio.diagCorruptConfig();
-        else if(c == 'n') radio.diagDropInterrupt();
-    }
-#endif
 
     //re-init the radio after a chip reset
     radio.update();
