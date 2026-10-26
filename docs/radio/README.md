@@ -75,8 +75,8 @@ and `env:teensy41` builds.
 
 The bench builds used in 05 (`remote_diag`: radio temperature and init details on USB serial, fault
 injection over serial `k`, `i`, `f`, `n`; `remote_diag_stock`: the same with the framework's unmodified
-RadioHead) were removed from the deployable code after the tests. They are in commit `99d9c4b`
-(branch `radio-bench`): check it out to repeat T8 and T9 with `bench/t8_stall.py`.
+RadioHead) are not on `mavlink`. They live on branch `radio-bench`, kept for future diagnostics: check
+it out to repeat T8 and T9 with `bench/t8_stall.py`.
 
 ## Documents
 
@@ -88,5 +88,6 @@ RadioHead) were removed from the deployable code after the tests. They are in co
 | [04 - PCB revision recommendations](04-pcb-revision-recommendations.md) | hardware changes for the next revision (status note: SDN correction) |
 | [05 - Bench test plan and results](05-bench-test-plan.md) | bench setup, every test with its measured tables, T0 to T9 |
 
-Bench scripts are in `bench/` (instrument drivers in `bench/lib/instruments`, test firmware in
-`bench/firmware`); raw captures were kept locally only (`bench/data/`, not in git).
+The bench tooling is on branch `radio-bench` only: scripts in `bench/` (instrument drivers in
+`bench/lib/instruments`, test firmware in `bench/firmware`) and the bench builds above. Raw captures
+were kept locally only (`bench/data/`, not in git).

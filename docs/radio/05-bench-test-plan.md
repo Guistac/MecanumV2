@@ -6,6 +6,10 @@ They implement the diagnostics D1 to D8 from [03](03-diagnostics-to-run.md).
 
 Started 2026-10-26. Only the remote board is on the bench; the robot board shows the same issues.
 
+The scripts (`bench/...`), the test firmware and the bench builds named below are on branch
+`radio-bench` only; `mavlink` carries the firmware and these documents. Raw data (`bench/data/`) was never
+in git.
+
 ## Bench
 
 | Item | Setup |
@@ -440,9 +444,9 @@ temperature, no heat.
 
 ### T8 - Fixes in the real driver: init, stall, heat (2026-10-26)
 
-Firmware note: `env:remote_diag` and `env:remote_diag_stock` (used in T8 and T9) were removed from the
-deployable code after the tests; they are in commit `99d9c4b`. The deployed code is the same minus the
-`RADIO_BENCH_DIAG` and `RADIO_STOCK_DRIVER` blocks (`env:remote`, `env:teensy41`).
+Firmware note: `env:remote_diag` and `env:remote_diag_stock` (used in T8 and T9) are on branch
+`radio-bench` only. The deployed code on `mavlink` is the same minus the `RADIO_BENCH_DIAG` and
+`RADIO_STOCK_DRIVER` blocks (`env:remote`, `env:teensy41`).
 
 RadioHead now lives in the repo as `lib/RadioHead_RFM23BP` (the framework copy of this Mac, with its
 earlier local edits, unchanged), and `platformio.ini` ignores the framework's RadioHead, so the build
