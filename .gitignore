@@ -8,3 +8,5 @@
 .DS_Store
 /include
 /test
+# bench raw data (large, kept outside git)
+/bench/data/
