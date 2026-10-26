@@ -11,8 +11,17 @@ private:
     int temperature;
 
     uint8_t chipSelectPin;
+    uint8_t interruptPin;
+    uint16_t recoveries = 0;
+#ifndef RADIO_STOCK_DRIVER
+    uint16_t handledChipResets = 0;
+    uint8_t expectedBandSelect = 0;     //frequency band register as written by setChannel()
+    uint32_t lastConfigCheckMillis = 0;
+    uint32_t lastRecoveryMillis = 0;
+#endif
 #ifdef RADIO_BENCH_DIAG
     uint8_t temperatureRaw = 0;
+    bool b_diagResetDuringNextSend = false;
 
     //Polls the chip ready flag (interrupt status 2) directly over SPI (RadioHead may not have started
     //SPI yet). Returns the microseconds until it was set, or -1 after timeoutMicros. Reading the
@@ -46,12 +55,16 @@ public:
         radio = new RH_RF22(chipSelectPin_, interruptPin_);
         shutdownPin = shutdownPin_;
         chipSelectPin = chipSelectPin_;
+        interruptPin = interruptPin_;
         pinMode(shutdownPin, OUTPUT);
         digitalWrite(shutdownPin, LOW);
     }
 
     bool initialize(uint8_t maxTries = 1){
         int tries = 0;
+        //on a re-init RadioHead's interrupt handler is still attached: it would run on the power-on and
+        //chip ready interrupts and clear the chip ready flag before init() reads it. init() attaches it again.
+        detachInterrupt(digitalPinToInterrupt(interruptPin));
         while(true){
             digitalWrite(shutdownPin, HIGH);
             delay(10);
@@ -97,7 +110,13 @@ public:
         radio->setTxPower(RH_RF22_RF23BP_TXPOW_30DBM); //set max transmit power
         radio->setPromiscuous(true); //accept message with any TO address
         radio->setCADTimeout(0); //don't wait for channel activity detection
-        setChannel(0);
+        //the chip forgot its frequency: set it again, the current channel on a re-init, else channel 0
+        uint8_t restoreChannel = channel > 15 ? 0 : channel;
+        channel = -1;
+        setChannel(restoreChannel);
+#ifndef RADIO_STOCK_DRIVER
+        handledChipResets = radio->chipResets();
+#endif
         
         return true;
     }
@@ -122,6 +141,9 @@ public:
         if(newChannel != channel){
             double newFrequency = startFrequency + newChannel * channelSpacing;
             radio->setFrequency(newFrequency, frequencyCompensation);
+#ifndef RADIO_STOCK_DRIVER
+            expectedBandSelect = radio->spiRead(RH_RF22_REG_75_FREQUENCY_BAND_SELECT);
+#endif
             channel = newChannel;
             frequency = newFrequency;
         }
@@ -144,9 +166,89 @@ public:
         radio->setHeaderFrom(buffer[1]);
         radio->setHeaderId(buffer[2]);
         radio->setHeaderFlags(buffer[3], 255);
+#ifndef RADIO_STOCK_DRIVER
+        uint16_t timeoutsBefore = radio->txTimeouts();
+#endif
         bool b_success = radio->send(&buffer[4], length-4);
+#ifdef RADIO_BENCH_DIAG
+        //bench (docs/radio/05): power the chip off for 1 ms while this packet is being sent,
+        //the packet sent interrupt then never comes
+        if(b_diagResetDuringNextSend){
+            b_diagResetDuringNextSend = false;
+            digitalWrite(shutdownPin, HIGH);
+            delay(1);
+            digitalWrite(shutdownPin, LOW);
+            Serial.printf("diag sdn_pulse_during_tx\n");
+        }
+#endif
+#ifndef RADIO_STOCK_DRIVER
+        //the previous packet never finished (chip reset or brown-out while sending, docs/radio/05):
+        //start the radio over instead of waiting forever
+        if(radio->txTimeouts() != timeoutsBefore) recover("tx timeout");
+#endif
         return b_success;
     }
+
+#ifndef RADIO_STOCK_DRIVER
+    //main loop: re-init after a chip reset (brown-out, SDN glitch), which leaves the chip on its
+    //default frequency and modem settings. The robot only sends in reply, so without this a reset
+    //chip would never hear the remote again and no send could time out. Detected by the chip's
+    //power-on reset interrupt, and once a second by the frequency band register (a few us).
+    //Also once a second: nIRQ is edge triggered, so if it is low and stays low (a flag pending when the
+    //interrupt was attached, a lost edge) no interrupt will ever come again, though the chip is fine.
+    void update(){
+        //a re-init blocks for about 125 ms: while a chip stays dead, retry every 2 s, not every loop
+        if(recoveries > 0 && millis() - lastRecoveryMillis < 2000) return;
+        if(radio->chipResets() != handledChipResets){
+            recover("chip reset interrupt");
+            return;
+        }
+        if(millis() - lastConfigCheckMillis >= 1000){
+            lastConfigCheckMillis = millis();
+            if(radio->spiRead(RH_RF22_REG_75_FREQUENCY_BAND_SELECT) != expectedBandSelect){
+                recover("configuration lost");
+                return;
+            }
+            if(digitalReadFast(interruptPin) == LOW){
+                delayMicroseconds(200);     //the handler clears a fresh interrupt within a few us
+                if(digitalReadFast(interruptPin) == LOW) recover("interrupt line stuck low");
+            }
+        }
+    }
+
+    void recover(const char* reason){
+        recoveries++;
+        lastRecoveryMillis = millis();
+        bool b_restarted = initialize(1);
+        Serial.printf("radio %s, re-init %s (recovery %i)\n", reason, b_restarted ? "ok" : "failed", recoveries);
+    }
+#else
+    void update(){}
+#endif
+
+    //number of re-inits after a send timeout or a chip reset
+    uint16_t getRecoveries(){ return recoveries; }
+
+#ifdef RADIO_BENCH_DIAG
+    void diagResetDuringNextSend(){ b_diagResetDuringNextSend = true; }
+    //power the chip off for 1 ms now (it is receiving between the remote's sends)
+    void diagResetNow(){
+        digitalWrite(shutdownPin, HIGH);
+        delay(1);
+        digitalWrite(shutdownPin, LOW);
+        Serial.printf("diag sdn_pulse_now\n");
+    }
+    //stop serving nIRQ: the next radio event leaves it low, as a lost edge would
+    void diagDropInterrupt(){
+        detachInterrupt(digitalPinToInterrupt(interruptPin));
+        Serial.printf("diag interrupt_dropped\n");
+    }
+    //overwrite the frequency band register with its default, as a reset missed by the interrupt would
+    void diagCorruptConfig(){
+        radio->spiWrite(RH_RF22_REG_75_FREQUENCY_BAND_SELECT, 0x75);
+        Serial.printf("diag config_corrupted\n");
+    }
+#endif
 
     bool receive(uint8_t* buffer, uint8_t* length){
         uint8_t internalBuffer[255];

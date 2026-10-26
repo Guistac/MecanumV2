@@ -139,6 +139,8 @@ bool b_mavConnected = false;
 
 void RobotBoard::update(){
   updateIO();
+  //re-init the radio after a chip reset, else the link stays down until a power cycle (docs/radio/05 T9)
+  radio.update();
   receiveData();
   updateRobotLogic();
   updateAllMotors();

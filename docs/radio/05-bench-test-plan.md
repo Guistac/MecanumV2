@@ -47,6 +47,10 @@ Phase 2 runs `radio-hardening` built for the remote.
 The firmware on the board cannot be read back from a Teensy. Going back to phase 1 after flashing
 means rebuilding the remote firmware from the repo.
 
+The results below do not follow this numbering from T6 on: the heat tests became T6a to T6e, the race
+reproduction T7a, the fixed firmware T8 (plan T7) and the fault injection T9 (plan T8). Plan T4 was run as
+T4a; plan T9 (SPI quality) was covered by the SPI captures of T6e and T8.
+
 ## How results are recorded
 
 - Every capture is read from the scope's acquisition memory as data (`:WAV:DATA?`, RAW mode),
@@ -432,5 +436,84 @@ temperature, no heat.
 - This confirms the T6e mechanism independently of temperature; heat only shifts the chip ready time
   (about -0.5 us per C) and so the phase. Room temperature on this module is about 4 to 5 us away
   from the band, i.e. roughly 8 to 10 C.
-- Next: put the fix into the real init path (`Radio.h` / RadioHead init sequence, both boards), then
-  verify with the same sweep idea on the real code and with a heat run; then the stall (waitPacketSent).
+- Next (done in T8): the fix in the real init path, verified with a heat run; then the stall.
+
+### T8 - Fixes in the real driver: init, stall, heat (2026-10-26)
+
+RadioHead now lives in the repo as `lib/RadioHead_RFM23BP` (the framework copy of this Mac, with its
+earlier local edits, unchanged), and `platformio.ini` ignores the framework's RadioHead, so the build
+no longer depends on a machine's framework folder. Changes, marked "RFM23BP fork" (see its README):
+
+- `init()`: one software reset, `delay(2)`, one read of interrupt status 2 for chip ready, then the
+  device type check. No back-to-back polls.
+- `send()`: waits for the previous packet at most `RH_RF22_TX_TIMEOUT_MS` (30 ms; a packet takes about
+  7 ms) instead of forever; a timeout returns false and counts in `txTimeouts()`. `Radio::send` then
+  re-initializes the radio (`initialize(1)`, keeps the channel). `Radio::initialize` detaches the
+  interrupt first: on a re-init RadioHead's handler would otherwise clear the chip ready flag first.
+- `adcRead()` (radio temperature) gives up after 5 ms instead of waiting forever for a chip that does
+  not answer.
+
+Bench hook (diag builds only): serial `k` pulls SDN high for 1 ms right after the next send, so the
+chip resets during a transmit and the packet sent interrupt never comes. `env:remote_diag_stock` is
+the same diag firmware with the framework's unmodified RadioHead. Script `bench/t8_stall.py`,
+setup E.
+
+| Test | Firmware | Run | Result |
+| --- | --- | --- | --- |
+| Chip reset during transmit, 1 trial | `remote_diag_stock` | `t8_stall_stock_191621` | **stalled**: no output from 0.6 s after the pulse (the next send), display frozen; 0.158 A |
+| Chip reset during transmit, 20 trials | `remote_diag` | `t8_stall_fixed_191654` | **20 / 20 recovered**: "re-init ok" 0.65 s after each pulse (next send + 30 ms + init), firmware kept running |
+| nIRQ activity before and after a recovery | `remote_diag` | `t8b_tx_after_recovery_*` | same interrupt pattern before and after (3 of 3 triggers within 2 s each, 10 us low per interrupt): transmitting resumed |
+| Power cycles, room temperature | `remote_diag` | `t6e_191942` | **61 / 61 OK** on the first attempt, 29 to 31 C |
+| Power cycles under heat | `remote_diag` | `t6e_193035` | **127 / 127 OK** on the first attempt, 30 to 99 C: 19 boots at 82 C or more, 17 at 85 C or more, 7 at 90 C or more |
+
+- SPI per init (capture 109 to 141 ms after SDN falls): software reset at 110.09 ms, the single read
+  of status 2 at 112.10 ms returns 0x03 (chip ready and power-on reset), device type 0x08 right after.
+  nIRQ is low from before the window until that read clears it: chip ready is latched, so the phase
+  of the read no longer matters.
+- In T6e the old code failed on this module at the boots above about 82 C; with the fix, every boot
+  through 99 C passed.
+- Not covered yet: the robot (receiver) board, which uses the same `Radio.h` and driver
+  (`env:teensy41` builds); a chip reset while not transmitting still leaves the chip at its default
+  registers until the next send times out (no timeout without a send); the PA-on-in-shutdown and
+  SDN boot float findings (T6a, T6b) are unchanged.
+
+### T9 - Recovery after any chip reset, SDN driven from early boot (2026-10-26)
+
+T8 left one gap: the robot board only sends in reply to a received packet, so a chip reset while it is
+receiving (nearly always) would leave it on its default frequency and modem settings, never hearing the
+remote again, and no send could time out. The link would stay down until a power cycle.
+
+Changes (`env:remote_diag`, both boards build):
+
+- Driver: the interrupt handler counts power-on reset interrupts in `chipResets()` (a chip reset sets
+  the interrupt enables back to their defaults, which include power-on reset).
+- `Radio::update()`, called every loop on both boards: re-init when `chipResets()` changed, and once a
+  second when the frequency band register (0x75) differs from what `setChannel()` wrote. A re-init
+  blocks for about 140 ms; while a chip stays dead it is retried every 2 s, not every loop.
+  Also once a second: re-init when nIRQ is low and still low 200 us later. nIRQ is edge triggered, so
+  a flag pending when the interrupt is attached, or a lost edge, would otherwise silence the radio for
+  good with its configuration intact (01, root cause 1).
+- `startup_middle_hook` in `main.cpp` drives SDN (pin 8 on both boards) low in the Teensy startup code,
+  before its 300 ms USB wait.
+- Bench hooks: serial `i` pulses SDN for 1 ms at once (chip receiving), `f` overwrites register 0x75
+  with its default (a reset the interrupt missed), `n` detaches the nIRQ interrupt (the next event
+  leaves nIRQ low, as a lost edge would). Script `bench/t8_stall.py --command i|f|k|n`; SDN at
+  power-up `bench/t9_boot_sdn.py`.
+
+| Test | Run | Result |
+| --- | --- | --- |
+| Chip reset while receiving (`i`), 10 trials | `t8_stall_fixed_i_200924` | **10 / 10 recovered**, re-init done 0.14 s after the pulse; 9 found by the interrupt, 1 by the register check |
+| Configuration lost (`f`), 10 trials | `t8_stall_fixed_f_201022` | **10 / 10 recovered** by the register check, 0.2 to 1.0 s later (once a second) |
+| Chip reset during a transmit (`k`), 10 trials | `t8_stall_fixed_k_201108` | **10 / 10 recovered**, 0.14 s after the pulse, before the next send: 8 by the interrupt, 2 by the register check |
+| nIRQ left low (`n`), 10 trials | `t8_stall_fixed_n_202232` | **10 / 10 recovered**: 6 by the stuck nIRQ check (0.24 to 0.85 s), 4 by the remote's send timeout first; on the robot only the check applies |
+| `i`, `f`, `k` again with the nIRQ check, 5 trials each | `t8_stall_fixed_{i,f,k}_2023*` | **15 / 15 recovered** |
+| SDN at power-up, 5 power cycles | `t9b_boot_sdn_201224` | first SDN high is the 10.0 ms init pulse in all 5; the 319 ms float of T3 is gone |
+| Power cycles, room temperature, 20 | `t6e_201322` | radio `init_ok try=1` in **20 / 20** |
+
+- The interrupt alone missed 3 of 20 SDN pulses (found by the register check within a second); the
+  check is needed, not only a backup.
+- With the float gone, the PA-on time per boot drops from about 384 ms to the 10 ms init pulse plus the
+  chip's own power-on resets (about 15 + 20 ms, T3).
+- In `t6e_201322` boots 2 to 19 stopped in the remote's startup check for centred joysticks (left X raw
+  0.589 instead of 0.007; cause not checked yet: joystick moved or something resting on it?). Not radio related; the script
+  classifies those boots OK because it looks for the joystick lines.

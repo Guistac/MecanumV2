@@ -175,6 +175,16 @@ RobotConfiguration newCubeGotterdammerung{
     .b_invertR = false
 };
 
+//Runs in the Teensy startup code before its 300 ms wait for USB, long before any constructor: drives the
+//radio's SDN low so the chip is not in shutdown while the pins float. In shutdown the RFM23BP's PA
+//is enabled without drive (TX_ON 0.72 V, +154 mA, docs/radio/05 T6b); SDN used to float high for about
+//319 ms at every power-up. Both boards use pin 8 (REMOTE_RADIO_SHUTDOWN_PIN, ROBOT_RADIO_SHUTDOWN).
+static_assert(REMOTE_RADIO_SHUTDOWN_PIN == ROBOT_RADIO_SHUTDOWN, "startup_middle_hook assumes one SDN pin");
+extern "C" void startup_middle_hook(void){
+  digitalWriteFast(ROBOT_RADIO_SHUTDOWN, LOW);
+  pinMode(ROBOT_RADIO_SHUTDOWN, OUTPUT);
+}
+
 void setup() {
 #ifdef BOARD_REMOTE
   //remote board build (env:remote_diag in platformio.ini)

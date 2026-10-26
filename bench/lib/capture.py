@@ -10,7 +10,9 @@ import os
 import sys
 import time
 
-SKILL = os.path.expanduser("~/.claude/skills/bench-instruments")
+# Instrument drivers (OWON ODP3063, Rigol DHO914S): bench/lib/instruments, a copy of the
+# bench-instruments skill (~/.claude/skills/bench-instruments) taken 2026-10-26. Name kept for the scripts.
+SKILL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "instruments")
 if SKILL not in sys.path:
     sys.path.insert(0, SKILL)
 
