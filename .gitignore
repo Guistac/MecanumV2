@@ -7,7 +7,9 @@
 
 .DS_Store
 /include
-/test
 # bench raw data (large, kept outside git)
 /bench/data/
 __pycache__/
+
+# screen renderer output (tools/screens/render.py)
+/tools/screens/out/

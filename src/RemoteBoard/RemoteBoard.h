@@ -7,6 +7,24 @@
 #include "Utilities/Timer.h"
 #include <vector>
 
+#include <EstopContacts.h>
+#include <BatteryMonitor.h>
+#include <StickGuard.h>
+#include <AxisStepper.h>
+#include <SettingsMenu.h>
+#include <PageNavigator.h>
+#include <StatusView.h>
+#include <Dimmer.h>
+#include <BootGuard.h>
+#include <LinkMonitor.h>
+#include <StickCalibration.h>
+#include <RemoteScreens.h>
+
+#ifdef REMOTE_DIRECT
+#include "Utilities/RemoteProxy.h"
+class Mavlink;
+#endif
+
 #define REMOTE_RADIO_SHUTDOWN_PIN 8
 #define REMOTE_RADIO_INTERRUPT_PIN 9
 #define REMOTE_RADIO_SELECT_PIN 10
@@ -62,18 +80,8 @@ private:
         uint8_t status = 0;
         uint8_t speedModeDisplay = 0;
         bool directionModeDisplay = false;
-        bool functionButtonPressed = false;
-        bool frontLeft_alarm = false;
-        bool backLeft_alarm = false;
-        bool frontRight_alarm = false;
-        bool backRight_alarm = false;
-        bool frontLeft_enabled = false;
-        bool backLeft_enabled = false;
-        bool frontRight_enabled = false;
-        bool backRight_enabled = false;
-        float xVelocity = 0.0;
-        float yVelocity = 0.0;
-        float rVelocity = 0.0;
+        bool functionButtonPressed = false;     //the receiver's remote finder button
+        //the reply's motor and velocity bytes are not read: always 0 on mavlink (no motion control on the receiver)
         int8_t robotRxSignalStrength = 0;
         float batteryVoltage = 0.0;
     }robotProxy;
@@ -129,26 +137,84 @@ private:
     float cyclicSendFrequency = 20.0;
     void sendData();
     void receiveData();
+    void handleReply(uint8_t* incomingFrame, uint8_t length);
+    LinkMonitor link;
+    uint16_t shownRecoveries = 0;
+    uint32_t recoveryMarkerUntilMillis = 0;
 
-    //gui
+#ifdef REMOTE_DIRECT
+    //bench build env:remote_direct: the remote talks MAVLink to Stacato over its own USB, doing the receiver's job,
+    //the radio stays in receive and never transmits. Both pushbuttons together toggle a simulated radio dropout.
+    Mavlink* directMavlink = nullptr;
+    RemoteProxy directProxy;
+    bool b_simulatedDropout = false;
+    bool b_dropoutChordHeld = false;
+    void directExchange(uint8_t* outgoingFrame);
+#endif
+
+    //operator logic [D-146] (lib/RemoteLogic, tested with pio test -e native)
+    EstopContacts estop;
+    BatteryMonitor batteryMonitor;
+    StickGuard stickGuard;
+    AxisStepper itemAxis;
+    AxisStepper valueAxis;
+    SettingsMenu menu;
+    PageNavigator pages;
+    Dimmer dimmer;
+    RemoteSettings settings;
+    bool b_settingsAvailable = false;
+    bool b_joystickZeroCaptured = false;
+    bool b_estopWasReleased = false;
+    uint32_t estopReleaseMillis = 0;
+    uint32_t thankYouUntilMillis = 0;
+    StatusView status = {BigMessage::UNKNOWN, StatusLine::NORMAL};
+    BigMessage previousMessage = BigMessage::UNKNOWN;
+    bool b_inputActivity = false;
+    uint8_t appliedContrast = 0;
+    void updateOperatorLogic();
+    bool updateMenu(uint32_t now);
+    void closeMenu();
+    void updateLeds();
+    StatusView selectStatus(uint32_t now);
+    void loadSettings();
+    void saveSettings(const RemoteSettings& newSettings);
+
+    //joystick calibration from the settings menu [H15]
+    StickCalibration stickCalibration;
+    StickCalibrator calibrator;
+    bool b_calibrating = false;
+    bool b_calibrationResult = false;       //after saving: the result, until a pushbutton or 10 s
+    uint32_t calibrationResultUntilMillis = 0;
+    bool b_keepCircling = false;
+    uint32_t calibrationNoteUntilMillis = 0;
+    const char* calibrationNote = nullptr;
+    void loadStickCalibration();
+    void updateCalibration(bool b_save, bool b_cancel, uint32_t now);
+    void drawCalibration();
+
+    //crash safety [D-146, H13]
+    ResetCause resetCause = ResetCause::POWER_ON;
+    ResetHistory resetHistory;
+    bool b_safeMode = false;
+    uint32_t rebootedMarkerUntilMillis = 0;
+    void recordBoot();
+
+    //gui [D-146]: lib/RemoteUi draws a ScreenModel into an off-screen frame, the transitions blend it onto the display
     void refreshGui();
     FrequencyTimer guiRefreshEvent;
     LengthTimer displayRevealTimer;
     void startupAnimation();
-    void inputDeviceTestGui(int x, int y);
-    void radioInitFailedScreen();
-    void releaseJoysticksScreen(bool released);
-    void drawSignalBar(int x, int y, int w, int h);
+    void fillScreenModel(ScreenModel& model);
+    GFXcanvas1 frame = GFXcanvas1(128, 32);
+    GFXcanvas1 previousFrame = GFXcanvas1(128, 32);
+    enum class Transition{ NONE, SLIDE_LEFT, SLIDE_RIGHT, WIPE };
+    Transition transition = Transition::NONE;
+    uint32_t transitionStartMillis = 0;
+    int previousView = -1;
+    void showFrame(uint32_t now);
 
     //hardware
-    bool areJoysticksReleased();
-
-    //eeprom
-    void saveRadioChannel(uint8_t channel);
-    uint8_t loadRadioChannel();
-    uint8_t savedRadioChannel = 255;
-    bool b_editingRadioChannel = false;
-    bool b_channelSelectorButtonsPressed = false;
-    float frequencyEditPressDuration = 2.0;
-
+    bool isLeftStickCentred();
+    bool isRightStickCentred();
+    bool isSpeedSwitchOff();
 };

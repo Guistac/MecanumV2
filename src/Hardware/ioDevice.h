@@ -1,5 +1,6 @@
 #pragma once
 #include <Arduino.h>
+#include <StickCalibration.h>
 
 class IODevice{
 public:
@@ -210,7 +211,9 @@ class EstopButton : public IODevice{
 
     virtual bool updateInputs() override {
         if(!IODevice::updateInputs()) return false;
-        bool newState = digitalRead(noPin) && !digitalRead(ncPin);
+        b_noHigh = digitalRead(noPin);
+        b_ncHigh = digitalRead(ncPin);
+        bool newState = b_noHigh && !b_ncHigh;
         if(b_invert) newState = !newState;
         if(newState != b_state){
             b_stateChanged = true;
@@ -222,9 +225,14 @@ class EstopButton : public IODevice{
     }
 
     bool isClear(){ return b_state; }
+    //raw contacts, for the wiring check (EstopContacts)
+    bool isNoHigh(){ return b_noHigh; }
+    bool isNcHigh(){ return b_ncHigh; }
 
 private:
     bool b_state;
+    bool b_noHigh = false;
+    bool b_ncHigh = true;
     uint8_t noPin;
     uint8_t ncPin;
     bool b_invert;
@@ -431,10 +439,10 @@ public:
     virtual bool updateInputs() override {
         if(!IODevice::updateInputs()) return false;
 
-        int xReading = analogRead(xAxisPin);
-        int yReading = analogRead(yAxisPin);
-        xAxisValue = readingToValue(xReading, zeroX, invertX);
-        yAxisValue = readingToValue(yReading, zeroY, invertY);
+        xReading = analogRead(xAxisPin);
+        yReading = analogRead(yAxisPin);
+        xAxisValue = StickMath::normalize(xReading, zeroX, xCalibration.low, xCalibration.high, invertX);
+        yAxisValue = StickMath::normalize(yReading, zeroY, yCalibration.low, yCalibration.high, invertY);
 
         if(previousXAxisValue != xAxisValue || previousYAxisValue != yAxisValue) {
             b_joystickMoved = true;
@@ -456,36 +464,30 @@ public:
         return false;
     }
 
+    //before the zero is captured: the raw reading near the calibrated rest position (mid scale when never
+    //calibrated). No delay, no print: called every loop
     bool isRawBelowThreshold(float threshold){
         if(threshold < 0.0) threshold = -threshold;
-        float rawX = map(float(analogRead(xAxisPin)), 0, getAnalogReadResolution(), -1.0, 1.0);
-        float rawY = map(float(analogRead(yAxisPin)), 0, getAnalogReadResolution(), -1.0, 1.0);
-        Serial.printf("%.3f %.3f\n", rawX, rawY);
-        delay(10);
-        if(rawX > -threshold && rawX < threshold && rawY > -threshold && rawY < threshold) return true;
-        return false;
+        return StickMath::isNearCentre(analogRead(xAxisPin), xCalibration, threshold)
+            && StickMath::isNearCentre(analogRead(yAxisPin), yCalibration, threshold);
+    }
+
+    //the extremes and rest position measured by the calibration [H15], the default is the full scale
+    void setCalibration(const AxisCalibration& x, const AxisCalibration& y){
+        xCalibration = x;
+        yCalibration = y;
+    }
+
+    //last raw readings, for the calibration
+    uint16_t getRawX(){ return xReading; }
+    uint16_t getRawY(){ return yReading; }
+
+    //after the zero is captured
+    bool isBelowThreshold(float threshold){
+        return xAxisValue > -threshold && xAxisValue < threshold && yAxisValue > -threshold && yAxisValue < threshold;
     }
 
 private:
-
-    float readingToValue(uint16_t reading, int zeroOffset, bool b_invert){
-        float normalized;
-        if(reading >= zeroOffset) normalized = map(float(reading), zeroOffset, getAnalogReadResolution(), 0.0, 1.0);
-        else normalized = map(float(reading), 0, zeroOffset, -1.0, 0.0);
-        bool sign = normalized > 0.0;
-        float absolute = sign ? normalized : -normalized;
-        float output;
-        if(absolute > maxLevel) output = 1.0;
-        else if(absolute < minLevel) return 0.0;
-        else {
-            output = map(absolute, minLevel, maxLevel, 0.0, 1.0);
-            if(output > 1.0) output = 1.0;
-            else if(output < 0.0) output = 0.0;
-        }
-        if(!sign) output = -output;
-        if(b_invert) output = -output;
-        return output;
-    }
 
     uint8_t xAxisPin;
     uint8_t yAxisPin;
@@ -495,8 +497,10 @@ private:
     float yAxisValue;
     float previousXAxisValue;
     float previousYAxisValue;
-    float minLevel = 0.01;
-    float maxLevel = 0.99;
+    uint16_t xReading = 0;
+    uint16_t yReading = 0;
+    AxisCalibration xCalibration;
+    AxisCalibration yCalibration;
     int zeroX;
     int zeroY;
     uint32_t lastReadingMillis = UINT32_MAX;

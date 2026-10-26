@@ -4,8 +4,9 @@
 #include "Utilities/Timer.h"
 #include "Hardware/ioDevice.h"
 #include "Hardware/ServoMotor.h"
-#include "Utilities/RobotStates.h"
+#include <RobotStates.h>
 #include "Utilities/RobotConfig.h"
+#include "Utilities/RemoteProxy.h"
 #include <vector>
 
 #define ROBOT_RADIO_SHUTDOWN 8
@@ -82,24 +83,7 @@ public:
     std::vector<IODevice*> ioDevices;
     std::vector<LED*> leds;
 
-    struct RemoteProxy{
-        uint32_t lastReceiveTimeMillis = 0;
-        bool b_connected = false;
-        bool b_shouldDisable = false;
-        bool b_shouldEnable = false;
-        SpeedMode speedSelection = SpeedMode::LOW_SPEED;
-        bool b_directionToggle = false;
-        bool b_leftButton = false;
-        bool b_rightButton = false;
-        bool b_leftJoystick = false;
-        bool b_rightJoystick = false;
-        float leftJoystickX = 0.0;
-        float leftJoystickY = 0.0;
-        float rightJoystickX = 0.0;
-        float rightJoystickY = 0.0;
-        bool b_safetyClear = true;
-        uint8_t txCounter = 0;
-    }remoteProxy;
+    RemoteProxy remoteProxy;
 
     RobotConfiguration configuration;
     RobotState state = RobotState::EMERGENCY_STOPPED;

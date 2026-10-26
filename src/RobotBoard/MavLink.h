@@ -4,14 +4,23 @@
 #include <common/mavlink.h>
 
 #include "Utilities/Timer.h"
-#include "Utilities/LiIonBattery.h"
-#include "RobotBoard.h"
+#include <LiIonBattery.h>
+#include "Utilities/RemoteProxy.h"
+#include <RobotStates.h>
+#include "Hardware/ioDevice.h"
 
 class Mavlink{
     public:
 
-    void setRobotBoard(RobotBoard* rb){ robot = rb; }
-    RobotBoard* robot = nullptr;
+    //the remote's controls, and the pack read by the board (nullptr: no BATTERY_STATUS, the remote in env:remote_direct)
+    void setSources(RemoteProxy* remoteProxy, BatteryLevel* batteryReading, uint8_t cellCount){
+        proxy = remoteProxy;
+        battery = batteryReading;
+        batteryCellCount = cellCount;
+    }
+    RemoteProxy* proxy = nullptr;
+    BatteryLevel* battery = nullptr;
+    uint8_t batteryCellCount = 0;
 
     uint8_t systemId = 1;
     uint8_t componentId = 1;
@@ -60,7 +69,7 @@ class Mavlink{
 
         //ENABLE COMMAND
         static bool b_previousEnable = false;
-        bool b_enable = robot->remoteProxy.b_shouldEnable;
+        bool b_enable = proxy->b_shouldEnable;
         if(b_enable && !b_previousEnable){
             sendCmd(MAV_CMD_COMPONENT_ARM_DISARM, 1.0);
         }
@@ -68,7 +77,7 @@ class Mavlink{
 
         //DISABLE COMMAND
         static bool b_previousDisable = false;
-        bool b_disable = robot->remoteProxy.b_shouldDisable;
+        bool b_disable = proxy->b_shouldDisable;
         if(b_disable && !b_previousDisable){
             sendCmd(MAV_CMD_COMPONENT_ARM_DISARM, 0.0);
         }
@@ -76,7 +85,7 @@ class Mavlink{
 
         //FLIGHT TERMINATION
         static bool b_previousLeft = false;
-        bool b_left = robot->remoteProxy.b_leftButton;
+        bool b_left = proxy->b_leftButton;
         if(b_left && !b_previousLeft){
             sendCmd(MAV_CMD_DO_FLIGHTTERMINATION, 1.0);
         }
@@ -84,7 +93,7 @@ class Mavlink{
 
         //REBOOT
         static bool b_previousRight = false;
-        bool b_right = robot->remoteProxy.b_rightButton;
+        bool b_right = proxy->b_rightButton;
         if(b_right && !b_previousRight){
             sendCmd(MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN, 0.0, REBOOT_SHUTDOWN_ACTION_REBOOT);
         }
@@ -176,23 +185,23 @@ class Mavlink{
 
     void sendMsg_POSITION_TARGET_LOCAL_NED(){
         uint32_t time_boot_ms;
-        float x = robot->remoteProxy.leftJoystickX;
-        float y = robot->remoteProxy.leftJoystickY;
+        float x = proxy->leftJoystickX;
+        float y = proxy->leftJoystickY;
         float z;
-        float vx = robot->remoteProxy.leftJoystickY * xy_vel_lim;
-        float vy = robot->remoteProxy.leftJoystickX * xy_vel_lim;
-        float vz = robot->remoteProxy.rightJoystickX * r_vel_lim;
+        float vx = proxy->leftJoystickY * xy_vel_lim;
+        float vy = proxy->leftJoystickX * xy_vel_lim;
+        float vz = proxy->rightJoystickX * r_vel_lim;
         float afx = xy_acc_lim;
         float afy = xy_acc_lim;
         float afz = r_acc_lim;
-        float yaw = robot->remoteProxy.rightJoystickX;
-        float yaw_rate = robot->remoteProxy.rightJoystickY;
+        float yaw = proxy->rightJoystickX;
+        float yaw_rate = proxy->rightJoystickY;
         uint16_t type_mask;
-        if(robot->remoteProxy.b_connected) type_mask = robot->remoteProxy.b_safetyClear ? 0x8000 : 0x0;
+        if(proxy->b_connected) type_mask = proxy->b_safetyClear ? 0x8000 : 0x0;
         else type_mask = 0x0;
         uint8_t coordinate_frame;
 
-        if(!robot->remoteProxy.b_connected){
+        if(!proxy->b_connected){
             x = 0;
             y = 0;
             z = 0;
@@ -211,22 +220,22 @@ class Mavlink{
 
        void sendMsg_MANUAL_CONTROLS(){
         //D-44: while the radio link to the handheld is down the sticks read zero, never the last values received
-        bool connected = robot->remoteProxy.b_connected;
-        int16_t x = connected ? robot->remoteProxy.leftJoystickX * 1000.0 : 0;
-        int16_t y = connected ? robot->remoteProxy.leftJoystickY * 1000.0 : 0;
-        int16_t z = connected ? robot->remoteProxy.rightJoystickX * 1000.0 : 0;
-        int16_t r = connected ? robot->remoteProxy.rightJoystickY * 1000.0 : 0;
+        bool connected = proxy->b_connected;
+        int16_t x = connected ? proxy->leftJoystickX * 1000.0 : 0;
+        int16_t y = connected ? proxy->leftJoystickY * 1000.0 : 0;
+        int16_t z = connected ? proxy->rightJoystickX * 1000.0 : 0;
+        int16_t r = connected ? proxy->rightJoystickY * 1000.0 : 0;
         uint16_t buttons = 0;
-        buttons |= (robot->remoteProxy.b_leftButton) << 0;
-        buttons |= (robot->remoteProxy.b_rightButton) << 1;
-        buttons |= (robot->remoteProxy.b_leftJoystick) << 2;
-        buttons |= (robot->remoteProxy.b_rightJoystick) << 3;
-        buttons |= (robot->remoteProxy.speedSelection == SpeedMode::HIGH_SPEED) << 4;
-        buttons |= (robot->remoteProxy.speedSelection == SpeedMode::LOW_SPEED) << 5;
-        buttons |= (robot->remoteProxy.b_directionToggle) << 6;
-        buttons |= (robot->remoteProxy.b_safetyClear && robot->remoteProxy.b_connected) << 7;
-        buttons |= (robot->remoteProxy.b_shouldDisable) << 8;
-        buttons |= (robot->remoteProxy.b_shouldEnable) << 9;
+        buttons |= (proxy->b_leftButton) << 0;
+        buttons |= (proxy->b_rightButton) << 1;
+        buttons |= (proxy->b_leftJoystick) << 2;
+        buttons |= (proxy->b_rightJoystick) << 3;
+        buttons |= (proxy->speedSelection == SpeedMode::HIGH_SPEED) << 4;
+        buttons |= (proxy->speedSelection == SpeedMode::LOW_SPEED) << 5;
+        buttons |= (proxy->b_directionToggle) << 6;
+        buttons |= (proxy->b_safetyClear && proxy->b_connected) << 7;
+        buttons |= (proxy->b_shouldDisable) << 8;
+        buttons |= (proxy->b_shouldEnable) << 9;
         buttons |= (connected) << 10; //D-44: radio link to the handheld up
 
         mavlink_message_t msg;
@@ -237,9 +246,10 @@ class Mavlink{
     //Pack voltage in voltages[0] (mV), the rest UINT16_MAX: cell voltages are not measured.
     //Above 65.534V (a full 16S pack is 67.2V) the overflow goes in voltages[1], as the message spec says.
     void sendMsg_BATTERY_STATUS(){
-        float packVoltage = robot->batteryReading.getVoltage();
-        uint8_t cellCount = robot->configuration.batteryCellCount;
-        float restingCellVoltage = cellCount > 0 ? robot->batteryReading.getRestingVoltage() / cellCount : 0.0;
+        if(!battery) return;
+        float packVoltage = battery->getVoltage();
+        uint8_t cellCount = batteryCellCount;
+        float restingCellVoltage = cellCount > 0 ? battery->getRestingVoltage() / cellCount : 0.0;
 
         uint16_t voltages[10];
         for(int i = 0; i < 10; i++) voltages[i] = UINT16_MAX;

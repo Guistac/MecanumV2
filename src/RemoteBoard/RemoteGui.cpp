@@ -1,114 +1,180 @@
 #include "RemoteBoard.h"
-#include "Utilities/RobotStates.h"
+#include <RobotStates.h>
+#include <LiIonBattery.h>
+#include "Hardware/Watchdog.h"
+
+#ifndef FW_VERSION
+#define FW_VERSION "unknown"
+#endif
+
+//the radio chip's temperature above which the HOT marker shows, a hint only [D-146 point 4]
+static const int hotTemperatureCelsius = 70;
+//transitions: pages and the menu slide, a new alarm wipes in
+static const uint32_t slideMillis = 160;
+static const uint32_t wipeMillis = 100;
 
 static float easeInOutCubic(float in){
     return in < 0.5 ? (4 * pow(in,3)) : (1 - pow(-2 * in + 2, 3) / 2);
 };
 
+static float easeOutCubic(float in){
+    float t = 1.0 - in;
+    return 1.0 - t * t * t;
+}
+
 static uint8_t frameCounter = 0;
 
 
-void RemoteBoard::drawSignalBar(int x, int y, int w, int h){
-    display.drawLine(x,y,x,y+h,WHITE);
-    display.drawLine(x+w,y,x+w,y+h,WHITE);
-    int barWidth = map(radio.getSignalStrength(), -120, 4, 0, w);
-    if(robotProxy.b_connected) display.fillRect(x,2,barWidth,3,WHITE);
-    else{
-        float o = sin(millis()*0.005);
-        int halfW = w * 0.5;
-        int center = x + halfW;
-        int offset = o * halfW;
-        int pointWidth = (1.0 - (o < 0.0 ? -o : o)) * 50.0;
-        display.fillRect(center + 1 + offset - pointWidth*0.5, 2, pointWidth, 3, WHITE);
-    }
+//everything the screens show, read once per frame
+void RemoteBoard::fillScreenModel(ScreenModel& m){
+    uint32_t now = millis();
+    m.now = now;
+
+#ifdef REMOTE_DIRECT
+    m.b_direct = true;
+    m.b_dropout = b_simulatedDropout;
+    m.signal = 1.0;
+#else
+    m.signal = LinkMonitor::barFraction(LinkMonitor::weaker(radio.getSignalStrength(), robotProxy.robotRxSignalStrength));
+#endif
+    m.channel = radio.getChannel();
+    m.b_linkUp = robotProxy.b_connected;
+    m.rxCounter = robotProxy.rxCounter;
+    m.loss = link.lossPercent();
+    m.downDbm = radio.getSignalStrength();
+    m.upDbm = robotProxy.robotRxSignalStrength;
+    m.rttMs = robotProxy.lastMessageRoundTripTimeMillis;
+
+    m.robotVoltage = robotProxy.batteryVoltage;
+    m.remoteRestingVoltage = batteryLevel.getRestingVoltage();
+    m.remoteVoltage = batteryLevel.getVoltage();
+    m.remotePercent = LiIonBattery::percentFromCellVoltage(m.remoteRestingVoltage);
+    m.remoteBattery = batteryMonitor.getState();
+
+    m.b_recovery = int32_t(recoveryMarkerUntilMillis - now) > 0;
+    m.b_hot = radio.isInitialized() && radio.getTemperatureCelsius() > hotTemperatureCelsius;
+    m.b_safeMode = b_safeMode;
+    m.b_rebooted = int32_t(rebootedMarkerUntilMillis - now) > 0;
+
+    m.status = status;
+    m.radioFailures = radio.getInitFailures();
+    m.speedState = speedToggle.getState();
+    m.b_worldFrame = directionToggle.getSwitchState();
+
+    m.page = pages.getPage();
+    m.pageCount = b_settingsAvailable ? uint8_t(Page::COUNT) : uint8_t(Page::SETTINGS);
+
+    m.b_radioUp = radio.isInitialized();
+    m.temperature = radio.getTemperatureCelsius();
+    m.recoveries = radio.getRecoveries();
+    m.txTimeouts = radio.getTxTimeouts();
+    m.chipResets = radio.getChipResets();
+
+    m.sticks[0] = leftJoystick.getXValue();
+    m.sticks[1] = leftJoystick.getYValue();
+    m.sticks[2] = rightJoystick.getXValue();
+    m.sticks[3] = rightJoystick.getYValue();
+    m.b_stickPressed[0] = leftJoystick.isPressed();
+    m.b_stickPressed[1] = rightJoystick.isPressed();
+    m.b_pushbutton[0] = leftPushbutton.isPressed();
+    m.b_pushbutton[1] = rightPushbutton.isPressed();
+    m.b_disableButton = leftLedButton.isPressed();
+    m.b_enableButton = rightLedButton.isPressed();
+    m.estop = estop.getState();
+
+    m.version = FW_VERSION;
+    m.uptimeSeconds = now / 1000;
+    m.resetCause = resetCause;
+    m.resetCount = resetHistory.count;
+
+    m.settings = settings;
+    m.b_menuOpen = menu.isOpen();
+    m.menuItem = menu.getItem();
+    m.pending = menu.getPending();
+    m.saveProgress = menu.saveProgress(valueAxis.heldPositiveMillis(now));
+    bool b_noteShowing = calibrationNote && int32_t(calibrationNoteUntilMillis - now) > 0;
+    m.note = b_noteShowing ? calibrationNote : nullptr;
+
+    m.b_calibrating = b_calibrating;
+    m.b_calibrationResult = b_calibrationResult;
+    m.b_calibrationComplete = calibrator.isComplete();
+    m.b_circling = calibrator.getStep() == StickCalibrator::Step::CIRCLE;
+    m.b_keepCircling = b_keepCircling;
+    m.raw[0] = leftJoystick.getRawX();
+    m.raw[1] = leftJoystick.getRawY();
+    m.raw[2] = rightJoystick.getRawX();
+    m.raw[3] = rightJoystick.getRawY();
+    m.calibration = b_calibrationResult ? stickCalibration : calibrator.getResult();
 }
 
+
+
 void RemoteBoard::refreshGui(){
-    display.clearDisplay();
+    uint32_t now = millis();
 
-    frameCounter++;
-    if(frameCounter == 32) frameCounter = 0;
-    if(frameCounter >= 16) display.drawPixel(127, 31 - (31 - frameCounter), WHITE);
-    else display.drawPixel(127, 31 - frameCounter, WHITE);
-
-    display.setCursor(0,0);
-    display.setTextSize(1);
-    
-    display.printf("Ch#%X", radio.getChannel());
-    if(b_editingRadioChannel) {
-        display.drawLine(0, 8, 22, 8, (millis() % 200) > 100 ? WHITE : BLACK);
-    }
-    else if(b_channelSelectorButtonsPressed) {
-        double t = min(leftPushbutton.timeSinceLastInputChangeSeconds(), rightPushbutton.timeSinceLastInputChangeSeconds());
-        double n = t/frequencyEditPressDuration;
-        display.drawLine(0,8,22*n,8,WHITE);
+    //a new alarm always shows on the Status page (closing the menu, unsaved changes discarded)
+    status = selectStatus(now);
+    bool b_alarm = Status::isAlarm(status.message);
+    bool b_newMessage = status.message != previousMessage;
+    BigMessage messageBefore = previousMessage;
+    previousMessage = status.message;
+    if(b_newMessage && b_alarm){
+        if(menu.isOpen()) closeMenu();
+        b_calibrationResult = false;
+        pages.showStatus();
     }
 
+    //a new warning counts as activity for the dimmer
+    static uint8_t previousWarnings = 0;
+    uint8_t warnings = 0;
+    if(int32_t(recoveryMarkerUntilMillis - now) > 0) warnings |= 0x1;
+    if(radio.isInitialized() && radio.getTemperatureCelsius() > hotTemperatureCelsius) warnings |= 0x2;
+    if(batteryMonitor.getState() != BatteryState::OK) warnings |= 0x4;
+    bool b_newWarning = (warnings & ~previousWarnings) != 0;
+    previousWarnings = warnings;
 
-
-    display.setCursor(26,0);
-    switch(robotProxy.rxCounter % 4){
-        case 0: display.print("\x10"); break;
-        case 1: display.print("\x1E"); break;
-        case 2: display.print("\x11"); break;
-        case 3: display.print("\x1F"); break;
+    uint8_t contrastLevel = menu.isOpen() ? menu.getPending().contrast : settings.contrast;
+    uint8_t contrast = dimmer.update(contrastLevel, settings.dimming, b_inputActivity || b_newMessage || b_newWarning, b_alarm, now);
+    b_inputActivity = false;
+    if(contrast != appliedContrast){
+        display.setContrast(contrast);
+        appliedContrast = contrast;
     }
 
-    drawSignalBar(34, 0, 93, 6);
+    //draw the new frame off screen
+    ScreenModel model;
+    fillScreenModel(model);
+    frame.fillScreen(0);
+    RemoteUi::draw(frame, model);
 
-    display.setTextColor(WHITE);
-    display.setTextSize(2);
-    display.setCursor(0,9);
-
-    if(robotProxy.b_connected){
-        switch(robotProxy.status){
-            case uint8_t(RobotState::DISABLING):
-                display.setCursor(12,9);
-                display.print("Disabling");
-                break;
-            case uint8_t(RobotState::DISABLED):
-                display.setCursor(18,9);
-                display.print("Disabled");
-                break;
-            case uint8_t(RobotState::ENABLING):
-                display.setCursor(18,9);
-                display.print("Enabling");
-                break;
-            case uint8_t(RobotState::ENABLED):
-                display.setCursor(22,9);
-                display.print("Enabled");
-                break;
-            case uint8_t(RobotState::EMERGENCY_STOPPING):
-                if(millis() % 100 > 50){
-                    display.setCursor(36,9);
-                    display.print("ESTOP");
-                }
-                break;
-            case uint8_t(RobotState::EMERGENCY_STOPPED):
-                if(millis() % 500 > 250){
-                    display.setCursor(36,9);
-                    display.print("ESTOP");
-                }
-                break;
-            default:
-                display.setCursor(36,9);
-                display.print("???");
-                break;
+    //which view this is: a page (0..6), the menu (10), the calibration (11) or its result (12)
+    int view = int(model.page);
+    if(model.b_menuOpen) view = 10;
+    if(model.b_menuOpen && model.b_calibrating) view = 11;
+    if(model.b_calibrationResult) view = 12;
+    Transition newTransition = Transition::NONE;
+    if(previousView >= 0 && view != previousView){
+        if(view < 10 && previousView < 10){
+            //pages: the next one comes in from the right, the previous one from the left (wrapping)
+            int count = model.pageCount;
+            bool b_forward = (previousView + 1) % count == view;
+            newTransition = b_forward ? Transition::SLIDE_LEFT : Transition::SLIDE_RIGHT;
         }
+        else newTransition = view > previousView ? Transition::SLIDE_LEFT : Transition::SLIDE_RIGHT;
     }
-    else{
-        display.setCursor(22,9);
-        display.print("Offline");
+    else if(view == int(Page::STATUS) && b_newMessage && b_alarm && !Status::isAlarm(messageBefore)) newTransition = Transition::WIPE;
+    previousView = view;
+    if(newTransition != Transition::NONE){
+        transition = newTransition;
+        transitionStartMillis = now;
     }
-    
-    display.setTextSize(1);
-    display.setCursor(0,25);
-    display.printf("T:%.2fV", batteryLevel.getVoltage());
-    display.setCursor(48, 25);
-    if(robotProxy.b_connected) display.printf("R:%.1fV", robotProxy.batteryVoltage);
-    else display.printf("R:xx.xV");
 
-    inputDeviceTestGui(95,26);
+    showFrame(now);
+
+    //firmware alive: a dot running up and down the right edge with every frame (H4b)
+    frameCounter++;
+    if(frameCounter == 64) frameCounter = 0;
+    display.drawPixel(127, frameCounter < 32 ? frameCounter : 63 - frameCounter, WHITE);
 
     if(!displayRevealTimer.hasExpired()){
         int w = 128;
@@ -119,38 +185,39 @@ void RemoteBoard::refreshGui(){
     display.display();
 }
 
-void RemoteBoard::inputDeviceTestGui(int x, int y){
-    auto drawDigitalInputState = [this](int x, int y){
-        display.drawPixel(x+0, y + (leftJoystick.isPressed() ? 1 : 0), WHITE);
-        display.drawPixel(x+1, y + (leftPushbutton.isPressed() ? 1 : 0), WHITE);
-        display.drawPixel(x+2, y + (leftLedButton.isPressed() ? 1 : 0), WHITE);
-        switch(speedToggle.getState()){
-            case 0: display.drawPixel(x+3, y+1, WHITE); break;
-            case 1: display.drawPixel(x+3, y, WHITE); break;
-            case 2: display.drawPixel(x+3, y-1, WHITE); break;
-        }
-        display.drawPixel(x+4, y + (estopButton.isClear() ? 0 : 1), WHITE);
-        display.drawPixel(x+5, y + (directionToggle.getSwitchState() ? 0 : 1), WHITE);
-        display.drawPixel(x+6, y + (rightLedButton.isPressed() ? 1 : 0), WHITE);
-        display.drawPixel(x+7, y + (rightPushbutton.isPressed() ? 1 : 0), WHITE);
-        display.drawPixel(x+8, y + (rightJoystick.isPressed() ? 1 : 0), WHITE);
-    };
-    auto drawAnalogValue = [this](float value, int x, int y, int w, bool flip){
-        int xPos = round(map(value, -1.0, 1.0, float(x), float(x+w)));
-        int yL = flip ? y : y+1;
-        int yD = flip ? y+1 : y;
-        display.drawLine(x,yL,x+w,yL,WHITE);
-        display.drawPixel(xPos,yD,WHITE);
-        if(value == 0.0) display.drawPixel(xPos,yL,BLACK);
-        else if(value == -1.0) display.drawPixel(xPos,yL,BLACK);
-        else if(value == 1.0) display.drawPixel(xPos,yL,BLACK);
-    };
-    drawAnalogValue(leftJoystick.getXValue(), x, y, 10, false);
-    drawAnalogValue(leftJoystick.getYValue(), x, y+3, 10, true);
-    drawDigitalInputState(x+12,y+2);
-    drawAnalogValue(rightJoystick.getXValue(), x+22, y, 10, false);
-    drawAnalogValue(rightJoystick.getYValue(), x+22, y+3, 10, true);
+//the new frame onto the display, blended with the one before while a transition runs; the last whole frame is kept
+//as the start of the next transition
+void RemoteBoard::showFrame(uint32_t now){
+    uint32_t duration = transition == Transition::WIPE ? wipeMillis : slideMillis;
+    uint32_t elapsed = now - transitionStartMillis;
+    if(transition == Transition::NONE || elapsed >= duration){
+        transition = Transition::NONE;
+        display.drawBitmap(0, 0, frame.getBuffer(), 128, 32, WHITE, BLACK);
+        memcpy(previousFrame.getBuffer(), frame.getBuffer(), 128 * 32 / 8);
+        return;
+    }
+    float progress = easeOutCubic(float(elapsed) / float(duration));
+    int16_t shift = int16_t(progress * 128.0);
+    switch(transition){
+        case Transition::SLIDE_LEFT:
+            display.drawBitmap(-shift, 0, previousFrame.getBuffer(), 128, 32, WHITE, BLACK);
+            display.drawBitmap(128 - shift, 0, frame.getBuffer(), 128, 32, WHITE, BLACK);
+            break;
+        case Transition::SLIDE_RIGHT:
+            display.drawBitmap(shift, 0, previousFrame.getBuffer(), 128, 32, WHITE, BLACK);
+            display.drawBitmap(shift - 128, 0, frame.getBuffer(), 128, 32, WHITE, BLACK);
+            break;
+        case Transition::WIPE:
+            display.drawBitmap(0, 0, previousFrame.getBuffer(), 128, 32, WHITE, BLACK);
+            for(int16_t x = 0; x < shift; x++){
+                for(int16_t y = 0; y < 32; y++) display.drawPixel(x, y, frame.getPixel(x, y) ? WHITE : BLACK);
+            }
+            break;
+        default: break;
+    }
 }
+
+
 
 void RemoteBoard::startupAnimation(){
 
@@ -172,6 +239,7 @@ void RemoteBoard::startupAnimation(){
 
     LengthTimer screenFillTimer(.5);
     while(!screenFillTimer.hasExpired()){
+        Watchdog::feed();
         float ll;
         float rl;
         if(screenFillTimer.getProgress() < 0.5){
@@ -194,6 +262,7 @@ void RemoteBoard::startupAnimation(){
 
     LengthTimer screenClearTimer(.25);
     while(!screenClearTimer.hasExpired()){
+        Watchdog::feed();
         float ll = constrain(map(screenClearTimer.getProgress(), 0.0, 0.5, 1.0, 0.0), 0.0, 1.0);
         float rl = constrain(map(screenClearTimer.getProgress(), 0.5, 1.0, 1.0, 0.0), 0.0, 1.0);
         leftLedButton.setBrightness(ll);
@@ -206,46 +275,5 @@ void RemoteBoard::startupAnimation(){
             display.display();
         }
     }
-}
-
-void RemoteBoard::radioInitFailedScreen(){
-    display.setTextSize(1);
     display.setTextColor(WHITE);
-    display.setCursor(5,8);
-    display.print("radio init failed...");
-    display.setCursor(5,16);
-    display.print("please reboot remote");
-    display.display();
-    while(true){
-        leftLedButton.turnOff();
-        rightLedButton.turnOn();
-        delay(500);
-        leftLedButton.turnOn();
-        rightLedButton.turnOff();
-        delay(500);
-    }
-}
-
-void RemoteBoard::releaseJoysticksScreen(bool released){
-    display.clearDisplay();
-    if(!released){
-        display.setTextSize(1);
-        display.setTextColor(WHITE);
-        display.setCursor(2,12);
-        const char* dots = (millis()%300 < 100) ? "." : ((millis()%300 < 200) ? ".." : "...");
-        display.printf("Release joysticks %s", dots);
-    }
-    else{
-
-        display.setTextColor(WHITE);
-        display.setTextSize(1);
-        display.setCursor(0,0);
-        display.printf("\x3\x3\x3\x3\x3\x3\x3\x3\x3\x3\x3\x3\x3\x3\x3\x3\x3\x3\x3\x3\x3");
-        display.setCursor(0,24);
-        display.printf("\x3\x3\x3\x3\x3\x3\x3\x3\x3\x3\x3\x3\x3\x3\x3\x3\x3\x3\x3\x3\x3");
-        display.setTextSize(2);
-        display.setCursor(4,9);
-        display.printf("Thank You!");
-    }
-    display.display();
 }

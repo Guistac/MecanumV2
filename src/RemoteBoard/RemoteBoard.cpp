@@ -1,27 +1,112 @@
 #include "RemoteBoard.h"
 #include "Utilities/SafetyNumber.h"
 #include <EEPROM.h>
-#include "Utilities/RobotStates.h"
+#include <RobotStates.h>
+#include <UplinkFrame.h>
+#include <LedPattern.h>
+#include "Hardware/Watchdog.h"
+#ifdef REMOTE_DIRECT
+#include "RobotBoard/MavLink.h"
+#endif
 
-bool RemoteBoard::areJoysticksReleased(){
-    float joystickReleasedThreshold = 0.1;
-    return leftJoystick.isRawBelowThreshold(joystickReleasedThreshold) && rightJoystick.isRawBelowThreshold(joystickReleasedThreshold);
+//a stick within 10 % of its rest position counts as released
+static const float stickCentredThreshold = 0.1;
+//after the zero is captured the joystick values are stale until their next reading (50 Hz)
+static const uint32_t zeroSettleMillis = 50;
+static uint32_t zeroCaptureMillis = 0;
+
+bool RemoteBoard::isLeftStickCentred(){
+    if(!b_joystickZeroCaptured) return leftJoystick.isRawBelowThreshold(stickCentredThreshold);
+    return leftJoystick.isBelowThreshold(stickCentredThreshold);
 }
 
-void RemoteBoard::saveRadioChannel(uint8_t channel){
-    if(channel == savedRadioChannel) return;
-    EEPROM.write(0x0, channel);
-    savedRadioChannel = channel;
+bool RemoteBoard::isRightStickCentred(){
+    if(!b_joystickZeroCaptured) return rightJoystick.isRawBelowThreshold(stickCentredThreshold);
+    return rightJoystick.isBelowThreshold(stickCentredThreshold);
 }
 
-uint8_t RemoteBoard::loadRadioChannel(){
-    savedRadioChannel = EEPROM.read(0x0);
-    return savedRadioChannel;
+//speed switch at LOW = sticks off (D-93); state 3 (both contacts) is read as LOW too
+bool RemoteBoard::isSpeedSwitchOff(){
+    uint8_t state = speedToggle.getState();
+    return state == uint8_t(SpeedMode::LOW_SPEED) || state == uint8_t(SpeedMode::NO_SPEED);
+}
+
+
+
+void RemoteBoard::loadSettings(){
+    uint8_t storedChannel = EEPROM.read(RemoteSettings::channelAddress);
+    //safe mode starts with default display settings, but keeps the channel: the E-stop needs the link
+    if(b_safeMode) settings = RemoteSettings::fromStored(storedChannel, 0xFF, 0xFF);
+    else settings = RemoteSettings::fromStored(storedChannel,
+                                               EEPROM.read(RemoteSettings::contrastAddress),
+                                               EEPROM.read(RemoteSettings::dimmingAddress));
+}
+
+//only changed bytes, once on confirm: a write can block for a flash erase (H12)
+void RemoteBoard::saveSettings(const RemoteSettings& newSettings){
+    if(newSettings.channel != settings.channel){
+        EEPROM.write(RemoteSettings::channelAddress, newSettings.channel);
+        radio.setChannel(newSettings.channel);
+    }
+    if(newSettings.contrast != settings.contrast) EEPROM.write(RemoteSettings::contrastAddress, newSettings.contrast);
+    if(newSettings.dimming != settings.dimming) EEPROM.write(RemoteSettings::dimmingAddress, newSettings.dimming);
+    settings = newSettings;
+}
+
+void RemoteBoard::loadStickCalibration(){
+    uint8_t bytes[StickCalibration::size];
+    for(int i = 0; i < StickCalibration::size; i++) bytes[i] = EEPROM.read(StickCalibration::address + i);
+    stickCalibration = StickCalibration::fromBytes(bytes);
+    leftJoystick.setCalibration(stickCalibration.axes[0], stickCalibration.axes[1]);
+    rightJoystick.setCalibration(stickCalibration.axes[2], stickCalibration.axes[3]);
+}
+
+//inside the settings menu: right pushbutton saves once every axis has its range, left cancels [H15]
+void RemoteBoard::updateCalibration(bool b_save, bool b_cancel, uint32_t now){
+    if(b_cancel){
+        b_calibrating = false;
+        calibrationNote = "Cancelled";
+        calibrationNoteUntilMillis = now + 1500;
+        return;
+    }
+    uint16_t raw[StickCalibration::axisCount] = {
+        leftJoystick.getRawX(), leftJoystick.getRawY(), rightJoystick.getRawX(), rightJoystick.getRawY()
+    };
+    calibrator.update(raw, now);
+    if(!b_save) return;
+    if(!calibrator.isComplete()){
+        b_keepCircling = true;
+        calibrationNoteUntilMillis = now + 1500;
+        return;
+    }
+    stickCalibration = calibrator.getResult();
+    uint8_t bytes[StickCalibration::size];
+    stickCalibration.toBytes(bytes);
+    for(int i = 0; i < StickCalibration::size; i++) EEPROM.write(StickCalibration::address + i, bytes[i]);
+    leftJoystick.setCalibration(stickCalibration.axes[0], stickCalibration.axes[1]);
+    rightJoystick.setCalibration(stickCalibration.axes[2], stickCalibration.axes[3]);
+    b_calibrating = false;
+    b_calibrationResult = true;
+    calibrationResultUntilMillis = now + 10000;
+}
+
+void RemoteBoard::recordBoot(){
+    resetCause = Watchdog::readResetCause();
+    uint8_t bytes[ResetHistory::size];
+    for(int i = 0; i < ResetHistory::size; i++) bytes[i] = EEPROM.read(ResetHistory::address + i);
+    uint32_t nowSeconds = rtc_get();
+    resetHistory = ResetHistory::fromBytes(bytes, nowSeconds);
+    b_safeMode = resetHistory.onBoot(resetCause, nowSeconds);
+    resetHistory.toBytes(bytes);
+    for(int i = 0; i < ResetHistory::size; i++) EEPROM.write(ResetHistory::address + i, bytes[i]);
 }
 
 
 
 void RemoteBoard::initialize(){
+
+    recordBoot();
+    Watchdog::begin();
 
     //configure io devices, turn on leds to signal success
     for(auto ioDevice : ioDevices) ioDevice->initialize();
@@ -31,222 +116,280 @@ void RemoteBoard::initialize(){
     //configure display
     display.initialize();
     delay(150); //before this the display won't show anything
+    Watchdog::feed();
 
     //show a nice startup animation
     startupAnimation();
 
-    //now that we waited a bit for power to stabilize, we can start the radio
-    //this fails if we do it too soon after powerup
-    if(!radio.initialize(10)) radioInitFailedScreen();
-    //load the radio channel setting saved on eeprom
-    radio.setChannel(loadRadioChannel());
+    //the radio: one attempt here, radio.update() retries every 2 s while the screen shows RADIO FAULT.
+    //The channel is remembered until the chip runs.
+    loadSettings();
+    loadStickCalibration();
+    radio.setChannel(settings.channel);
+    radio.initialize(1);
+    Watchdog::feed();
 
-    //check if the joysticks are released to zero them out
-    bool showJoystickReleaseThankYou = false;
-    if(!areJoysticksReleased()){
-        while(!areJoysticksReleased()){
-            if(guiRefreshEvent.shouldTrigger()) releaseJoysticksScreen(false);
-        }
-        showJoystickReleaseThankYou = true;
-    }
-    leftJoystick.captureZero();
-    rightJoystick.captureZero();
-    if(showJoystickReleaseThankYou){
-        releaseJoysticksScreen(true);
-        delay(500);
-    }
-
+    //the joysticks are zeroed in the loop once both are released, the remote is live meanwhile (H11)
     displayRevealTimer.setLength(.4);
     displayRevealTimer.start();
+    if(resetCause != ResetCause::POWER_ON) rebootedMarkerUntilMillis = millis() + 5000;
+
+#ifdef REMOTE_DIRECT
+    directMavlink = new Mavlink();
+    directMavlink->setSources(&directProxy, nullptr, 0);
+    //no radio to spare: always send at the cyclic rate, so the proxy never times out between frames
+    pingSendFrequency = cyclicSendFrequency;
+    radioSendEvent.setFrequency(cyclicSendFrequency);
+#endif
 }
 
 
 
 void RemoteBoard::update(){
-    //update all input devices
+    Watchdog::feed();
+
+    //update all input devices, any change keeps the display bright
+    uint32_t previousInputChange = 0;
+    for(auto ioDevice : ioDevices) previousInputChange = max(previousInputChange, ioDevice->lastInputChange_millis);
     for(auto ioDevice : ioDevices) ioDevice->updateInputs();
-
-
-
-    if(!b_editingRadioChannel && leftPushbutton.isPressed() && rightPushbutton.isPressed()){
-        b_channelSelectorButtonsPressed = true;
-        if(leftPushbutton.timeSinceLastInputChangeSeconds() > frequencyEditPressDuration &&
-        rightPushbutton.timeSinceLastInputChangeSeconds() > frequencyEditPressDuration){
-            b_editingRadioChannel = true;
-        }
+    for(auto ioDevice : ioDevices){
+        if(ioDevice->lastInputChange_millis > previousInputChange) b_inputActivity = true;
     }
-    else if(b_editingRadioChannel){
-        if(!leftPushbutton.isPressed() || !rightPushbutton.isPressed()) b_channelSelectorButtonsPressed = false;
-        if(leftPushbutton.wasPushed()) {
-            radio.setPreviousChannel();
-            radioSendEvent.forceTrigger();
-        }
-        else if(rightPushbutton.wasPushed()){
-            radio.setNextChannel();
-            radioSendEvent.forceTrigger();
-        }
-        if(!b_channelSelectorButtonsPressed && leftPushbutton.isPressed() && rightPushbutton.isPressed()){
-            b_channelSelectorButtonsPressed = true;
-            b_editingRadioChannel = false;
-            saveRadioChannel(radio.getChannel());
-        }
-    }else b_channelSelectorButtonsPressed = false;
 
-    //Update LEDs
-    if(robotProxy.functionButtonPressed){
-        leftLedButton.set(millis() % 100 < 50);
-        rightLedButton.set(millis() % 100 > 50);
-    }
-    else if(!robotProxy.b_connected){
-        leftLedButton.set(millis() % 2000 < 100);
-        rightLedButton.set((millis() - 100) % 2000 < 100);
-    }
-    else{
-        RobotState status = RobotState(robotProxy.status);
-        switch(status){
-            case RobotState::ENABLED:
-                leftLedButton.turnOff();
-                rightLedButton.turnOn();
-                break;
-            case RobotState::ENABLING:
-                leftLedButton.turnOff();
-                rightLedButton.set(millis() % 200 < 100);
-                break;
-            case RobotState::DISABLED:
-                leftLedButton.turnOn();
-                rightLedButton.turnOff();
-                break;
-            case RobotState::DISABLING:
-                leftLedButton.set(millis() % 200 < 100);
-                rightLedButton.turnOff();
-                break;
-            case RobotState::EMERGENCY_STOPPING:
-                leftLedButton.turnOn();
-                rightLedButton.turnOn();
-                break;
-            case RobotState::EMERGENCY_STOPPED:
-                leftLedButton.set(millis() % 500 < 250);
-                rightLedButton.set((millis() + 250) % 500 < 250);
-                break;
-            default:
-                leftLedButton.turnOff();
-                leftLedButton.turnOn();
-                break;
-        }
-    }
-    if(leftLedButton.isPressed()) leftLedButton.turnOn();
-    if(rightLedButton.isPressed()) rightLedButton.turnOn();
+    updateOperatorLogic();
+    updateLeds();
 
-    //display refresh
-    if(guiRefreshEvent.shouldTrigger()) refreshGui();
-
-    //radio temperature
+    //radio: retries a failed init, re-inits after a chip reset
+    radio.update();
+    if(radio.getRecoveries() != shownRecoveries){
+        shownRecoveries = radio.getRecoveries();
+        recoveryMarkerUntilMillis = millis() + 3000;
+    }
     if(temperatureReadingEvent.shouldTrigger()) radio.updateTemperature();
 
-    //re-init the radio after a chip reset
-    radio.update();
+#ifdef REMOTE_DIRECT
+    //as the receiver: the remote counts as disconnected 500 ms after its last frame
+    if(directProxy.b_connected && millis() - directProxy.lastReceiveTimeMillis > 500) directProxy.b_connected = false;
+    directMavlink->update();
+#endif
 
-    //radio send and receive
+    //the frame first, then the screen: drawing never delays the controls (H13)
     sendData();
     receiveData();
+    link.update(millis());
+
+    if(guiRefreshEvent.shouldTrigger()) refreshGui();
 }
+
+
+
+void RemoteBoard::updateOperatorLogic(){
+    uint32_t now = millis();
+
+    EstopState previousEstop = estop.getState();
+    estop.update(estopButton.isNoHigh(), estopButton.isNcHigh(), now);
+    if(previousEstop != EstopState::CLEAR && estop.isClear()){
+        b_estopWasReleased = true;
+        estopReleaseMillis = now;
+    }
+
+    batteryMonitor.update(batteryLevel.getRestingVoltage());
+    b_settingsAvailable = !b_safeMode && isSpeedSwitchOff();
+
+    stickGuard.update(menu.isOpen(), isLeftStickCentred(), isRightStickCentred());
+    if(stickGuard.wasReleased() && !b_joystickZeroCaptured){
+        leftJoystick.captureZero();
+        rightJoystick.captureZero();
+        b_joystickZeroCaptured = true;
+        zeroCaptureMillis = now;
+        thankYouUntilMillis = now + 1000;
+    }
+
+    //pushbuttons: pages, no command [D-146 point 1]
+    bool b_previous = leftPushbutton.wasPushed();
+    bool b_next = rightPushbutton.wasPushed();
+#ifdef REMOTE_DIRECT
+    bool b_chord = leftPushbutton.isPressed() && rightPushbutton.isPressed();
+    if(b_chord && !b_dropoutChordHeld) b_simulatedDropout = !b_simulatedDropout;
+    b_dropoutChordHeld = b_chord;
+#endif
+    if(b_safeMode){
+        b_previous = false;
+        b_next = false;
+    }
+    //the calibration result: any pushbutton (or 10 s) goes back to the menu
+    if(b_calibrationResult){
+        if(b_previous || b_next || int32_t(now - calibrationResultUntilMillis) > 0 || !menu.isOpen()) b_calibrationResult = false;
+        b_previous = false;
+        b_next = false;
+    }
+    if(b_keepCircling && int32_t(now - calibrationNoteUntilMillis) > 0) b_keepCircling = false;
+    //during the calibration the pushbuttons save (right) and cancel (left)
+    if(b_calibrating){
+        if(b_settingsAvailable && menu.isOpen()) updateCalibration(b_next, b_previous, now);
+        else b_calibrating = false;
+        b_previous = false;
+        b_next = false;
+    }
+    if((b_previous || b_next) && menu.isOpen()) closeMenu();
+
+    bool b_menuActivity = updateMenu(now);
+    pages.update(b_previous, b_next, b_settingsAvailable, b_menuActivity, now);
+    //back on Status after 10 s without input: unsaved changes are discarded
+    if(menu.isOpen() && pages.getPage() != Page::SETTINGS) closeMenu();
+}
+
+void RemoteBoard::closeMenu(){
+    menu.close();
+    b_calibrating = false;
+    itemAxis.blockUntilReleased();
+    valueAxis.blockUntilReleased();
+}
+
+//sticks navigate the settings menu, only with the speed switch at OFF [D-146 point 2]
+bool RemoteBoard::updateMenu(uint32_t now){
+    auto strongest = [](float a, float b){ return fabsf(a) > fabsf(b) ? a : b; };
+    float itemValue = strongest(leftJoystick.getYValue(), rightJoystick.getYValue());
+    float valueValue = strongest(leftJoystick.getXValue(), rightJoystick.getXValue());
+
+    if(!b_settingsAvailable || !b_joystickZeroCaptured){
+        //leaving OFF closes the menu at once, unsaved changes are discarded
+        if(menu.isOpen()) closeMenu();
+        return false;
+    }
+    if(b_calibrating || b_calibrationResult) return true;
+    if(menu.isOpen()){
+        int8_t itemStep = -itemAxis.update(itemValue, now);    //stick up: previous item
+        int8_t valueStep = valueAxis.update(valueValue, now);
+        uint32_t heldRight = valueAxis.heldPositiveMillis(now);
+        SettingsMenu::Event event = menu.update(itemStep, valueStep, heldRight);
+        if(event == SettingsMenu::Event::CALIBRATE){
+            b_calibrating = true;
+            b_keepCircling = false;
+            calibrationNote = nullptr;
+            calibrator.start(now);
+            itemAxis.blockUntilReleased();
+            valueAxis.blockUntilReleased();
+            return true;
+        }
+        if(event == SettingsMenu::Event::SAVED) saveSettings(menu.getPending());
+        if(event != SettingsMenu::Event::NONE){
+            closeMenu();
+            pages.showStatus();
+        }
+        return itemStep != 0 || valueStep != 0 || heldRight > 0;
+    }
+    if(pages.getPage() == Page::SETTINGS){
+        itemAxis.update(itemValue, now);
+        if(valueAxis.update(valueValue, now) > 0){
+            menu.open(settings);
+            itemAxis.blockUntilReleased();
+            valueAxis.blockUntilReleased();
+            return true;
+        }
+    }
+    return false;
+}
+
+StatusView RemoteBoard::selectStatus(uint32_t now){
+    StatusInputs in;
+    in.estop = estop.getState();
+#ifndef REMOTE_DIRECT
+    //the direct build does not use the radio
+    in.b_radioFault = !radio.isInitialized();
+    in.radioFaultMillis = radio.getFaultMillis();
+#endif
+    in.b_linkUp = robotProxy.b_connected;
+    in.battery = batteryMonitor.getState();
+    in.release = stickGuard.releaseNeeded();
+    in.reportedState = robotProxy.status;
+    in.sinceEstopReleaseMillis = b_estopWasReleased ? now - estopReleaseMillis : UINT32_MAX;
+    in.b_thankYou = int32_t(thankYouUntilMillis - now) > 0;
+    return Status::select(in);
+}
+
+void RemoteBoard::updateLeds(){
+    LedInputs in;
+#ifndef REMOTE_DIRECT
+    in.b_radioFault = !radio.isInitialized();
+#endif
+    in.b_localEstop = !estop.isClear();
+    in.b_finder = robotProxy.b_connected && robotProxy.functionButtonPressed;
+    in.b_linkUp = robotProxy.b_connected;
+    in.reportedState = robotProxy.status;
+    LedOutput out = Leds::pattern(in, millis());
+    //a pressed button lights itself
+    leftLedButton.set(out.b_left || leftLedButton.isPressed());
+    rightLedButton.set(out.b_right || rightLedButton.isPressed());
+}
+
+
+
+#ifdef REMOTE_DIRECT
+//The receiver's half of an exchange, done locally: decode the remote frame, and answer with the receiver's 8 byte
+//status frame while Stacato's heartbeat arrives (no Stacato: no answer, the remote shows no link)
+void RemoteBoard::directExchange(uint8_t* outgoingFrame){
+    if(b_simulatedDropout) return;
+    if(!decodeRemoteFrame(outgoingFrame, 8, directProxy)) return;
+    directProxy.lastReceiveTimeMillis = millis();
+    directProxy.b_connected = true;
+
+    if(!directMavlink->b_online) return;
+    uint16_t statusword = 0x7;
+    statusword |= (uint8_t(directMavlink->stacatoState) & 0x7) << 3;
+    statusword |= (uint8_t(directProxy.speedSelection) & 0x3) << 6;
+    statusword |= (directProxy.txCounter & 0xF) << 12;
+    uint8_t reply[8] = {0};
+    reply[0] = statusword & 0xFF;
+    reply[1] = (statusword >> 8) & 0xFF;
+    reply[6] = 150;     //receiver RSSI: none
+    handleReply(reply, 8);
+}
+#endif
 
 
 void RemoteBoard::sendData(){
-    //radio send
-    if(radioSendEvent.shouldTrigger()){
+    if(!radioSendEvent.shouldTrigger()) return;
+#ifndef REMOTE_DIRECT
+    if(!radio.isInitialized()) return;
+#endif
 
-        uint8_t header = 0x7; //header is 0b111
-        bool b_shouldDisable = leftLedButton.isPressed();
-        bool b_shouldEnable = rightLedButton.isPressed();
-        uint8_t speedSelection = speedToggle.getState();
-        bool b_directionToggle = directionToggle.getSwitchState();
-        bool b_leftButton = leftPushbutton.isPressed();
-        bool b_rightButton = rightPushbutton.isPressed();
-        bool b_leftJoystickPressed = leftJoystick.isPressed();
-        bool b_rightJoystickPressed = rightJoystick.isPressed();
-        robotProxy.txCounter++;
+    UplinkControls controls;
+    controls.b_disable = leftLedButton.isPressed();
+    controls.b_enable = rightLedButton.isPressed();
+    controls.speedState = speedToggle.getState();
+    controls.b_direction = directionToggle.getSwitchState();
+    controls.b_leftStickPressed = leftJoystick.isPressed();
+    controls.b_rightStickPressed = rightJoystick.isPressed();
+    controls.leftX = leftJoystick.getXValue();
+    controls.leftY = leftJoystick.getYValue();
+    controls.rightX = rightJoystick.getXValue();
+    controls.rightY = rightJoystick.getYValue();
+    //the guard catches up with the menu on the next loop: the menu itself counts too
+    bool b_neutralSticks = stickGuard.holdNeutral() || menu.isOpen() || millis() - zeroCaptureMillis < zeroSettleMillis;
 
-        uint16_t controlWord = header & 0x7; //3 bit header
-        if(b_shouldDisable)         controlWord |= 0x8;
-        if(b_shouldEnable)          controlWord |= 0x10;
-        controlWord |= (speedSelection & 0x3) << 5;
-        if(b_directionToggle)       controlWord |= 0x80;
-        if(b_leftButton)            controlWord |= 0x100;
-        if(b_rightButton)           controlWord |= 0x200;
-        if(b_leftJoystickPressed)   controlWord |= 0x400;
-        if(b_rightJoystickPressed)  controlWord |= 0x800;
-        controlWord |= (robotProxy.txCounter & 0xF) << 12;
+    robotProxy.txCounter++;
+    uint16_t safetyNumber = estop.isClear() ? Safety::generateClearNumber() : Safety::generateSafeNumber();
+    uint8_t outgoingFrame[8];
+    Uplink::encode(controls, b_neutralSticks, robotProxy.txCounter, safetyNumber, outgoingFrame);
+    link.onSent();
 
-        uint16_t safetyNumber;
-        if(estopButton.isClear()) safetyNumber = Safety::generateClearNumber();
-        else safetyNumber = Safety::generateSafeNumber();
-
-        uint8_t outgoingFrame[8];
-        outgoingFrame[0] = controlWord & 0xFF;
-        outgoingFrame[1] = (controlWord >> 8) & 0xFF;
-        outgoingFrame[2] = map(leftJoystick.getXValue(), -1.0, 1.0, 0, 255);
-        outgoingFrame[3] = map(leftJoystick.getYValue(), -1.0, 1.0, 0, 255);
-        outgoingFrame[4] = map(rightJoystick.getXValue(), -1.0, 1.0, 0, 255);
-        outgoingFrame[5] = map(rightJoystick.getYValue(), -1.0, 1.0, 0, 255);
-        outgoingFrame[6] = safetyNumber;
-        outgoingFrame[7] = safetyNumber >> 8;
-
-        radio.send(outgoingFrame, 8);
-        robotProxy.lastSendTimeMicros = micros();
-        
-    }
+#ifdef REMOTE_DIRECT
+    robotProxy.lastSendTimeMicros = micros();
+    directExchange(outgoingFrame);
+#else
+    radio.send(outgoingFrame, 8);
+    robotProxy.lastSendTimeMicros = micros();
+#endif
 }
 
 void RemoteBoard::receiveData(){
+#ifndef REMOTE_DIRECT
     //radio listen
     uint8_t incomingFrame[128];
     uint8_t length = 128;
-    if(radio.receive(incomingFrame, &length)){
-        robotProxy.rxCounter++;
-        if(length != 8) return;
-
-        uint16_t statusword = incomingFrame[0] | incomingFrame[1] << 8;
-
-        uint8_t header = statusword & 0x7;
-        if(header != 0x7) return;
-        robotProxy.b_connected = true;
-        radioSendEvent.setFrequency(cyclicSendFrequency);
-        robotProxy.lastReceiveTime = millis();
-
-        robotProxy.status = (statusword >> 3) & 0x7;
-        robotProxy.speedModeDisplay = (statusword >> 6) & 0x3;
-        robotProxy.directionModeDisplay = statusword & 0x100;
-        robotProxy.functionButtonPressed = statusword & 0x200;
-        //two bytes free 0b00001100 00000000
-        uint8_t mirroredTxCounter = (statusword >> 12) & 0xF;
-
-        uint8_t motorStatusWord = incomingFrame[2];
-        robotProxy.frontLeft_alarm =       motorStatusWord & 0x1;
-        robotProxy.backLeft_alarm =        motorStatusWord & 0x2;
-        robotProxy.frontRight_alarm =      motorStatusWord & 0x4;
-        robotProxy.backRight_alarm =       motorStatusWord & 0x8;
-        robotProxy.frontLeft_enabled =     motorStatusWord & 0x10;
-        robotProxy.backLeft_enabled =      motorStatusWord & 0x20;
-        robotProxy.frontRight_enabled =    motorStatusWord & 0x40;
-        robotProxy.backRight_enabled =     motorStatusWord & 0x80;
-    
-        int8_t xVelocity_i8 = incomingFrame[3];
-        int8_t yVelocity_i8 = incomingFrame[4];
-        int8_t rVelocity_i8 = incomingFrame[5];
-        robotProxy.xVelocity = map(float(xVelocity_i8), -127.0, 127.0, -1.0, 1.0);
-        robotProxy.yVelocity = map(float(yVelocity_i8), -127.0, 127.0, -1.0, 1.0);
-        robotProxy.rVelocity = map(float(rVelocity_i8), -127.0, 127.0, -1.0, 1.0);
-
-        robotProxy.robotRxSignalStrength = incomingFrame[6] - 150;
-        robotProxy.batteryVoltage = map(float(incomingFrame[7]), 0.0, 255.0, 45.0, 70.0);
-
-        if((robotProxy.txCounter & 0xF) == mirroredTxCounter){
-            uint32_t sendToReceiveTimeMicros = micros() - robotProxy.lastSendTimeMicros;
-            robotProxy.lastMessageRoundTripTimeMillis = double(sendToReceiveTimeMicros) / 1000.0;
-            //Serial.printf("msg#%i round trip: %.1fms\n", robotProxy.txCounter, robotProxy.lastMessageRoundTripTimeMillis);
-        }
-    }
+    if(radio.receive(incomingFrame, &length)) handleReply(incomingFrame, length);
+#endif
 
     if(millis() - robotProxy.lastReceiveTime > 500) {
         robotProxy.b_connected = false;
@@ -254,3 +397,31 @@ void RemoteBoard::receiveData(){
     }
 }
 
+void RemoteBoard::handleReply(uint8_t* incomingFrame, uint8_t length){
+    robotProxy.rxCounter++;
+    if(length != 8) return;
+
+    uint16_t statusword = incomingFrame[0] | incomingFrame[1] << 8;
+
+    uint8_t header = statusword & 0x7;
+    if(header != 0x7) return;
+    robotProxy.b_connected = true;
+    radioSendEvent.setFrequency(cyclicSendFrequency);
+    robotProxy.lastReceiveTime = millis();
+    link.onReply();
+
+    robotProxy.status = (statusword >> 3) & 0x7;
+    robotProxy.speedModeDisplay = (statusword >> 6) & 0x3;
+    robotProxy.directionModeDisplay = statusword & 0x100;
+    robotProxy.functionButtonPressed = statusword & 0x200;
+    //two bytes free 0b00001100 00000000
+    uint8_t mirroredTxCounter = (statusword >> 12) & 0xF;
+
+    robotProxy.robotRxSignalStrength = incomingFrame[6] - 150;
+    robotProxy.batteryVoltage = map(float(incomingFrame[7]), 0.0, 255.0, 45.0, 70.0);
+
+    if((robotProxy.txCounter & 0xF) == mirroredTxCounter){
+        uint32_t sendToReceiveTimeMicros = micros() - robotProxy.lastSendTimeMicros;
+        robotProxy.lastMessageRoundTripTimeMillis = double(sendToReceiveTimeMicros) / 1000.0;
+    }
+}

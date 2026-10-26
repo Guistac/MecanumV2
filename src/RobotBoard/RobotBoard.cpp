@@ -66,7 +66,7 @@ void updateAllMotors(){
 void RobotBoard::initialize(){
 
   mavlink = new Mavlink();
-  mavlink->setRobotBoard(this);
+  mavlink->setSources(&remoteProxy, &batteryReading, configuration.batteryCellCount);
 
   batteryReading.setVoltageDividerFactor(configuration.batteryVoltageDividerFactor);
   for(auto device : ioDevices) device->initialize();
@@ -154,43 +154,13 @@ void RobotBoard::receiveData(){
   uint8_t incomingBuffer[20];
   uint8_t length = 20;
   if(radio.receive(incomingBuffer, &length)){
-    if(length != 8) return;
-
-    uint16_t controlword = incomingBuffer[0] | incomingBuffer[1] << 8;
-
-    //check if the header matches
-    uint8_t header = controlword & 0x7;
-    if(header != 0x7) return;
+    if(!decodeRemoteFrame(incomingBuffer, length, remoteProxy)) return;
 
     remoteProxy.lastReceiveTimeMillis = millis();
     if(!remoteProxy.b_connected){
       if(DEBUG_PRINTS) Serial.printf("Remote Connected! (%i)\n", millis());
       remoteProxy.b_connected = true;
     }
-
-    remoteProxy.b_shouldDisable = controlword & 0x8;
-    remoteProxy.b_shouldEnable = controlword & 0x10;
-    remoteProxy.speedSelection = SpeedMode((controlword >> 5) & 0x3);
-    if(uint8_t(remoteProxy.speedSelection) == 0x3) remoteProxy.speedSelection = SpeedMode::LOW_SPEED;
-    remoteProxy.b_directionToggle = controlword & 0x80;
-    remoteProxy.b_leftButton = controlword & 0x100;
-    remoteProxy.b_rightButton = controlword & 0x200;
-    remoteProxy.b_leftJoystick = controlword & 0x400;  
-    remoteProxy.b_rightJoystick = controlword & 0x800;
-    remoteProxy.txCounter = (controlword >> 12) & 0xF;
-
-    if(incomingBuffer[2] == 127) remoteProxy.leftJoystickX = 0.0;
-    else remoteProxy.leftJoystickX = map((float)incomingBuffer[2], 0.0, 255.0, -1.0, 1.0);
-    if(incomingBuffer[3] == 127) remoteProxy.leftJoystickY = 0.0;
-    else remoteProxy.leftJoystickY = map((float)incomingBuffer[3], 0.0, 255.0, -1.0, 1.0);
-    if(incomingBuffer[4] == 127) remoteProxy.rightJoystickX = 0.0;
-    else remoteProxy.rightJoystickX = map((float)incomingBuffer[4], 0.0, 255.0, -1.0, 1.0);
-    if(incomingBuffer[5] == 127) remoteProxy.rightJoystickY = 0.0;
-    else remoteProxy.rightJoystickY = map((float)incomingBuffer[5], 0.0, 255.0, -1.0, 1.0);
-
-    uint16_t safetyNumber = incomingBuffer[7] << 8 | incomingBuffer[6];
-    remoteProxy.b_safetyClear = Safety::isNumberClear(safetyNumber);
-    //remoteProxy.b_safetyClear = true;
 
     if(DEBUG_PRINTS && false){
       Serial.printf("%.2f %.2f %.2f %.2f\n",
