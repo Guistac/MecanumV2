@@ -1,7 +1,7 @@
 #include "RemoteScreens.h"
 #include <Fonts/FreeSansBold9pt7b.h>
 
-//Remote screens [D-146]: 128 x 32, three rows. Top (y 0..7): link and batteries. Middle (y 8..22): the one thing that
+//Remote screens [D-147]: 128 x 32, three rows. Top (y 0..7): link and batteries. Middle (y 8..22): the one thing that
 //matters now. Bottom (y 23..31): the speed switch on the left and the frame switch on the right, each above its switch,
 //page dots between them. The active page dot is also the alive sign: a gap travels round it with every few frames.
 

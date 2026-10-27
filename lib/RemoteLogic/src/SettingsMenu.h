@@ -4,7 +4,7 @@
 
 //Remote settings menu, open only while the speed switch is at OFF, navigated with the sticks: up/down selects the
 //item, left/right changes its value. Values stay pending until Save is held to the right for 1 s; Exit, or leaving
-//OFF, discards them [D-146 point 2]. Sticks starts the joystick calibration, which saves on its own [H15]
+//OFF, discards them [D-147 point 2]. Sticks starts the joystick calibration, which saves on its own [H15]
 class SettingsMenu{
 public:
 

@@ -2,7 +2,7 @@
 #include <stdint.h>
 
 //Remote: holds the transmitted sticks at neutral while the settings menu is open, and after it closes or after any
-//boot until both sticks have been released to their rest position [D-146 points 2 and 7]
+//boot until both sticks have been released to their rest position [D-147 points 2 and 7]
 class StickGuard{
 public:
 

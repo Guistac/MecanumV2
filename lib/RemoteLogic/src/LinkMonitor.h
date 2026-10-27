@@ -1,7 +1,7 @@
 #pragma once
 #include <stdint.h>
 
-//Remote link quality [D-146 point 3]: replies lost over the last full second, and the link bar from the weaker of
+//Remote link quality [D-147 point 3]: replies lost over the last full second, and the link bar from the weaker of
 //the two RSSIs (the remote's reading of the receiver, the receiver's reading of the remote)
 class LinkMonitor{
 public:

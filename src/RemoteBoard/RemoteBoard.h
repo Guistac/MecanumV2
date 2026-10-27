@@ -152,7 +152,7 @@ private:
     void directExchange(uint8_t* outgoingFrame);
 #endif
 
-    //operator logic [D-146] (lib/RemoteLogic, tested with pio test -e native)
+    //operator logic [D-147] (lib/RemoteLogic, tested with pio test -e native)
     EstopContacts estop;
     BatteryMonitor batteryMonitor;
     StickGuard stickGuard;
@@ -192,14 +192,14 @@ private:
     void updateCalibration(bool b_save, bool b_cancel, uint32_t now);
     void drawCalibration();
 
-    //crash safety [D-146, H13]
+    //crash safety [D-147, H13]
     ResetCause resetCause = ResetCause::POWER_ON;
     ResetHistory resetHistory;
     bool b_safeMode = false;
     uint32_t rebootedMarkerUntilMillis = 0;
     void recordBoot();
 
-    //gui [D-146]: lib/RemoteUi draws a ScreenModel into an off-screen frame, the transitions blend it onto the display
+    //gui [D-147]: lib/RemoteUi draws a ScreenModel into an off-screen frame, the transitions blend it onto the display
     void refreshGui();
     FrequencyTimer guiRefreshEvent;
     LengthTimer displayRevealTimer;

@@ -4,7 +4,7 @@
 enum class Page : uint8_t{ STATUS, LINK, RADIO, BATTERY, INPUTS, ABOUT, SETTINGS, COUNT };
 
 //Remote pages: left pushbutton previous, right pushbutton next, wrapping. The settings page is in the cycle only while
-//settings are available (speed switch at OFF). Any page returns to Status after 10 s without input [D-146 point 1]
+//settings are available (speed switch at OFF). Any page returns to Status after 10 s without input [D-147 point 1]
 class PageNavigator{
 public:
 

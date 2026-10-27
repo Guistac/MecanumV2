@@ -211,7 +211,7 @@ void RemoteBoard::updateOperatorLogic(){
         thankYouUntilMillis = now + 1000;
     }
 
-    //pushbuttons: pages, no command [D-146 point 1]
+    //pushbuttons: pages, no command [D-147 point 1]
     bool b_previous = leftPushbutton.wasPushed();
     bool b_next = rightPushbutton.wasPushed();
 #ifdef REMOTE_DIRECT
@@ -252,7 +252,7 @@ void RemoteBoard::closeMenu(){
     valueAxis.blockUntilReleased();
 }
 
-//sticks navigate the settings menu, only with the speed switch at OFF [D-146 point 2]
+//sticks navigate the settings menu, only with the speed switch at OFF [D-147 point 2]
 bool RemoteBoard::updateMenu(uint32_t now){
     auto strongest = [](float a, float b){ return fabsf(a) > fabsf(b) ? a : b; };
     float itemValue = strongest(leftJoystick.getYValue(), rightJoystick.getYValue());

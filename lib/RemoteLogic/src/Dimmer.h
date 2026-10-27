@@ -2,7 +2,7 @@
 #include <stdint.h>
 #include "RemoteSettings.h"
 
-//Remote display brightness [D-146 point 5, amended 2026-10-27]: the contrast setting, dropped to the lowest value after
+//Remote display brightness [D-147 point 5, amended 2026-10-27]: the contrast setting, dropped to the lowest value after
 //the dimming delay without activity (never off); never dimmed while an alarm shows. An alarm used to force full
 //brightness, which hid the contrast setting while an alarm stayed (NO LINK on the bench)
 class Dimmer{

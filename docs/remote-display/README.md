@@ -1,7 +1,7 @@
 # Remote display and radio status (plan, 2026-10-26)
 
 Plan for the remote's OLED (SSD1305, 128 x 32) and for what travels back over the radio, in three tiers. Tier A is
-decided (D-146) and implemented on branch `remote-tier-a`, not yet run on hardware; Tiers B and C are plans. Findings
+decided (D-147) and implemented on branch `remote-tier-a`, not yet run on hardware; Tiers B and C are plans. Findings
 analysed on `mavlink` at `7d818fd`.
 
 Constraint for every tier: the radio link has little bandwidth. No packet grows; new information replaces dead fields
@@ -72,10 +72,10 @@ so an 8-byte frame is on air as preamble 4 (8 nibbles), sync 2, header 4, length
 (The first version of this plan counted the header as unused framing and proposed dropping it, option B6: it carries
 half the frame, B6 is withdrawn.)
 
-## Tier A: remote only, no protocol change (decided: D-146)
+## Tier A: remote only, no protocol change (decided: D-147)
 
-Decided in the interview `docs/architecture/decisions/REVIEW_HANDHELD_DISPLAY.md` (Stacato repo, H1 to H14), drafted as
-D-146. Implemented on branch `remote-tier-a`.
+Decided in the interview `docs/architecture/decisions/REVIEW_HANDHELD_DISPLAY.md` (Stacato repo, H1 to H14), transcribed as
+D-147 (drafted as D-146, which another decision took first: commits `f487c58` and `a0f6d01` say "D-146 draft"). Implemented on branch `remote-tier-a`.
 
 What the screens show and how they look: the section Screen design below, and the reference picture
 [screens.png](screens.png) (every screen state, rendered from the firmware's own drawing code).

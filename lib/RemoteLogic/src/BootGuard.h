@@ -3,7 +3,7 @@
 
 enum class ResetCause : uint8_t{ POWER_ON, WATCHDOG, CRASH };
 
-//Remote boot-loop protection [D-146, H13 point 5]: after 3 watchdog or crash resets within 60 s the remote starts with
+//Remote boot-loop protection [D-147, H13 point 5]: after 3 watchdog or crash resets within 60 s the remote starts with
 //default settings and the Status page only. The history of abnormal resets is kept in EEPROM (from byte 4) with the
 //RTC time in seconds, which runs on across warm resets; a power-on clears it
 struct ResetHistory{

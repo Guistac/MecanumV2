@@ -1,7 +1,7 @@
 #pragma once
 #include <stdint.h>
 
-//Remote joystick calibration [D-146 point 8, H15]: per axis the raw extremes found by circling the stick and the raw
+//Remote joystick calibration [D-147 point 8, H15]: per axis the raw extremes found by circling the stick and the raw
 //rest position. While driving, the centre is still the zero captured at each boot when the sticks are released (it
 //follows drift); the calibrated centre decides when a stick counts as released. The 1 % deadband and 99 % saturation
 //are kept, applied to the calibrated range. Without a calibration the output is the same as before.

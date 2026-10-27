@@ -1,7 +1,7 @@
 #pragma once
 #include <stdint.h>
 
-//Remote settings kept in EEPROM [D-146 point 2, H12]. Every value is range checked when loaded and falls back to its
+//Remote settings kept in EEPROM [D-147 point 2, H12]. Every value is range checked when loaded and falls back to its
 //default; only changed bytes are written, once, when the operator confirms
 struct RemoteSettings{
 

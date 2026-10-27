@@ -3,7 +3,7 @@
 #include <stddef.h>
 #include <Adafruit_GFX.h>
 
-//How one screen gives way to the next [D-146]: the top line (rows 0..7: the page header, or the main screen's top
+//How one screen gives way to the next [D-147]: the top line (rows 0..7: the page header, or the main screen's top
 //line) and the content below it (rows 8..31) can move differently. Shared by the firmware and the Mac renderer.
 namespace RemoteTransitions{
 

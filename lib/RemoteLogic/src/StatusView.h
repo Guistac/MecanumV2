@@ -5,7 +5,7 @@
 #include "StickGuard.h"
 
 //What the remote's main screen says on its big line and whether line 3 is replaced, highest priority first
-//[D-146 point 3]: own E-stop (or its wiring), radio fault, no link, critical battery, sticks to release, then the
+//[D-147 point 3]: own E-stop (or its wiring), radio fault, no link, critical battery, sticks to release, then the
 //state reported by the receiver
 enum class BigMessage : uint8_t{
     ESTOP, ESTOP_WIRING, RADIO_FAULT, NO_LINK, BATTERY_CRITICAL,
@@ -40,7 +40,7 @@ namespace Status{
 
     StatusView select(const StatusInputs& inputs);
 
-    //never dimmed while shown [D-146 point 5]
+    //never dimmed while shown [D-147 point 5]
     bool isAlarm(BigMessage message);
 
     const char* text(BigMessage message);

@@ -24,7 +24,7 @@ namespace Uplink{
         return uint8_t((value - (-1.0f)) * (255.0f - 0.0f) / (1.0f - (-1.0f)) + 0.0f);
     }
 
-    //the pushbuttons are page keys and send no command: bits 8 and 9 stay 0 [D-146 point 1]
+    //the pushbuttons are page keys and send no command: bits 8 and 9 stay 0 [D-147 point 1]
     //b_neutralSticks: the stick guard holds the sticks (menu open, not yet released)
     inline void encode(const UplinkControls& controls, bool b_neutralSticks, uint8_t counter, uint16_t safetyNumber, uint8_t frame[8]){
         uint16_t controlWord = 0x7; //3 bit header

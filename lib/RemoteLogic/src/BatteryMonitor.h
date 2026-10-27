@@ -5,7 +5,7 @@
 enum class BatteryState{ OK, LOW_CHARGE, CRITICAL };
 
 //Remote cell warnings from the resting (slow filtered) cell voltage: low under 3.5 V, critical under 3.3 V, each left
-//again 50 mV above its threshold so transmit sag does not make them flicker. Warnings only [D-146 point 4]
+//again 50 mV above its threshold so transmit sag does not make them flicker. Warnings only [D-147 point 4]
 class BatteryMonitor{
 public:
 

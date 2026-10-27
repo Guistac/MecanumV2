@@ -2,7 +2,7 @@
 #include <Arduino.h>
 #include <BootGuard.h>
 
-//Teensy 4 hardware watchdog WDOG1 and the cause of the last reset [D-146, H13]. A hang reboots after the timeout;
+//Teensy 4 hardware watchdog WDOG1 and the cause of the last reset [D-147, H13]. A hang reboots after the timeout;
 //a fault too: the core's fault handler waits 8 s with interrupts off and never feeds it.
 namespace Watchdog{
 

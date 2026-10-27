@@ -2,7 +2,7 @@
 #include <stdint.h>
 #include "RobotStates.h"
 
-//Remote enable (right) and disable (left) button LEDs [D-146 point 6]: the D-27 patterns, plus radio fault (both
+//Remote enable (right) and disable (left) button LEDs [D-147 point 6]: the D-27 patterns, plus radio fault (both
 //blink together at 1 Hz), own E-stop (both on), unknown state (both off). The caller lights a pressed button itself
 struct LedInputs{
     bool b_radioFault = false;

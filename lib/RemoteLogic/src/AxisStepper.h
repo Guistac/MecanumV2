@@ -2,7 +2,7 @@
 #include <stdint.h>
 
 //Remote menu navigation with a stick axis: one step at 60 % deflection, re-armed under 30 %, repeated while held
-//(first repeat after 0.5 s, then every 0.2 s) [D-146 point 2]
+//(first repeat after 0.5 s, then every 0.2 s) [D-147 point 2]
 class AxisStepper{
 public:
 

@@ -8,7 +8,7 @@
 #define FW_VERSION "unknown"
 #endif
 
-//the radio chip's temperature above which the HOT marker shows, a hint only [D-146 point 4]
+//the radio chip's temperature above which the HOT marker shows, a hint only [D-147 point 4]
 static const int hotTemperatureCelsius = 70;
 //transitions: pages slide with a rolling header and a gliding page dot, the menu slides, a new alarm wipes in
 static const uint32_t slideMillis = 160;
