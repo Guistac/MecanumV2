@@ -343,7 +343,7 @@ void test_sound_modes_filter_the_layers(){
     sink.setTempo(SoundLayer::BACK, 130);
     TEST_ASSERT_EQUAL_UINT32(1, rec.stopCount(SoundLayer::BACK));
     TEST_ASSERT_EQUAL_UINT16(130, rec.getTempo(SoundLayer::BACK));
-    TEST_ASSERT_EQUAL_STRING("MUSIC OFF", label(ArcadeSoundMode::MUSIC_OFF));
+    TEST_ASSERT_EQUAL_STRING("Music off", label(ArcadeSoundMode::MUSIC_OFF));
     TEST_ASSERT_TRUE(next(ArcadeSoundMode::MUTE) == ArcadeSoundMode::SOUND_ON);
     TEST_ASSERT_TRUE(previous(ArcadeSoundMode::SOUND_ON) == ArcadeSoundMode::MUTE);
 }
@@ -359,9 +359,14 @@ void test_picker_flick_up_changes_the_sound_mode_and_keeps_it(){
     TEST_ASSERT_EQUAL_UINT8(1, r.store.bytes[2]);
     r.flick(0, 1);
     TEST_ASSERT_TRUE(r.arcade.getSoundMode() == ArcadeSoundMode::FX_OFF);
-    r.flick(0, 1, 1);                                                   //the right stick flicks too
+    r.flick(0, 1, 1);                                                   //the right stick: not the sound
+    TEST_ASSERT_TRUE(r.arcade.getSoundMode() == ArcadeSoundMode::FX_OFF);
+    r.flick(0, -1);                                                     //the left stick down: the previous mode
+    TEST_ASSERT_TRUE(r.arcade.getSoundMode() == ArcadeSoundMode::MUSIC_OFF);
+    r.flick(0, 1);
+    r.flick(0, 1);
     TEST_ASSERT_TRUE(r.arcade.getSoundMode() == ArcadeSoundMode::MUTE);
-    TEST_ASSERT_EQUAL_UINT32(1, r.sink.count(SoundLayer::FRONT));      //no blip in FX OFF or MUTE
+    TEST_ASSERT_EQUAL_UINT32(2, r.sink.count(SoundLayer::FRONT));      //a blip back in MUSIC OFF, none in FX OFF or MUTE
     TEST_ASSERT_TRUE(r.sink.stopCount(SoundLayer::BACK) > 0);
     //kept: another arcade on the same store comes up muted
     Arcade other;
@@ -369,36 +374,36 @@ void test_picker_flick_up_changes_the_sound_mode_and_keeps_it(){
     TEST_ASSERT_TRUE(other.getSoundMode() == ArcadeSoundMode::MUTE);
     r.flick(0, 1);
     TEST_ASSERT_TRUE(r.arcade.getSoundMode() == ArcadeSoundMode::SOUND_ON);
-    TEST_ASSERT_EQUAL_UINT32(2, r.sink.count(SoundLayer::FRONT));
+    TEST_ASSERT_EQUAL_UINT32(3, r.sink.count(SoundLayer::FRONT));
     TEST_ASSERT_TRUE(r.arcade.getCard() == Arcade::Card::NONE);
 }
 
 void test_cards_open_and_close(){
     Rig r;
     uint8_t selected = r.arcade.getSelected();
-    r.flick(1, 0);
+    r.flick(1, 0, 1);
     TEST_ASSERT_TRUE(r.arcade.getCard() == Arcade::Card::HELP);
     r.flick(-1, 0);                                                     //the opposite flick
     TEST_ASSERT_TRUE(r.arcade.getCard() == Arcade::Card::NONE);
-    r.flick(0, -1);
+    r.flick(0, -1, 1);
     TEST_ASSERT_TRUE(r.arcade.getCard() == Arcade::Card::BEST);
     r.key(true);                                                        //a pushbutton: back, the same game
     TEST_ASSERT_TRUE(r.arcade.getCard() == Arcade::Card::NONE);
     TEST_ASSERT_EQUAL_UINT8(selected, r.arcade.getSelected());
-    r.flick(1, 0);
+    r.flick(1, 0, 1);
     r.click();                                                          //a click closes, does not start the game
     TEST_ASSERT_TRUE(r.arcade.getCard() == Arcade::Card::NONE);
     TEST_ASSERT_TRUE(r.arcade.getMode() == Arcade::Mode::PICKER);
-    r.flick(0, -1);
+    r.flick(0, -1, 1);
     r.idle(int(Arcade::cardMillis / 20) - 5);
     TEST_ASSERT_TRUE(r.arcade.getCard() == Arcade::Card::BEST);
     r.idle(10);                                                         //8 s: closed on its own
     TEST_ASSERT_TRUE(r.arcade.getCard() == Arcade::Card::NONE);
     GFXcanvas1 canvas(128, 32);
-    r.flick(1, 0);
+    r.flick(1, 0, 1);
     r.arcade.draw(canvas);
     r.flick(-1, 0);
-    r.flick(0, -1);
+    r.flick(0, -1, 1);
     r.arcade.draw(canvas);
 }
 
@@ -514,13 +519,18 @@ void test_top_3_ranks_higher_or_lower_strictly_better(){
     s.clear(0);
     TEST_ASSERT_FALSE(s.hasEntries(0));
     TEST_ASSERT_TRUE(s.hasEntries(1));
-    //fixed slots by name, an unknown game in the spare one
+    //fixed slots by name, an unknown game in the last one
     TEST_ASSERT_EQUAL_UINT8(0, ArcadeScores::slotFor("PONG"));
     TEST_ASSERT_EQUAL_UINT8(5, ArcadeScores::slotFor("BLOCKS"));
     TEST_ASSERT_EQUAL_UINT8(6, ArcadeScores::slotFor("PLUME"));
+    TEST_ASSERT_EQUAL_UINT8(7, ArcadeScores::slotFor("STRIKE"));
     TEST_ASSERT_EQUAL_UINT8(7, ArcadeScores::slotFor("TUNE"));
+    //every game its own slot (Strike took the spare one)
     Arcade arcade;
-    for(uint8_t i = 0; i < Arcade::gameCount; i++) TEST_ASSERT_TRUE(arcade.slotOf(i) < 7);
+    for(uint8_t i = 0; i < Arcade::gameCount; i++){
+        TEST_ASSERT_TRUE(arcade.slotOf(i) < ArcadeScores::slotCount);
+        for(uint8_t j = 0; j < i; j++) TEST_ASSERT_TRUE(arcade.slotOf(i) != arcade.slotOf(j));
+    }
 }
 
 void test_eeprom_layout_bytes(){
@@ -735,7 +745,8 @@ void test_every_game_has_help_lines_that_fit(){
         for(const char* line : lines){
             if(!line) continue;
             TEST_ASSERT_TRUE_MESSAGE(strlen(line) <= 21, line);
-            for(const char* c = line; *c; c++) TEST_ASSERT_FALSE_MESSAGE(islower(*c), line);
+            //sentence case: never all capitals, never a lower case start
+            TEST_ASSERT_FALSE_MESSAGE(islower(line[0]), line);
         }
     }
 }
@@ -796,9 +807,9 @@ void test_picker_beat_behind_the_picker_only(){
     TEST_ASSERT_EQUAL_UINT16(100, r.sink.getTempo(SoundLayer::BACK));
     //the cards keep it
     uint32_t backPlays = r.sink.count(SoundLayer::BACK);
-    r.flick(1, 0);
+    r.flick(1, 0, 1);
     r.flick(-1, 0);
-    r.flick(0, -1);
+    r.flick(0, -1, 1);
     r.key(true);
     TEST_ASSERT_EQUAL_UINT32(backPlays, r.sink.count(SoundLayer::BACK));
     //a game starts: the beat stops, the game's music takes the layer
@@ -870,7 +881,7 @@ void test_sound_hint_arrow_and_mode_pill(){
     TEST_ASSERT_EQUAL_STRING("SOUND: MUSIC OFF", pillLabel(ArcadeSoundMode::MUSIC_OFF));
     TEST_ASSERT_EQUAL_STRING("SOUND: FX OFF", pillLabel(ArcadeSoundMode::FX_OFF));
     TEST_ASSERT_EQUAL_STRING("SOUND: MUTE", pillLabel(ArcadeSoundMode::MUTE));
-    TEST_ASSERT_EQUAL_STRING("FLICK UP: SOUND", Arcade::hintText());
+    TEST_ASSERT_EQUAL_STRING("L STICK: SOUND", Arcade::hintText());
     //every pill the picker shows leaves a dark column between itself and the icon's arrow (x 0 to 12)
     for(uint8_t m = 0; m < uint8_t(ArcadeSoundMode::COUNT); m++){
         TEST_ASSERT_TRUE(64 - GameDraw::pillWidth(pillLabel(ArcadeSoundMode(m))) / 2 >= 15);
@@ -882,11 +893,12 @@ void test_sound_hint_arrow_and_mode_pill(){
     TEST_ASSERT_TRUE(r.arcade.showsHint());
     GFXcanvas1 canvas(128, 32);
     r.arcade.draw(canvas);
-    //the arrow's tip and shaft right of the icon, a dark column between them and after it
-    TEST_ASSERT_TRUE(canvas.getPixel(10, 25));
-    TEST_ASSERT_TRUE(canvas.getPixel(10, 31));
-    TEST_ASSERT_TRUE(canvas.getPixel(8, 27) && canvas.getPixel(12, 27));
-    for(int16_t y = 23; y < 32; y++){
+    //in the top left corner, by the sticks: the arrow's tip and shaft right of the icon, a dark column between them
+    //and after it
+    TEST_ASSERT_TRUE(canvas.getPixel(10, 1));
+    TEST_ASSERT_TRUE(canvas.getPixel(10, 7));
+    TEST_ASSERT_TRUE(canvas.getPixel(8, 3) && canvas.getPixel(12, 3));
+    for(int16_t y = 0; y < 9; y++){
         TEST_ASSERT_FALSE(canvas.getPixel(7, y));
         TEST_ASSERT_FALSE(canvas.getPixel(13, y));
     }

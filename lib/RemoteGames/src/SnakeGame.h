@@ -36,9 +36,9 @@ public:
     uint32_t score() const override { return points; }
     void demo(GameInput& input) override;
     void helpLines(const char* lines[3]) const override {
-        lines[0] = "ANY STICK: STEER";
-        lines[1] = "EAT TO GROW, NO BITES";
-        lines[2] = "DIAMOND 5  MOUSE 10";
+        lines[0] = "Any stick: steer";
+        lines[1] = "Eat to grow, no bites";
+        lines[2] = "Diamond 5  mouse 10";
     }
     void playMusic() override;
 

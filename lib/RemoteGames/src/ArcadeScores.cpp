@@ -2,7 +2,7 @@
 #include "ArcadeScores.h"
 
 uint8_t ArcadeScores::slotFor(const char* gameName){
-    static const char* const names[] = {"PONG", "PARKING", "CAVE", "ROCKS", "SNAKE", "BLOCKS", "PLUME"};
+    static const char* const names[] = {"PONG", "PARKING", "CAVE", "ROCKS", "SNAKE", "BLOCKS", "PLUME", "STRIKE"};
     for(uint8_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) if(strcmp(gameName, names[i]) == 0) return i;
     return slotCount - 1;
 }

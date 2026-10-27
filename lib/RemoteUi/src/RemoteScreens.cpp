@@ -92,12 +92,16 @@ namespace RemoteUi{
             g.drawLine(x + 6, y, x + 10, y + 4, ON);
             g.drawLine(x + 10, y, x + 6, y + 4, ON);
         }
-        if(m.b_linkUp && (m.rxCounter & 1)) g.drawPixel(x + signalWidth + 1, y, ON);
+        //the reply indicator, as the first firmware drew it: a triangle turning a quarter with every reply received
+        //(the font's four arrow heads), 1 px right of the bars
+        if(m.b_linkUp){
+            static const char* const turn[4] = {"\x10", "\x1E", "\x11", "\x1F"};
+            text(g, pixelFont, x + signalWidth + 1, y, turn[m.rxCounter % 4]);
+        }
     }
 
     //the alive sign: a one pixel gap travelling round a dot's edge every few frames (the screen is still being drawn).
-    //One per screen: the state dot on the main screen (a single dot in the bottom row while sticks are to be released,
-    //there is no state dot then), the active page dot on the pages.
+    //One per screen: on the main screen in the top row after the channel, the active page dot on the pages.
     static int aliveStep(const ScreenModel& m){ return (m.frame / 3) % 8; }
 
     //the active page dot (also the main screen's alive dot), 3 x 3, with or without the travelling gap
@@ -105,12 +109,6 @@ namespace RemoteUi{
         static const int8_t ring[8][2] = {{0, 0}, {1, 0}, {2, 0}, {2, 1}, {2, 2}, {1, 2}, {0, 2}, {0, 1}};
         g.fillRect(x, y, 3, 3, ON);
         if(b_alive) g.drawPixel(x + ring[aliveStep(m)][0], y + ring[aliveStep(m)][1], OFF);
-    }
-
-    //the gap on the rim of a radius 3 circle (the state dot)
-    static void circleGap(Adafruit_GFX& g, int16_t cx, int16_t cy, const ScreenModel& m){
-        static const int8_t rim[8][2] = {{0, -3}, {2, -2}, {3, 0}, {2, 2}, {0, 3}, {-2, 2}, {-3, 0}, {-2, -2}};
-        g.drawPixel(cx + rim[aliveStep(m)][0], cy + rim[aliveStep(m)][1], OFF);
     }
 
     static void batteryIcon(Adafruit_GFX& g, int16_t x, int16_t y, uint8_t percent){
@@ -192,7 +190,10 @@ namespace RemoteUi{
         if(m.b_direct) snprintf(channel, sizeof(channel), m.b_dropout ? "DROP" : "USB");
         else if(m.b_usbWaiting && blink(m.now, 1000, 500)) snprintf(channel, sizeof(channel), "USB");
         else snprintf(channel, sizeof(channel), "CH%X", m.channel);
-        text(g, pixelFont, signalWidth + 4, 0, channel);
+        //after the signal bars and the reply triangle (5 px), 2 px clear of it; then the alive dot
+        int16_t channelX = signalWidth + 1 + 5 + 2;
+        text(g, pixelFont, channelX, 0, channel);
+        activeDot(g, channelX + textWidth(g, pixelFont, channel) + 3, 2, m, true);
 
         //the vehicle's pack, then the remote's own battery (blinking when low)
         char voltage[8];
@@ -331,42 +332,23 @@ namespace RemoteUi{
             return;
         }
 
-        //a normal state: a dot (filled when enabled, pulsing while it changes) and the word; the vehicle's finer state
-        //in capitals where it says more [D-163]
+        //a normal state: the word alone; the vehicle's finer state where it says more [D-163]
         Reply::VehicleState vehicle = shownVehicleState(m);
         bool b_finer = isFinerState(vehicle);
         if(message == BigMessage::UNKNOWN && !b_finer) message = messageFromVehicleState(vehicle);
         const char* word = b_finer ? finerStateText(vehicle) : stateText(message);
         int16_t wordWidth = textWidth(g, bigFont, word);
-        int16_t x = (127 - wordWidth - 10) / 2;
+        //the word alone, centred (the alive dot is in the top row)
+        int16_t x = (127 - wordWidth) / 2;
         //a descender (Enabling, Disabling) reaches the bottom row: keep it left of the frame indicator
         if(strchr(word, 'g')){
             const char* frame = m.b_worldFrame ? "WORLD" : "BODY";
             int16_t frameLeft = 125 - textWidth(g, pixelFont, frame) - (m.b_worldFrame ? 3 : 1);
-            int16_t limit = frameLeft - 2 - wordWidth - 10;
+            int16_t limit = frameLeft - 2 - wordWidth;
             if(x > limit) x = limit;
             if(x < 0) x = 0;
         }
-        int16_t cy = middleTop + 7;
-        if(b_finer){
-            //the bus starting changes like enabling; the others hold
-            g.drawCircle(x + 3, cy, 3, ON);
-            if(vehicle == Reply::VehicleState::BUS_START && blink(m.now, 400, 200)) g.fillCircle(x + 3, cy, 1, ON);
-        }
-        else switch(message){
-            case BigMessage::ENABLED: g.fillCircle(x + 3, cy, 3, ON); break;
-            case BigMessage::DISABLED: g.drawCircle(x + 3, cy, 3, ON); break;
-            case BigMessage::ENABLING:
-            case BigMessage::DISABLING:
-                g.drawCircle(x + 3, cy, 3, ON);
-                if(blink(m.now, 400, 200)) g.fillCircle(x + 3, cy, 1, ON);
-                break;
-            default:
-                g.drawCircle(x + 3, cy, 3, ON);
-                break;
-        }
-        circleGap(g, x + 3, cy, m);
-        text(g, bigFont, x + 10, middleTop + 13, word);
+        text(g, bigFont, x, middleTop + 13, word);
     }
 
     //——— the stopwatch [D-160] ———
@@ -503,11 +485,6 @@ namespace RemoteUi{
             pill(g, 63 - pillWidth(g, marker) / 2, bottomTop, marker);
         }
         else drawStopwatch(g, m, left, right);
-        //the state dot carries the alive sign; while sticks are to be released there is none: a single dot at the
-        //right end of the span carries it
-        bool b_stateDot = m.status.message != BigMessage::RELEASE_LEFT && m.status.message != BigMessage::RELEASE_RIGHT
-                       && m.status.message != BigMessage::RELEASE_BOTH;
-        if(!b_stateDot) activeDot(g, right - 3, bottomTop + 3, m, true);
     }
 
     //The countdown's bar [D-160]: row 8, the full width, lit from the left for the time left (remaining / set), so
@@ -764,13 +741,16 @@ namespace RemoteUi{
     //no timer, no title and no page dots: the four wheels seen from above, the vehicle's front up. Each wheel is a
     //small mecanum wheel, 7 x 15 (a filled rounded body with dark diagonal rollers, FL and RR rising to the right, FR
     //and RL falling, as on the vehicle) whose rollers scroll with the wheel velocity: up while it rolls forward, faster
-    //the faster it turns (wheelPhase). Beside each wheel two text lines: its state (ON enabled, RDY ready, OFF neither,
-    //-- not yet known; FLT and STO in plain text instead, taking turns every second when both) and the velocity in %
-    //of the drive's limit; under them trq and the torque in % of rated (-- without a value). The alive dot sits in the
-    //vehicle's centre.
+    //the faster it turns (wheelPhase). Beside each wheel, on its side of the screen (x 0..48 left, 78..126 right):
+    //  a text line: its state next to the wheel (ON enabled, RDY ready, OFF neither, -- not yet known; FLT and STO in
+    //  plain text instead, taking turns every second when both) and the velocity in % of the drive's limit outside
+    //  under it two sliders from a centre tick, 24 px each way = 100 %, right = forward on both sides, with a tick at
+    //  each end: the velocity solid (3 px), under it the torque in % of rated dotted (3 px); no bar without a value
+    //The alive dot sits in the vehicle's centre.
     static const int16_t wheelWidth = 7;
     static const int16_t wheelHeight = 15;
     static const int16_t wheelPeriod = 4;
+    static const int16_t sliderHalf = 23;      //the bar's length at 100 %; the end ticks one further out
     //front rows 0..14 (text lines 0 and 8), rear rows 17..31 (text lines 17 and 25): the 2 rows between keep the front
     //torque line's descender (trq) clear of the rear state line
     static const int16_t wheelTop[4] = {0, 0, 17, 17};
@@ -812,6 +792,19 @@ namespace RemoteUi{
         return "OFF";
     }
 
+    //a slider's bar from the centre, -1..1 (clamped), none for NaN; dotted: a checker
+    static void sliderBar(Adafruit_GFX& g, int16_t centre, int16_t top, float value, bool b_dotted){
+        if(isnan(value)) return;
+        if(value > 1.0f) value = 1.0f;
+        if(value < -1.0f) value = -1.0f;
+        int16_t length = int16_t(lroundf(fabsf(value) * float(sliderHalf)));
+        if(length == 0) return;
+        int16_t left = value > 0.0f ? centre + 1 : centre - length;
+        for(int16_t y = top; y < top + 3; y++){
+            for(int16_t x = left; x < left + length; x++) if(!b_dotted || (x + y) % 2 == 0) g.drawPixel(x, y, ON);
+        }
+    }
+
     static void percentText(char* buffer, size_t size, float value, bool b_known){
         if(!b_known || isnan(value)) snprintf(buffer, size, "--");
         else{
@@ -830,9 +823,7 @@ namespace RemoteUi{
             int16_t top = wheelTop[wheel];
             bool b_left = wheelLeft[wheel];
             char velocity[8];
-            char torque[8];
             percentText(velocity, sizeof(velocity), v.wheelVelocity[wheel], b_live);
-            percentText(torque, sizeof(torque), v.wheelTorque[wheel], b_live && v.b_torqueKnown);
             const char* state = wheelStateText(m, wheel);
             //the wheels close together in the middle like the vehicle, the text outside: the state and trq beside the
             //wheel, the values right-aligned on the outer side (the left ones at x 28, the right ones at the edge)
@@ -840,16 +831,20 @@ namespace RemoteUi{
             wheelIcon(g, iconX, top, rollerSlant[wheel], m.wheelPhase[wheel]);
             if(b_left){
                 textRight(g, pixelFont, 48, top, state);
-                textRight(g, pixelFont, 48, top + 8, "trq");
                 textRight(g, pixelFont, 28, top, velocity);
-                textRight(g, pixelFont, 28, top + 8, torque);
             }
             else{
                 text(g, pixelFont, 78, top, state);
-                text(g, pixelFont, 78, top + 8, "trq");
                 textRight(g, pixelFont, 126, top, velocity);
-                textRight(g, pixelFont, 126, top + 8, torque);
             }
+            //the two sliders, rows top+8..top+14: a centre tick and end ticks over both, velocity then torque
+            int16_t centre = b_left ? 24 : 102;
+            int16_t sliderTop = top + 8;
+            g.drawFastVLine(centre, sliderTop, 7, ON);
+            g.drawFastVLine(centre - sliderHalf - 1, sliderTop, 7, ON);
+            g.drawFastVLine(centre + sliderHalf + 1, sliderTop, 7, ON);
+            if(b_live) sliderBar(g, centre, sliderTop, v.wheelVelocity[wheel], false);
+            if(b_live && v.b_torqueKnown) sliderBar(g, centre, sliderTop + 4, v.wheelTorque[wheel], true);
         }
         //the alive sign in the vehicle's centre, between the wheel rows
         activeDot(g, 62, 14, m, true);

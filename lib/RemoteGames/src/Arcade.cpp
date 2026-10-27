@@ -9,6 +9,7 @@ Arcade::Arcade(){
     games[4] = &snake;
     games[5] = &blocks;
     games[6] = &plume;
+    games[7] = &strike;
     scores.load(nullptr);
 }
 
@@ -321,10 +322,16 @@ void Arcade::updatePicker(Flick flick, const bool b_click[2], const GameInput& s
         startDemo();
         return;
     }
-    switch(flick){
+    //each stick its own job, labelled in its corner: the left stick (top left) the sound mode, up the next, down the
+    //previous; the right stick (top right) the cards, right the game's manual, down its top 3
+    switch(flicks.of(0)){
         case Flick::UP: changeSoundMode(ArcadeSoundModes::next(soundMode), now); return;
-        case Flick::DOWN: openCard(Card::BEST, now); return;
+        case Flick::DOWN: changeSoundMode(ArcadeSoundModes::previous(soundMode), now); return;
+        default: break;
+    }
+    switch(flicks.of(1)){
         case Flick::RIGHT: openCard(Card::HELP, now); return;
+        case Flick::DOWN: openCard(Card::BEST, now); return;
         default: break;
     }
     if(b_click[0] || b_click[1]) startGame(sticks.held, now);
@@ -419,8 +426,9 @@ void Arcade::update(const GameInput& sticks, bool b_previousKey, bool b_nextKey,
                     game(selected).playMusic();
                 }
             }
-            else if(b_paused && (flick == Flick::UP || flick == Flick::DOWN)){
-                changeSoundMode(flick == Flick::UP ? ArcadeSoundModes::next(soundMode) : ArcadeSoundModes::previous(soundMode), now);
+            else if(b_paused && (flicks.of(0) == Flick::UP || flicks.of(0) == Flick::DOWN)){
+                //the left stick, as on the picker
+                changeSoundMode(flicks.of(0) == Flick::UP ? ArcadeSoundModes::next(soundMode) : ArcadeSoundModes::previous(soundMode), now);
             }
             break;
         case Mode::OVER:
@@ -489,7 +497,8 @@ void Arcade::draw(Adafruit_GFX& out) const {
     char text[32];
     switch(mode){
         case Mode::PICKER:
-            if(card == Card::HELP) drawHelp(out, nullptr, nullptr, "<> GAME ^SOUND vBEST");
+            //the sticks' jobs, with the font's arrows: left up/down the sound, right right the manual, down the top 3
+            if(card == Card::HELP) drawHelp(out, nullptr, nullptr, "L\x12sound R\x1Ahelp \x19top3");
             else if(card == Card::BEST) drawBest(out);
             else{
                 g.draw(out);
@@ -498,9 +507,9 @@ void Arcade::draw(Adafruit_GFX& out) const {
             break;
         case Mode::PLAYING:
             if(b_paused){
-                //the mode, and that a flick up or down changes it
-                snprintf(text, sizeof(text), "^v %s", ArcadeSoundModes::label(soundMode));
-                drawHelp(out, "PAUSED", text, nullptr);
+                //the mode, and that the left stick up or down changes it
+                snprintf(text, sizeof(text), "L\x12 %s", ArcadeSoundModes::label(soundMode));
+                drawHelp(out, "Paused", text, nullptr);
             }
             else g.draw(out);
             break;
@@ -525,13 +534,15 @@ void Arcade::draw(Adafruit_GFX& out) const {
     }
 }
 
-//over the game playing itself: its name on top between the pushbuttons' arrows, the record holder (or the new
-//sound mode, or the clear question) in the bottom pill, the sound mode's icon in the corner
+//over the game playing itself, laid out like the remote's controls: the sticks are at the top corners, the
+//pushbuttons at the bottom corners. On top the game's name, with the sound mode's icon in the top left corner (a
+//stick's flick changes it); at the bottom the pushbuttons' arrows in their corners and between them the record holder
+//(or the new sound mode, or the clear question)
 void Arcade::drawPicker(Adafruit_GFX& out) const {
     const Game& g = game(selected);
     GameDraw::pillCentered(out, 64, 0, g.name());
-    GameDraw::pill(out, 0, 0, "<");
-    GameDraw::pill(out, 128 - GameDraw::pillWidth(">"), 0, ">");
+    GameDraw::pill(out, 0, 23, "<");
+    GameDraw::pill(out, 128 - GameDraw::pillWidth(">"), 23, ">");
     char text[32];
     char value[12];
     const ArcadeScores::Entry& best = scores.entry(slotOf(selected), 0);
@@ -546,10 +557,12 @@ void Arcade::drawPicker(Adafruit_GFX& out) const {
         GameDraw::pillCentered(out, 64, 23, text);
     }
     else GameDraw::pillCentered(out, 64, 23, "CLICK TO PLAY");
-    //a dark margin first, so the icon and its arrow never touch the game behind them (the widest pill, SOUND: MUSIC
-    //OFF, starts at x 15, its own dark edge at 14)
-    out.fillRect(0, 23, 14, 9, GameDraw::OFF);
-    drawSoundIcon(out, 0, 25);
+    //a dark margin first, so the icon and its arrow never touch the game behind them or the name's pill
+    out.fillRect(0, 0, 14, 9, GameDraw::OFF);
+    drawSoundIcon(out, 0, 1);
+    //the right stick's label in the top right corner: a flick right opens the manual
+    out.fillRect(114, 0, 14, 9, GameDraw::OFF);
+    GameDraw::textRight(out, 127, 1, "\x1A?");
 }
 
 //four lines of the 5 x 7 font, 8 px apart: a first line (centred, or left with a right-aligned part), the game's
@@ -629,8 +642,8 @@ void Arcade::drawSoundIcon(Adafruit_GFX& out, int16_t x, int16_t y) const {
         {0x18, 0x14, 0x12, 0x10, 0x70, 0xF0, 0x60},     //an eighth note
         {0x00, 0x20, 0xEA, 0xE4, 0xEA, 0x20, 0x00},     //the speaker and an X
     };
-    //5 x 7, a column apart: an up arrow, the flick that changes the mode
-    static const uint8_t arrow[7] = {0x20, 0x70, 0xA8, 0x20, 0x20, 0x20, 0x20};
+    //5 x 7, a column apart: an up and down arrow, the left stick's flicks that change the mode
+    static const uint8_t arrow[7] = {0x20, 0x70, 0xA8, 0x20, 0xA8, 0x70, 0x20};
     const uint8_t* icon = icons[uint8_t(soundMode) % 4];
     for(int16_t row = 0; row < 7; row++){
         for(int16_t column = 0; column < 7; column++){

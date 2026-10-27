@@ -270,8 +270,9 @@ at zero, alarm priority (plays at Alarms only, not at Off; it does not cut a sta
 
 ### Games (easter egg, D-157)
 
-Six games on the sticks: Pong, Parking (the Mecanum vehicle, driven as in body frame), Cave, Rocks (twin-stick
-shooter), Snake and Blocks (Tetris turned sideways, the floor on the left). Code in `lib/RemoteGames` (one class per
+Eight games on the sticks: Pong, Parking (the Mecanum vehicle, driven as in body frame), Cave, Rocks (twin-stick
+shooter), Snake, Blocks (Tetris turned sideways, the floor on the left), Plume and Strike (our own brick-breaker:
+striking the set over 12 stages, `docs/arcade/README.md` section 8b). Code in `lib/RemoteGames` (one class per
 game with its rules, drawing and a built-in demo player; the `Arcade` runs them), host tests in `test/test_arcade` and
 `test/test_game_<name>` (every game passes `GameContract`: deterministic, the demo ends within 3 minutes, a tick under
 2 ms on the Mac). `python3 tools/screens/render_games.py [name|all|arcade]` records them playing themselves as GIFs.

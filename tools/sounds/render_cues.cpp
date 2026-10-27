@@ -246,6 +246,22 @@ static SoundCue fxBlocksRotate(){
     return c;
 }
 
+//Strike's effects: the piece blips up the five rows (bottom to top) one after the other, the paddle's tick
+static SoundCue fxStrikeBlips(){
+    static SoundNote n[StrikeGame::rows];
+    for(uint8_t i = 0; i < StrikeGame::rows; i++){
+        n[i] = SoundKit::squareNote(uint16_t(i * 150), StrikeGame::brickHertz(uint8_t(StrikeGame::rows - 1 - i)), 30);
+    }
+    SoundCue c; c.notes = n; c.noteCount = StrikeGame::rows; c.priority = SoundPriority::GAME;
+    return c;
+}
+static SoundCue fxStrikeTick(){
+    static SoundNote n[1];
+    n[0] = SoundKit::squareNote(0, StrikeGame::paddleHertz, 18);
+    SoundCue c; c.notes = n; c.noteCount = 1; c.priority = SoundPriority::GAME;
+    return c;
+}
+
 static SoundCue kitKick(){ static SoundKit::NoteList<8> n; n.clear(); n.kick(0); return n.cue(); }
 static SoundCue kitSnare(){ static SoundKit::NoteList<4> n; n.clear(); n.snare(0); return n.cue(); }
 static SoundCue kitHat(){ static SoundKit::NoteList<4> n; n.clear(); n.hat(0); return n.cue(); }
@@ -289,6 +305,12 @@ static const NamedCue cues[] = {
     {"music_blocks_drums", blocksWithDrums, SoundLayer::BACK},
     {"fx_snake_eat", fxSnakeEat, SoundLayer::FRONT},
     {"fx_blocks_rotate", fxBlocksRotate, SoundLayer::FRONT},
+    {"fx_strike_blips", fxStrikeBlips, SoundLayer::FRONT},
+    {"fx_strike_tick", fxStrikeTick, SoundLayer::FRONT},
+    {"fx_strike_thud", StrikeGame::thudSound, SoundLayer::FRONT},
+    {"fx_strike_catch", StrikeGame::catchSound, SoundLayer::FRONT},
+    {"fx_strike_lost", StrikeGame::lostSound, SoundLayer::FRONT},
+    {"fx_strike_struck", StrikeGame::struckSound, SoundLayer::FRONT},
 };
 #undef REMOTE
 

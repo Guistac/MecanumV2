@@ -10,14 +10,14 @@
 //  1       layout version 1
 //  2       sound mode (0..3, ArcadeSoundMode)
 //  3..6    last name entered (4 characters)
-//  8..199  8 game slots (7 games, 1 spare) of 24 bytes: a top 3 of entries, best first. An entry is 8 bytes: the
+//  8..199  8 game slots of 24 bytes: a top 3 of entries, best first. An entry is 8 bytes: the
 //          score (uint32_t, little endian), then the 4 name characters. Empty when its name is not 4 valid
 //          characters (A to Z, 0 to 9, space): blank EEPROM (0xFF) reads as empty
 //
-//A slot is the game's fixed id (slotFor: Pong 0, Parking 1, Cave 2, Rocks 3, Snake 4, Blocks 5, Plume 6), not its
-//place in the picker. A wrong marker or version reads as all empty with the defaults (SOUND ON, AAAA); the whole
-//block is written at the first change. Written only at a new top-3 entry, a sound mode change and a table clear
-//(the owner's exception to D-147's "EEPROM only on Save").
+//A slot is the game's fixed id (slotFor: Pong 0, Parking 1, Cave 2, Rocks 3, Snake 4, Blocks 5, Plume 6, Strike 7: the
+//spare slot, taken without changing the layout or its version), not its place in the picker. A wrong marker or
+//version reads as all empty with the defaults (SOUND ON, AAAA); the whole block is written at the first change.
+//Written only at a new top-3 entry, a sound mode change and a table clear (the owner's exception to D-147's "EEPROM only on Save").
 
 //where the block lives: the board on EEPROM at 256 + offset (writing only bytes that change), tests in RAM
 class ArcadeStore{
@@ -67,7 +67,7 @@ public:
         bool b_used = false;
     };
 
-    //the game's slot from its name; an unknown game gets the spare slot (7)
+    //the game's slot from its name; an unknown game gets the last slot (7, Strike's: there is no spare left)
     static uint8_t slotFor(const char* gameName);
     //a character a name may have: A to Z, 0 to 9, space
     static bool isNameCharacter(char c);

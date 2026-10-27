@@ -30,6 +30,9 @@ namespace Status{
             case RobotState::EMERGENCY_STOPPING:
                 //a normal disable ramp is not an alarm: Disabling, no switch to Status, no wipe [D-163]
                 if(in.vehicle == Reply::VehicleState::DISABLING) return {BigMessage::DISABLING, line};
+                //the receiver also reports Stacato's BOOT, POWEROFF and UNINIT as E-stopping: say what Stacato sent
+                if(in.vehicle == Reply::VehicleState::BUS_START || in.vehicle == Reply::VehicleState::BUS_OFF
+                   || in.vehicle == Reply::VehicleState::VEHICLE_OFF) return {BigMessage::NOT_RUNNING, line};
                 return {BigMessage::STOPPING, line};
             case RobotState::EMERGENCY_STOPPED:
                 if(in.sinceEstopReleaseMillis < extEstopDelayMillis) return {BigMessage::ESTOP, line};
@@ -69,6 +72,7 @@ namespace Status{
             case BigMessage::DISABLED: return "Disabled";
             case BigMessage::ENABLING: return "Enabling";
             case BigMessage::ENABLED: return "Enabled";
+            case BigMessage::NOT_RUNNING: return "Not running";
             default: return "???";
         }
     }

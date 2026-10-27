@@ -354,6 +354,13 @@ void test_status_sound_from_the_vehicle_state(){
     //without byte 12 (no Stacato on a D-161 path, unknown): as the 3 bit state alone
     TEST_ASSERT_TRUE(forStatusChange(M::ENABLED, M::STOPPING, V::ENABLED, V::UNKNOWN) == Sound::STATUS_DISABLING);
     TEST_ASSERT_TRUE(forStatusChange(M::STOPPING, M::EXT_ESTOP, V::UNKNOWN, V::UNKNOWN) == Sound::STATUS_ESTOP);
+    //the vehicle not running (bus start, bus off, vehicle off): never the ramp's loop nor the E-stop; found after no
+    //link, a warning when it stops running, the link-found cue when it comes up, nothing between bus states
+    TEST_ASSERT_TRUE(forStatusChange(M::NO_LINK, M::NOT_RUNNING, V::NO_LINK, V::BUS_OFF) == Sound::STATUS_LINK_FOUND);
+    TEST_ASSERT_TRUE(forStatusChange(M::DISABLED, M::NOT_RUNNING, V::DISABLED, V::BUS_OFF) == Sound::WARNING);
+    TEST_ASSERT_TRUE(forStatusChange(M::NOT_RUNNING, M::NOT_RUNNING, V::BUS_OFF, V::BUS_START) == Sound::NONE);
+    TEST_ASSERT_TRUE(forStatusChange(M::NOT_RUNNING, M::DISABLED, V::BUS_START, V::DISABLED) == Sound::STATUS_LINK_FOUND);
+    TEST_ASSERT_TRUE(forStatusChange(M::UNKNOWN, M::NOT_RUNNING, V::NO_LINK, V::BUS_START) == Sound::NONE);
     //nothing at power on
     TEST_ASSERT_TRUE(forStatusChange(M::UNKNOWN, M::EXT_ESTOP, V::NO_LINK, V::E_STOP) == Sound::NONE);
     TEST_ASSERT_TRUE(forStatusChange(M::UNKNOWN, M::UNKNOWN, V::NO_LINK, V::E_STOPPING) == Sound::NONE);
@@ -803,6 +810,13 @@ void test_status_estop_with_link_and_ext_estop(){
     TEST_ASSERT_FALSE(Status::isAlarm(Status::select(in).message));
     in.vehicle = Reply::VehicleState::E_STOPPING;
     TEST_ASSERT_TRUE(Status::select(in).message == BigMessage::STOPPING);
+    //Stacato's BOOT, POWEROFF and UNINIT also arrive as the 3 bit E-stopping: not running, not an alarm
+    const Reply::VehicleState notRunning[] = {Reply::VehicleState::BUS_START, Reply::VehicleState::BUS_OFF, Reply::VehicleState::VEHICLE_OFF};
+    for(Reply::VehicleState v : notRunning){
+        in.vehicle = v;
+        TEST_ASSERT_TRUE(Status::select(in).message == BigMessage::NOT_RUNNING);
+        TEST_ASSERT_FALSE(Status::isAlarm(BigMessage::NOT_RUNNING));
+    }
     in.vehicle = Reply::VehicleState::UNKNOWN;
     in.reportedState = 0;
     TEST_ASSERT_TRUE(Status::select(in).message == BigMessage::UNKNOWN);

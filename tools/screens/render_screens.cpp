@@ -122,29 +122,29 @@ int main(int argc, char** argv){
     //live, 6x without motion data or editing; render.py)
     using VS = Reply::VehicleState;
     struct StateCase{ VS state; RobotState reported; const char* name; };
-    //every vehicle state with the 3 bit state the receiver would send beside it
+    //every vehicle state with the 3 bit state the receiver really sends beside it (src/RobotBoard/MavLink.h: BOOT,
+    //POWEROFF, UNINIT, CRITICAL and anything unknown are E-stopping, EMERGENCY E-stopped; without Stacato the
+    //receiver's own state, disabled at rest)
     const StateCase states[] = {
-        {VS::NO_STACATO, RobotState(0), "no_stacato"},
-        {VS::BUS_START, RobotState::DISABLED, "bus_start"},
-        {VS::BUS_OFF, RobotState::DISABLED, "bus_off"},
-        {VS::VEHICLE_OFF, RobotState::DISABLED, "vehicle_off"},
+        {VS::NO_STACATO, RobotState::DISABLED, "no_stacato"},
+        {VS::BUS_START, RobotState::EMERGENCY_STOPPING, "bus_start"},
+        {VS::BUS_OFF, RobotState::EMERGENCY_STOPPING, "bus_off"},
+        {VS::VEHICLE_OFF, RobotState::EMERGENCY_STOPPING, "vehicle_off"},
         {VS::DISABLED, RobotState::DISABLED, "disabled"},
         {VS::ENABLING, RobotState::ENABLING, "enabling"},
         {VS::ENABLED, RobotState::ENABLED, "enabled"},
         {VS::DISABLING, RobotState::EMERGENCY_STOPPING, "disabling_ramp"},
-        {VS::DISABLING, RobotState::DISABLING, "disabling"},
         {VS::E_STOPPING, RobotState::EMERGENCY_STOPPING, "e_stopping"},
         {VS::E_STOP, RobotState::EMERGENCY_STOPPED, "e_stop"},
         {VS::AXIS_FAULT, RobotState::EMERGENCY_STOPPED, "axis_fault"},
-        {VS::AXIS_FAULT, RobotState::DISABLED, "axis_fault_disabled"},
-        {VS::UNKNOWN, RobotState::ENABLED, "unknown_enabled"},
-        {VS::UNKNOWN, RobotState(0), "unknown_none"},
+        {VS::UNKNOWN, RobotState::EMERGENCY_STOPPING, "unknown"},
     };
     //the Status message the board would select from the 3 bit state (StatusView)
-    auto statusFor = [](RobotState reported){
+    auto statusFor = [](RobotState reported, VS vehicle){
         StatusInputs in;
         in.b_linkUp = true;
         in.reportedState = uint8_t(reported);
+        in.vehicle = vehicle;
         return Status::select(in);
     };
     auto motion = [](float vx, float vy, float vr, std::initializer_list<float> velocity, std::initializer_list<float> torque, uint16_t flags){
@@ -170,7 +170,7 @@ int main(int argc, char** argv){
         ScreenModel m = base();
         m.page = Page::MOTION;
         m.reportedState = uint8_t(reported);
-        m.status = statusFor(reported);
+        m.status = statusFor(reported, state);
         m.motionAvailability = Reply::MotionAvailability::LIVE;
         v.vehicleState = state;
         m.motion = v;
@@ -186,9 +186,9 @@ int main(int argc, char** argv){
     }
     { ScreenModel m = live(VS::AXIS_FAULT, RobotState::EMERGENCY_STOPPED, atRest); m.page = Page::STATUS; m.now = 600; add("0v_status_axis_fault_pulse", m); }
     { ScreenModel m = live(VS::E_STOPPING, RobotState::EMERGENCY_STOPPING, atRest); m.page = Page::STATUS; m.b_worldFrame = true; m.now = 200; add("0v_status_e_stopping_plain", m); }
-    { ScreenModel m = live(VS::VEHICLE_OFF, RobotState::DISABLED, atRest); m.page = Page::STATUS; m.b_worldFrame = true; m.speedState = 2;
+    { ScreenModel m = live(VS::VEHICLE_OFF, RobotState::EMERGENCY_STOPPING, atRest); m.page = Page::STATUS; m.b_worldFrame = true; m.speedState = 2;
       m.stopwatch = timer(300000, 150000, Stopwatch::State::RUNNING); add("0v_status_vehicle_off_countdown_world", m); }
-    { ScreenModel m = live(VS::NO_STACATO, RobotState(0), atRest); m.page = Page::STATUS; m.b_worldFrame = true; add("0v_status_no_stacato_world", m); }
+    { ScreenModel m = live(VS::NO_STACATO, RobotState::DISABLED, atRest); m.page = Page::STATUS; m.b_worldFrame = true; add("0v_status_no_stacato_world", m); }
     //Motion: every vehicle state in the title (5v_)
     for(const StateCase& c : states){
         ScreenModel m = live(c.state, c.reported, driving);

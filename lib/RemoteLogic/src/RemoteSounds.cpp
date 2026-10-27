@@ -229,7 +229,8 @@ namespace RemoteSounds{
                 case BigMessage::DISABLING:
                 case BigMessage::DISABLED:
                 case BigMessage::ENABLING:
-                case BigMessage::ENABLED: return true;
+                case BigMessage::ENABLED:
+                case BigMessage::NOT_RUNNING: return true;
                 default: return false;
             }
         }
@@ -303,6 +304,10 @@ namespace RemoteSounds{
         if(from == BigMessage::NO_LINK && isReported(to)) return Sound::STATUS_LINK_FOUND;
         if(to == BigMessage::ENABLING) return Sound::STATUS_ENABLING;
         if(to == BigMessage::ENABLED) return Sound::STATUS_ENABLED;
+        //[D-163] the vehicle came up (fieldbus running): the link-found cue, not the falling disabled one; it stopped
+        //running from a running state: a warning, never the ramp's loop
+        if(from == BigMessage::NOT_RUNNING && to == BigMessage::DISABLED) return Sound::STATUS_LINK_FOUND;
+        if(to == BigMessage::NOT_RUNNING) return isReported(from) ? Sound::WARNING : Sound::NONE;
         if(isStopping(to) && !isStopping(from)) return Sound::STATUS_DISABLING;
         //cuts the ramp's loop, or alone when there was no ramp (an enable that failed)
         if(to == BigMessage::DISABLED && isReported(from)) return Sound::STATUS_DISABLED;

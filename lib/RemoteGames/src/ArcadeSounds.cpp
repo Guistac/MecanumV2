@@ -4,7 +4,7 @@
 
 namespace ArcadeSoundModes{
     const char* label(ArcadeSoundMode mode){
-        static const char* const labels[] = {"SOUND ON", "MUSIC OFF", "FX OFF", "MUTE"};
+        static const char* const labels[] = {"Sound on", "Music off", "FX off", "Mute"};
         return labels[uint8_t(mode) < uint8_t(ArcadeSoundMode::COUNT) ? uint8_t(mode) : 0];
     }
     const char* pillLabel(ArcadeSoundMode mode){

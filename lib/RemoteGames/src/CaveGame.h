@@ -21,9 +21,9 @@ public:
     void scoreText(char* out, size_t size, uint32_t value) const override;
     void demo(GameInput& input) override;
     void helpLines(const char* lines[3]) const override {
-        lines[0] = "STICK UP: CLIMB";
-        lines[1] = "CLICK HELD: FULL UP";
-        lines[2] = "TOUCH NOTHING";
+        lines[0] = "Stick up: climb";
+        lines[1] = "Click held: full up";
+        lines[2] = "Touch nothing";
     }
 
     static const int16_t craftX = 36;               //screen column of the craft's left edge

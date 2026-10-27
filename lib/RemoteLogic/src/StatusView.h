@@ -11,7 +11,10 @@
 enum class BigMessage : uint8_t{
     ESTOP, ESTOP_WIRING, RADIO_FAULT, NO_LINK, BATTERY_CRITICAL,
     RELEASE_LEFT, RELEASE_RIGHT, RELEASE_BOTH,
-    EXT_ESTOP, STOPPING, DISABLING, DISABLED, ENABLING, ENABLED, UNKNOWN
+    EXT_ESTOP, STOPPING, DISABLING, DISABLED, ENABLING, ENABLED, UNKNOWN,
+    //[D-163] Stacato reports its fieldbus starting or off, or the vehicle offline: not an alarm, the Status page names
+    //the finer state (Bus start, Bus off, Vehicle off). The 3 bit state still reads E-stopping for every decision
+    NOT_RUNNING
 };
 
 enum class StatusLine : uint8_t{ NORMAL, NOT_CONNECTED, ESTOP_NOT_CONNECTED, RADIO_RETRY, RESTART_REMOTE, THANK_YOU };

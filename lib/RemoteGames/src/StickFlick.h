@@ -15,6 +15,7 @@ public:
     Flick update(const float stick[4]){
         Flick result = Flick::NONE;
         for(uint8_t s = 0; s < 2; s++){
+            perStick[s] = Flick::NONE;
             float x = stick[s * 2], y = stick[s * 2 + 1];
             float ax = x < 0 ? -x : x, ay = y < 0 ? -y : y;
             if(ax < rest && ay < rest){
@@ -23,12 +24,15 @@ public:
             }
             if(!b_armed[s] || (ax < fire && ay < fire)) continue;
             b_armed[s] = false;
-            if(result != Flick::NONE) continue;
-            if(ay >= ax) result = y > 0 ? Flick::UP : Flick::DOWN;
-            else result = x > 0 ? Flick::RIGHT : Flick::LEFT;
+            if(ay >= ax) perStick[s] = y > 0 ? Flick::UP : Flick::DOWN;
+            else perStick[s] = x > 0 ? Flick::RIGHT : Flick::LEFT;
+            if(result == Flick::NONE) result = perStick[s];
         }
         return result;
     }
+
+    //the last update's flick of one stick (0 left, 1 right): the picker gives each stick its own job
+    Flick of(uint8_t stickIndex) const { return perStick[stickIndex & 1]; }
 
     //both must come back under 0.3 before the next flick (coming into a screen with a stick pushed)
     void disarm(){ b_armed[0] = b_armed[1] = false; }
@@ -42,4 +46,5 @@ public:
 
 private:
     bool b_armed[2] = {false, false};
+    Flick perStick[2] = {Flick::NONE, Flick::NONE};
 };

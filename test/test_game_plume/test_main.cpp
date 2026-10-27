@@ -53,13 +53,13 @@ void test_name_score_text_and_help(){
     for(int i = 0; i < 3; i++){
         TEST_ASSERT_NOT_NULL(lines[i]);
         TEST_ASSERT_TRUE(strlen(lines[i]) <= 21);
-        for(const char* c = lines[i]; *c; c++) TEST_ASSERT_FALSE(*c >= 'a' && *c <= 'z');
+        TEST_ASSERT_FALSE(lines[i][0] >= 'a' && lines[i][0] <= 'z');     //sentence case
     }
 }
 
 void test_seventh_game_of_the_arcade_in_slot_6(){
     Arcade arcade;
-    TEST_ASSERT_EQUAL_UINT8(7, Arcade::gameCount);
+    TEST_ASSERT_TRUE(Arcade::gameCount >= 7);         //Strike came eighth
     TEST_ASSERT_EQUAL_STRING("PLUME", arcade.game(6).name());
     TEST_ASSERT_EQUAL_UINT8(6, arcade.slotOf(6));
 }

@@ -33,9 +33,9 @@ public:
     void scoreText(char* out, size_t size, uint32_t value) const override;
     void demo(GameInput& input) override;
     void helpLines(const char* lines[3]) const override {
-        lines[0] = "L STICK: YOUR PADDLE";
-        lines[1] = "R STICK: 2ND PLAYER";
-        lines[2] = "FIRST TO 7 WINS";
+        lines[0] = "L stick: your paddle";
+        lines[1] = "R stick: 2nd player";
+        lines[2] = "First to 7 wins";
     }
 
     //where a human's stick (y, -1..1, up positive) places the paddle's top once it has followed: full travel at

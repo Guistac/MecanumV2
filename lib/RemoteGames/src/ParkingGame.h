@@ -30,9 +30,9 @@ public:
     void overText(char* out, size_t size, uint32_t value) const override;
     void demo(GameInput& input) override;
     void helpLines(const char* lines[3]) const override {
-        lines[0] = "L STICK: DRIVE/STRAFE";
-        lines[1] = "R STICK X: TURN";
-        lines[2] = "HIT: +2S AND DAMAGE";
+        lines[0] = "L stick: drive/strafe";
+        lines[1] = "R stick x: turn";
+        lines[2] = "Hit: +2 s and damage";
     }
 
     enum class Phase : uint8_t { INTRO, DRIVE, PARKED, WRECKED, OVER };

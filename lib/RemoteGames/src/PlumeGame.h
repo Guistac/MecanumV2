@@ -30,9 +30,9 @@ public:
     void overText(char* out, size_t size, uint32_t value) const override;
     void demo(GameInput& input) override;
     void helpLines(const char* lines[3]) const override {
-        lines[0] = "STICK AIMS THE PLUME";
-        lines[1] = "THE PLUME BLASTS ROCK";
-        lines[2] = "CLIMB, DO NOT FALL";
+        lines[0] = "Stick aims the plume";
+        lines[1] = "The plume blasts rock";
+        lines[2] = "Climb, do not fall";
     }
     void playMusic() override;
 

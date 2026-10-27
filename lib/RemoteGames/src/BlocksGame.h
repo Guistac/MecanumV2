@@ -25,9 +25,9 @@ public:
     uint32_t score() const override { return points; }
     void demo(GameInput& input) override;
     void helpLines(const char* lines[3]) const override {
-        lines[0] = "L UP/DN: MOVE PIECE";
-        lines[1] = "L LEFT/L CLICK: DROP";
-        lines[2] = "R CLICK/FLICK: ROTATE";
+        lines[0] = "L up/down: move";
+        lines[1] = "L left/L click: drop";
+        lines[2] = "R click/flick: rotate";
     }
     void playMusic() override;
 

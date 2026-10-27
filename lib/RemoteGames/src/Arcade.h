@@ -7,16 +7,20 @@
 #include "SnakeGame.h"
 #include "BlocksGame.h"
 #include "PlumeGame.h"
+#include "StrikeGame.h"
 #include "ArcadeScores.h"
 #include "ArcadeSounds.h"
 #include "StickFlick.h"
 
 //The remote's games [D-157]. In: both stick buttons held 2 s on the About page with the speed switch at OFF
 //(the firmware checks the rest: sticks zeroed; the own E-stop may be pressed). Then a picker: the pushbuttons choose a
-//game, which plays itself behind its name (silent); a stick click starts it. In the picker a stick flick up changes
-//the sound mode (the corner icon has an up arrow beside it, and each opening shows FLICK UP: SOUND for 2 s) (SOUND ON, MUSIC OFF, FX OFF, MUTE; kept in EEPROM), down shows the game's top 3, right its help;
-//both pushbuttons held 3 s offer to clear its top 3. Playing: the left pushbutton goes back to the picker, the right
-//one pauses (the pause screen is the help card; flicks up and down change the sound mode there). Game over: the
+//game, which plays itself behind its name (silent); a stick click starts it. The picker is laid out like the remote:
+//the pushbuttons' arrows in the bottom corners, each stick's job labelled in its top corner. The left stick flicked up
+//or down changes the sound mode (the icon top left with an up and down arrow; each opening shows L STICK: SOUND for
+//2 s) (Sound on, Music off, FX off, Mute; kept in EEPROM); the right stick flicked right shows the game's manual (the
+//help card, top right), down its top 3; both pushbuttons held 3 s offer to clear its top 3. Playing: the left
+//pushbutton goes back to the picker, the right one pauses (the pause screen is the help card; the left stick up and
+//down changes the sound mode there). Game over: the
 //game's rank when it entered its top 3, then the name entry; a click plays again, a pushbutton goes back to the
 //picker. Out: both stick buttons held 2 s again, 2 minutes without input, or the firmware leaves (speed switch off
 //OFF, own E-stop pressed or released, a new alarm). Sound: the board's sink through the ArcadeSink (the sound mode);
@@ -36,14 +40,14 @@ public:
     static constexpr uint32_t cardMillis = 8000;        //a card closes on its own
     static constexpr uint32_t modePillMillis = 1500;    //the new sound mode in the bottom pill
     static constexpr uint32_t hintPillMillis = 2000;    //on opening, how to change it (hintText) in the bottom pill
-    static const char* hintText(){ return "FLICK UP: SOUND"; }
+    static const char* hintText(){ return "L STICK: SOUND"; }
     static constexpr uint32_t clearHoldMillis = 3000;   //both pushbuttons held: the clear question
     static constexpr uint32_t clearAnswerMillis = 3000; //a stick click within this clears
     static constexpr uint32_t nameDelayMillis = 1500;   //the game over screen before the name entry
     static constexpr uint32_t letterRepeatDelayMillis = 400;
     static constexpr uint32_t letterRepeatMillis = 150;
 
-    static const uint8_t gameCount = 7;
+    static const uint8_t gameCount = 8;
 
     Arcade();
 
@@ -133,6 +137,7 @@ private:
     SnakeGame snake;
     BlocksGame blocks;
     PlumeGame plume;
+    StrikeGame strike;
     Game* games[gameCount];
 
     bool b_active = false;

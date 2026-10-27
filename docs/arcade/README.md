@@ -192,10 +192,10 @@ Snake's tune and Plume's arpeggio are original compositions; do not imitate a kn
   | 1 | 1 | layout version 1 |
   | 2 | 1 | sound mode (0..3) |
   | 3 | 4 | last name entered |
-  | 8 | 8 x 24 | 8 game slots (7 games, 1 spare), each a top 3 of entries |
+  | 8 | 8 x 24 | 8 game slots (7 games, 1 spare; Strike took the spare, slot 7, in 2026-10), each a top 3 of entries |
 
   An entry is 8 bytes: score `uint32_t` little endian, then 4 name characters. A slot is the game's fixed id
-  (Pong 0, Parking 1, Cave 2, Rocks 3, Snake 4, Blocks 5, Plume 6), not its place in the picker. An entry is empty
+  (Pong 0, Parking 1, Cave 2, Rocks 3, Snake 4, Blocks 5, Plume 6, Strike 7), not its place in the picker. An entry is empty
   when its name is not 4 valid characters (blank EEPROM 0xFF reads as empty). Wrong marker or version: all empty,
   defaults (sound mode SOUND ON, last name `AAAA`), written on the first change.
 - **`ArcadeStore`** interface in `lib/RemoteGames` (read and write a byte at an offset in the block); the board
@@ -226,6 +226,66 @@ Follow `docs/plume/README.md` with these changes, decided by the owner:
   and set its status banner to "implemented".
 - Tests in `test/test_game_plume/` like the other games (physics step, erosion, hull and invulnerability, camera
   only up, game over both ways, determinism per seed, demo survives some distance, sounds fire).
+
+## 8b. Strike, the eighth game (added 2026-10-27)
+
+**Strike** (`lib/RemoteGames/src/StrikeGame.{h,cpp}`, tests `test/test_game_strike/`) is our own brick-breaker on the
+theme of striking the set (taking it down after the show). Nothing in it comes from an existing game: names, layouts and
+power-ups are ours.
+
+- **Field**: landscape, held normally. The paddle is on the left edge (x 1 to 2, 8 px tall, 12 when wide); the set
+  stands against the right edge: 5 rows of up to 10 places, pieces 4 x 5 px on a 5 x 6 pitch (x 78 to 126, y 1 to
+  29). Row 31 and column 127 stay dark, so the 2 x 2 ball never fits over the first row, under the last or behind the
+  set. The score and the balls left (2 x 2 dots, then the glyphs of the power-ups running) sit at the top of the gap
+  (x 16, y 1, clear of the picker's sound icon); what passes over them gets a 1 px dark margin.
+- **Controls**: left stick Y moves the paddle, the deflection is its speed (dead zone 0.12, 100 px/s at full
+  deflection; the stick springs back, so no position mapping). The ball rides on the paddle; the right stick click
+  launches it (after the stage's name, 1.5 s). Help card: `L STICK: PADDLE UP/DN`, `R CLICK: LAUNCH BALL`,
+  `STRIKE ALL BUT TRUSS`.
+- **Pieces**: a set piece (solid, 1 hit, 10 points), a hatched piece (checkered, 2 hits: 5 then 25), steel truss
+  (solid with a notch in each side, never breaks, the ball bounces), a prize piece (two dark slots, twinkling; 1 hit,
+  15 points) that drops its power-up.
+- **Power-ups** (3 x 5 glyphs drifting left at 25 px/s, 50 points when caught with the paddle): **wide paddle** (a bar
+  with end caps; 12 px for 15 s), **three balls** (three short dashes in a triangle; up to 3 in play, a ball is lost
+  only when the last one goes), **slow ball** (a pause sign; 60 % speed for 10 s). A lost ball ends all of them.
+- **Physics**: the place of the hit on the paddle sets the angle (flat from its centre, 57 degrees from its tips); the
+  horizontal share of the speed never drops under 0.5. The ball moves in steps of at most 1 px on each axis (x, then
+  y), so it never passes through a piece or the paddle; a corner turns both axes in turn. Speed 70 px/s, 6 more every
+  10 pieces broken since the last ball lost, 15 more per loop, at most 150 px/s (3 px a tick). 8 s without touching
+  the paddle or a breakable piece nudges the ball 0.25 rad (no endless loops behind the truss).
+- **Stages** (a table in flash; a stage is struck when every breakable piece is gone, bonus 100 x its number counting
+  the loops; after the 12th they come round again faster, the intro showing `STAGE 3 L2`):
+
+  | # | Name | What it asks |
+  | :-- | :-- | :-- |
+  | 1 | FLATS | five flats in a row, open lanes between them; no truss |
+  | 2 | PLATFORMS | three rostra one above the other; shots along the empty levels reach the back |
+  | 3 | STAIRCASE | steps up to the right, hatched nosings, a truss stringer under the top |
+  | 4 | PROSCENIUM | a truss portal open only in the middle row: aim through the arch |
+  | 5 | WINGS | wings hung from the top and standing from the floor in turn: a slalom |
+  | 6 | BATTENS | two truss battens flown across, a gap in each: three lanes, shots up or down through the gaps |
+  | 7 | REVOLVE | a ring of pieces round a truss hub, room to go round behind it |
+  | 8 | TRAP ROOM | cells between truss joists, reached only from the middle corridor: steep shots |
+  | 9 | BARN DOORS | truss leaves angled in from the corners, a narrow slot between them |
+  | 10 | ORCH PIT | walled in front, open only along the top and bottom edges: off the walls |
+  | 11 | FLY TOWER | three truss towers, each open at one end: a zigzag |
+  | 12 | LOAD OUT | everything at once, most of it hatched |
+
+  `test_every_stage_can_be_struck` proves each one: a search-driven pilot (it tries every place on the paddle in copies
+  of the game and takes the shot that scores soonest, then steers with the stick) strikes every stage on both loops
+  for five seeds within 6 minutes without losing a ball.
+- **Lives and score**: 3 balls; the score is the points (higher is better), the game over pill says `1450 STAGE 7`.
+  Top 3 in **slot 7**, the spare one: `ArcadeScores::slotFor("STRIKE")` is 7, every other slot, the layout and its
+  version 1 unchanged, so saved scores stay valid (tested).
+- **Sound** (no music, like Pong, so the pieces stay audible; timer squares): a 30 ms blip per piece on the C major
+  pentatonic, one note higher per row up the set (C6 bottom to A6 top), an octave under it for a hatched piece's crack;
+  a G5 tick off the paddle; a dull thud off the truss (a 40 ms duet of D5 and D#5); power-up caught C6 E6 G6 C7; ball
+  lost G5 E5 C5 A4 falling (350 ms, before the Arcade's phrase at 400 ms); stage struck a jingle C6 E6 G6, E6 G6 C7.
+  WAVs: `python3 tools/sounds/render_cues.py cue fx_strike_<blips|tick|thud|catch|lost|struck>` and `game strike 60`.
+- **Demo**: follows the ball that reaches the paddle first, takes each at a random place on the paddle, launches by
+  itself; with its lapses (on by default) it looks every 2 to 6 ticks and misjudges a ball on purpose, 4 % of the time
+  plus 12 % a minute, so its games end within 3 minutes (27 to 154 s for 20 seeds, stages 1 to 3). Its own
+  `GameRandom`, so a game and its demo stay deterministic; silent without a sink.
 
 ## 9. Process rules for every agent
 
