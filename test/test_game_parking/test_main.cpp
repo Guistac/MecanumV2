@@ -1,6 +1,8 @@
 //Host tests of the PARKING game [D-157]: pio test -e native -f test_game_parking
 #include <unity.h>
 #include <math.h>
+#include <stdio.h>
+#include <string.h>
 #include <HostGfx.h>
 #include <GameContract.h>
 #include <ParkingGame.h>
@@ -27,6 +29,14 @@ static void driving(ParkingGame& game, float x, float y, float headingDeg){
     run(game, GameInput(), ParkingGame::introTicks);
     TEST_ASSERT_TRUE(game.getPhase() == ParkingGame::Phase::DRIVE);
     game.place(x, y, headingDeg * 3.14159265f / 180.0f);
+}
+
+static bool cueHeard(const RecordingSink& sink, const SoundCue& cue){
+    for(uint8_t back = 0; back < RecordingSink::keep; back++){
+        const RecordingSink::Play* p = sink.last(SoundLayer::FRONT, back);
+        if(p && !p->b_note && p->cue.notes == cue.notes) return true;
+    }
+    return false;
 }
 
 void test_contract(){
@@ -196,28 +206,58 @@ void test_every_stage_starts_free(){
         }
         TEST_ASSERT_TRUE(game.getPhase() == ParkingGame::Phase::DRIVE);
         //the moving pieces start from the middle stages on
-        TEST_ASSERT_EQUAL_UINT8(stage == 4 || stage == 8 || stage == 9 ? 1 : (stage == 6 || stage >= 10 ? 2 : 0), game.getMoverCount());
+        static const uint8_t movers[ParkingGame::levelCount] = {0, 0, 0, 0, 1, 0, 2, 0, 1, 1, 2, 2,
+                                                                0, 0, 0, 1, 2, 3, 0, 2, 0, 2};
+        TEST_ASSERT_EQUAL_UINT8(movers[stage], game.getMoverCount());
     }
 }
 
 void test_time_limit_ends_the_game_and_unparked_stages_cost(){
     ParkingGame game;
     game.reset(3);
-    for(int i = 0; i < 20000 && !game.isOver(); i++) game.update(GameInput());
+    for(int i = 0; i < 40000 && !game.isOver(); i++) game.update(GameInput());
     TEST_ASSERT_TRUE(game.isOver());
-    //5 min plus 60 s for each of the twelve stages
-    TEST_ASSERT_EQUAL_UINT32(3000 + 12 * 600, game.score());
+    TEST_ASSERT_FALSE(game.isWrecked());
+    //10 min plus 60 s for each of the 22 stages
+    TEST_ASSERT_EQUAL_UINT32(6000 + 22 * 600, game.score());
     char text[10];
     game.scoreText(text, sizeof(text), 483);
     TEST_ASSERT_EQUAL_STRING("48.3s", text);
 }
 
-void test_demo_parks_all_twelve_stages_fairly(){
+//every stage can be parked, proven by driving it: the demo player without its lapses (a scripted path through the
+//stage, waiting for the moving pieces) parks each stage, from its own intro, for ten seeds (the moving pieces start
+//anywhere in their cycle, the vehicle a little off its mark), never bumps, never overlaps anything, within 40 s
+void test_every_stage_is_solvable(){
+    for(uint8_t stage = 0; stage < ParkingGame::levelCount; stage++){
+        for(uint32_t seed = 1; seed <= 10; seed++){
+            ParkingGame game;
+            game.setDemoLapses(false);
+            game.reset(seed);
+            game.startStage(stage);
+            int ticks = 0;
+            for(; ticks < 40 * 50 && game.getLevelsDone() == 0; ticks++){
+                TEST_ASSERT_FALSE(game.overlapsNow());
+                GameInput input;
+                game.demo(input);
+                game.update(input);
+            }
+            char message[40];
+            snprintf(message, sizeof(message), "stage %u seed %lu", unsigned(stage + 1), (unsigned long)seed);
+            TEST_ASSERT_EQUAL_UINT8_MESSAGE(1, game.getLevelsDone(), message);
+            TEST_ASSERT_EQUAL_UINT16_MESSAGE(0, game.getPenaltyCount(), message);
+            TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, game.getDamage(), message);
+        }
+    }
+}
+
+void test_demo_without_lapses_parks_all_stages_fairly(){
     for(uint32_t seed = 1; seed <= 5; seed++){
         ParkingGame game;
+        game.setDemoLapses(false);
         game.reset(seed);
         int ticks = 0;
-        for(; ticks < 9000 && !game.isOver(); ticks++){
+        for(; ticks < 15000 && !game.isOver(); ticks++){
             TEST_ASSERT_FALSE(game.overlapsNow());
             GameInput input;
             game.demo(input);
@@ -227,12 +267,202 @@ void test_demo_parks_all_twelve_stages_fairly(){
             game.update(input);
         }
         TEST_ASSERT_TRUE(game.isOver());
-        //well inside the 3 minutes of the contract, waiting for the moving pieces included
-        TEST_ASSERT_TRUE(ticks < 130 * 50);
-        //all twelve parked (no unparked stage in the score), like a skilled operator: at most one bump
+        //well inside the time limit, waiting for the moving pieces included
+        TEST_ASSERT_TRUE(ticks < 270 * 50);
+        //all 22 parked (no unparked stage in the score), like a skilled operator: no bump
+        TEST_ASSERT_EQUAL_UINT8(ParkingGame::levelCount, game.getLevelsDone());
         TEST_ASSERT_EQUAL_UINT32(game.getClockTicks() / 5, game.score());
-        TEST_ASSERT_TRUE(game.getPenaltyCount() <= 1);
+        TEST_ASSERT_EQUAL_UINT16(0, game.getPenaltyCount());
+        TEST_ASSERT_FALSE(game.isWrecked());
     }
+}
+
+//the attract run: the demo player charges now and then (more often later on), so the vehicle is wrecked and the
+//picker's demo changes, mostly within the contract's 3 minutes (always within the time limit)
+void test_demo_lapses_wreck_the_attract_run(){
+    int quick = 0;
+    for(uint32_t seed = 1; seed <= 20; seed++){
+        ParkingGame game;
+        game.reset(seed);
+        int ticks = 0;
+        for(; ticks < 40000 && !game.isOver(); ticks++){
+            TEST_ASSERT_FALSE(game.overlapsNow());
+            GameInput input;
+            game.demo(input);
+            game.update(input);
+        }
+        TEST_ASSERT_TRUE(game.isOver());
+        TEST_ASSERT_TRUE(game.isWrecked());
+        TEST_ASSERT_TRUE(game.getLevelsDone() >= 10);
+        if(ticks < 180 * 50) quick++;
+    }
+    TEST_ASSERT_TRUE(quick >= 16);
+}
+
+//the hard stages force the Mecanum moves: in the crab corridors the vehicle cannot turn (it only tilts), in the top
+//slot of stage 14 it cannot face down, and the slanted gate of stage 19 does not let it through facing right
+void test_hard_stages_force_mecanum_moves(){
+    ParkingGame game;
+    //stage 13, 20 and 21: turning hard for 2 s on the start mark
+    const uint8_t crab[3] = {12, 19, 20};
+    const float startHeading[3] = {-90.0f, 90.0f, -80.0f};
+    for(int i = 0; i < 3; i++){
+        game.reset(1);
+        game.startStage(crab[i]);
+        run(game, GameInput(), ParkingGame::introTicks);
+        run(game, sticks(0, 0, 1), 100);
+        float turned = game.getHeading() * 180.0f / 3.14159265f - startHeading[i];
+        TEST_ASSERT_TRUE(fabsf(turned) < 30.0f);
+        TEST_ASSERT_FALSE(game.overlapsNow());
+    }
+    //stage 14: in the top slot, turning for 2 s gets nowhere near facing down
+    game.reset(1);
+    game.startStage(13);
+    run(game, GameInput(), ParkingGame::introTicks);
+    run(game, sticks(0, 0, 1), 100);
+    TEST_ASSERT_TRUE(game.getHeading() < 30.0f * 3.14159265f / 180.0f);
+    //stage 19: facing right, driving at the first gate's mouth for 3 s, it stays on the start side
+    game.reset(1);
+    game.startStage(18);
+    run(game, GameInput(), ParkingGame::introTicks);
+    game.place(14, 12, 0);
+    for(int t = 0; t < 150; t++){
+        //aimed at the gate's middle, slowly (no bumps), keeping the heading
+        float dx = 35.0f - game.getX(), dy = 16.0f - game.getY();
+        float length = sqrtf(dx * dx + dy * dy);
+        run(game, sticks(0.4f * dy / length, 0.4f * dx / length, 0), 1);
+    }
+    TEST_ASSERT_TRUE(game.getX() < 35.0f);
+    TEST_ASSERT_FALSE(game.overlapsNow());
+}
+
+//damage [owner 2026-10-27]: by the impact's speed, none for a graze, at most maxDamage
+void test_damage_scales_with_the_impact_speed(){
+    TEST_ASSERT_EQUAL_UINT8(0, ParkingGame::damageFor(5.0f));
+    TEST_ASSERT_EQUAL_UINT8(0, ParkingGame::damageFor(ParkingGame::bumpSpeed));
+    TEST_ASSERT_EQUAL_UINT8(ParkingGame::minDamage, ParkingGame::damageFor(ParkingGame::bumpSpeed + 0.01f));
+    TEST_ASSERT_EQUAL_UINT8(ParkingGame::fullDamage, ParkingGame::damageFor(ParkingGame::maxSpeed));
+    TEST_ASSERT_EQUAL_UINT8(ParkingGame::maxDamage, ParkingGame::damageFor(100.0f));
+    TEST_ASSERT_TRUE(ParkingGame::damageFor(20.0f) > ParkingGame::damageFor(15.0f));
+
+    ParkingGame game;
+    //full speed sideways into the flat of stage 1: most of fullDamage
+    driving(game, 46, 14, 0);
+    run(game, sticks(-1, 0, 0), 50);
+    TEST_ASSERT_EQUAL_UINT16(1, game.getPenaltyCount());
+    TEST_ASSERT_TRUE(game.getDamage() >= ParkingGame::fullDamage - 6 && game.getDamage() <= ParkingGame::fullDamage);
+    //half speed: less
+    driving(game, 46, 14, 0);
+    run(game, sticks(-0.5f, 0, 0), 50);
+    TEST_ASSERT_EQUAL_UINT16(1, game.getPenaltyCount());
+    TEST_ASSERT_TRUE(game.getDamage() >= ParkingGame::minDamage && game.getDamage() < 15);
+    //a graze: free
+    driving(game, 46, 14, 0);
+    run(game, sticks(-0.3f, 0, 0), 100);
+    TEST_ASSERT_EQUAL_UINT8(0, game.getDamage());
+}
+
+//damage carries over to the next stage, a parked stage repairs repairDamage, a new game starts undamaged
+void test_damage_carries_over_and_parking_repairs_a_little(){
+    ParkingGame game;
+    driving(game, 76, 20, 0);
+    game.setDamage(30);
+    run(game, GameInput(), ParkingGame::parkedHoldTicks + ParkingGame::flashTicks);
+    TEST_ASSERT_EQUAL_UINT8(1, game.getLevel());
+    TEST_ASSERT_EQUAL_UINT8(30 - ParkingGame::repairDamage, game.getDamage());
+    //never below 0
+    run(game, GameInput(), ParkingGame::introTicks);
+    game.setDamage(3);
+    game.place(77, 12, -3.14159265f / 2.0f);
+    run(game, GameInput(), ParkingGame::parkedHoldTicks);
+    TEST_ASSERT_TRUE(game.getPhase() == ParkingGame::Phase::PARKED);
+    TEST_ASSERT_EQUAL_UINT8(0, game.getDamage());
+    game.setDamage(50);
+    game.reset(2);
+    TEST_ASSERT_EQUAL_UINT8(0, game.getDamage());
+    TEST_ASSERT_FALSE(game.isWrecked());
+}
+
+//at 100 % the vehicle is wrecked: the wreck's crash instead of the crunch, the clock stops, the word, then the game
+//is over with the unparked stages counted and WRECKED in the game over text
+void test_wreck_ends_the_run(){
+    ParkingGame game;
+    RecordingSink sink;
+    game.setSound(&sink);
+    driving(game, 46, 14, 0);
+    game.setDamage(90);
+    sink.clear();
+    for(int t = 0; t < 50 && !game.isWrecked(); t++) run(game, sticks(-1, 0, 0), 1);
+    TEST_ASSERT_TRUE(game.isWrecked());
+    TEST_ASSERT_EQUAL_UINT8(100, game.getDamage());
+    TEST_ASSERT_TRUE(game.getPhase() == ParkingGame::Phase::WRECKED);
+    TEST_ASSERT_TRUE(cueHeard(sink, game.wreckSound()));
+    TEST_ASSERT_FALSE(cueHeard(sink, game.impactSound()));
+    TEST_ASSERT_FALSE(game.isOver());
+    uint32_t clock = game.getClockTicks();
+    //the sticks do nothing any more
+    float x = game.getX(), y = game.getY();
+    run(game, sticks(1, 1, 1), ParkingGame::wreckTicks - 1);
+    TEST_ASSERT_FALSE(game.isOver());
+    TEST_ASSERT_EQUAL_FLOAT(x, game.getX());
+    TEST_ASSERT_EQUAL_FLOAT(y, game.getY());
+    run(game, GameInput(), 1);
+    TEST_ASSERT_TRUE(game.isOver());
+    TEST_ASSERT_EQUAL_UINT32(clock, game.getClockTicks());
+    //stage 1 not parked: all 22 cost their 60 s
+    TEST_ASSERT_EQUAL_UINT32(clock / 5 + 22 * 600, game.score());
+    char text[16];
+    game.overText(text, sizeof(text), game.score());
+    TEST_ASSERT_EQUAL_STRING_LEN("WRECKED ", text, 8);
+    TEST_ASSERT_TRUE(strlen(text) <= 15);
+    //the worst wrecked score still fits: WRECKED and 7 characters
+    game.overText(text, sizeof(text), 6000 + 22 * 600);
+    TEST_ASSERT_EQUAL_STRING("WRECKED 1920.0s", text);
+    //the wreck: a long crash of noise and a low falling buzz, over before the game is
+    const SoundCue& crash = game.wreckSound();
+    bool b_noise = false, b_low = false;
+    for(uint16_t i = 0; i < crash.noteCount; i++){
+        if(crash.notes[i].wave == Synth::Wave::NOISE) b_noise = true;
+        else if(crash.notes[i].hertz < 200) b_low = true;
+    }
+    TEST_ASSERT_TRUE(b_noise && b_low);
+    TEST_ASSERT_TRUE(crash.lengthMillis() > 500);
+    TEST_ASSERT_TRUE(crash.lengthMillis() < ParkingGame::wreckTicks * 20);
+}
+
+//the meter: two rows on the booth's bottom edge from the left, as long as the damage; a dark row between it and the
+//time (and one row under the penalty's pill, a dark row between them)
+void test_damage_meter_under_the_time(){
+    ParkingGame game;
+    GFXcanvas1 canvas(128, 32);
+    driving(game, 20, 20, 0);
+    game.setDamage(50);
+    canvas.fillScreen(0);
+    game.draw(canvas);
+    //the track: the booth's bottom edge, row 11, x 95..127
+    for(int16_t px = 95; px < 128; px++) TEST_ASSERT_TRUE(canvas.getPixel(px, 11));
+    //half full: 16 of 32 columns from x 96, rows 9 and 10
+    for(int16_t px = 96; px < 112; px++) TEST_ASSERT_TRUE(canvas.getPixel(px, 9) && canvas.getPixel(px, 10));
+    for(int16_t px = 112; px < 128; px++) TEST_ASSERT_FALSE(canvas.getPixel(px, 9) || canvas.getPixel(px, 10));
+    //a dark row between the meter and the time
+    for(int16_t px = 96; px < 128; px++) TEST_ASSERT_FALSE(canvas.getPixel(px, 8));
+    //no damage: the track only
+    game.setDamage(0);
+    canvas.fillScreen(0);
+    game.draw(canvas);
+    for(int16_t px = 96; px < 128; px++) TEST_ASSERT_FALSE(canvas.getPixel(px, 10));
+    //just after a bump (the pill shows): one row, a dark row under the pill
+    driving(game, 46, 14, 0);
+    while(game.getPenaltyCount() == 0) run(game, sticks(-1, 0, 0), 1);
+    bool b_seen = false;
+    for(int t = 0; t < 30; t++){
+        canvas.fillScreen(0);
+        game.draw(canvas);
+        for(int16_t px = 96; px < 128; px++) TEST_ASSERT_FALSE(canvas.getPixel(px, 9));
+        if(canvas.getPixel(96, 10)) b_seen = true;
+        run(game, GameInput(), 1);
+    }
+    TEST_ASSERT_TRUE(b_seen);
 }
 
 //sound [D-157]: the motor whines while the vehicle moves, higher and louder the faster; nothing when it stands still
@@ -325,14 +555,6 @@ void test_impact_crunches_once(){
     TEST_ASSERT_EQUAL_UINT32(1, sink.cueCount(SoundLayer::FRONT));
 }
 
-static bool cueHeard(const RecordingSink& sink, const SoundCue& cue){
-    for(uint8_t back = 0; back < RecordingSink::keep; back++){
-        const RecordingSink::Play* p = sink.last(SoundLayer::FRONT, back);
-        if(p && !p->b_note && p->cue.notes == cue.notes) return true;
-    }
-    return false;
-}
-
 void test_parked_chimes_and_the_last_stage_plays_the_fanfare(){
     ParkingGame game;
     RecordingSink sink;
@@ -348,15 +570,16 @@ void test_parked_chimes_and_the_last_stage_plays_the_fanfare(){
     run(game, GameInput(), ParkingGame::flashTicks + ParkingGame::introTicks);
     TEST_ASSERT_EQUAL_UINT32(1, sink.total());
 
-    //a whole game by the demo player: a chime for each of the first eleven stages, the fanfare for the twelfth,
+    //a whole game by the demo player (no lapses): a chime for each stage but the last, the fanfare for the last,
     //over within about a second
     ParkingGame full;
     full.setSound(&sink);
+    full.setDemoLapses(false);
     full.reset(4);
     sink.clear();
     uint32_t chimes = 0;
     bool b_fanfare = false;
-    for(int t = 0; t < 9000 && !full.isOver(); t++){
+    for(int t = 0; t < 15000 && !full.isOver(); t++){
         GameInput input;
         full.demo(input);
         ParkingGame::Phase before = full.getPhase();
@@ -414,7 +637,14 @@ int main(int argc, char** argv){
     RUN_TEST(test_moving_flat_pushes_never_crushes);
     RUN_TEST(test_every_stage_starts_free);
     RUN_TEST(test_time_limit_ends_the_game_and_unparked_stages_cost);
-    RUN_TEST(test_demo_parks_all_twelve_stages_fairly);
+    RUN_TEST(test_every_stage_is_solvable);
+    RUN_TEST(test_demo_without_lapses_parks_all_stages_fairly);
+    RUN_TEST(test_demo_lapses_wreck_the_attract_run);
+    RUN_TEST(test_hard_stages_force_mecanum_moves);
+    RUN_TEST(test_damage_scales_with_the_impact_speed);
+    RUN_TEST(test_damage_carries_over_and_parking_repairs_a_little);
+    RUN_TEST(test_wreck_ends_the_run);
+    RUN_TEST(test_damage_meter_under_the_time);
     RUN_TEST(test_motor_whine_follows_the_speed_and_stops_when_still);
     RUN_TEST(test_sliding_along_a_wall_scrapes);
     RUN_TEST(test_impact_crunches_once);

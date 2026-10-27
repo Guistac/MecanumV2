@@ -27,7 +27,10 @@ namespace Status{
             case RobotState::DISABLED: return {BigMessage::DISABLED, line};
             case RobotState::ENABLING: return {BigMessage::ENABLING, line};
             case RobotState::ENABLED: return {BigMessage::ENABLED, line};
-            case RobotState::EMERGENCY_STOPPING: return {BigMessage::STOPPING, line};
+            case RobotState::EMERGENCY_STOPPING:
+                //a normal disable ramp is not an alarm: Disabling, no switch to Status, no wipe [D-163]
+                if(in.vehicle == Reply::VehicleState::DISABLING) return {BigMessage::DISABLING, line};
+                return {BigMessage::STOPPING, line};
             case RobotState::EMERGENCY_STOPPED:
                 if(in.sinceEstopReleaseMillis < extEstopDelayMillis) return {BigMessage::ESTOP, line};
                 return {BigMessage::EXT_ESTOP, line};

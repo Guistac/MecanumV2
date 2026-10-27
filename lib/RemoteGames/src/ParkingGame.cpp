@@ -17,10 +17,12 @@ namespace{
     const uint16_t bumpCooldownTicks = 25;  //a hit into a corner costs once, not once per face
 
     struct Box{ int16_t x, y, w, h; };
+    //a fixed piece of the set: a box, turned by angleDeg (clockwise on the screen) about its centre
+    struct Piece{ int16_t x, y, w, h; int16_t angleDeg; };
 
     //SLIDE: a flat on a track, from box to box + (dx, dy) and back, resting at both ends. WAGON: crosses the stage from
     //box to box + (dx, dy), both off the stage, then waits off stage. TURN: a bar on a turntable, box at 0 degrees,
-    //half a turn clockwise in moveTicks
+    //half a turn clockwise in moveTicks (counter-clockwise when dx < 0)
     enum class Kind : uint8_t { SLIDE, WAGON, TURN };
 
     struct Mover{
@@ -31,7 +33,10 @@ namespace{
         uint16_t holdTicks;
     };
 
-    //the demo player's path; a gated point waits until the mover (1 based) stays out of the zone for leadTicks
+    //the demo player's path; a gated point waits until the mover (1 based) stays out of the zone for leadTicks. The
+    //point before a gated one is a stop, reached within 1 px; S (no mover) makes the point before a stop only, for a
+    //tight corner
+    const uint8_t S = 0xFF;
     struct Waypoint{
         float x, y, headingDeg;
         uint8_t gate;
@@ -39,22 +44,26 @@ namespace{
         uint16_t leadTicks;
     };
 
-    //the time is shown in the top right corner, which every stage keeps free: it is a wall like the set pieces
-    const Box booth = {95, 0, 33, 11};
+    //the time and the damage meter under it are shown in the top right corner, which every stage keeps free: it is a
+    //wall like the set pieces
+    const Box booth = {95, 0, 33, 12};
 
     struct Level{
         float startX, startY, startHeadingDeg;
-        Box bay;                    //the painted outline; the vehicle's corners must stay on or inside it
+        //the painted outline; the vehicle's corners must stay on or inside it. A slanted bay (a heading that is not a
+        //multiple of 90): the box's centre is the bay's, w its length along the heading, h its width across
+        Box bay;
         int16_t bayHeadingDeg;      //0 right, 90 down, 180 left, -90 up: the marked (front) side
         uint8_t pieceCount;
-        Box pieces[4];
+        Piece pieces[ParkingGame::maxPieces];
         uint8_t moverCount;
         Mover movers[ParkingGame::maxMovers];
         uint8_t waypointCount;      //the last one is the bay
-        Waypoint waypoints[8];
+        Waypoint waypoints[ParkingGame::maxWaypoints];
     };
 
-    const Level levels[ParkingGame::levelCount] = {
+    //in flash (PROGMEM, Teensy 4 reads its flash directly): 11 KB less in RAM1
+    const Level levels[ParkingGame::levelCount] PROGMEM = {
         //1: straight ahead
         {14, 20, 0, {68, 15, 17, 11}, 0,
             1, {{36, 3, 20, 3}},
@@ -72,7 +81,7 @@ namespace{
             2, {{62, 8, 0}, {62, 25, 0}}},
         //4: reverse into the garage, nose out
         {14, 16, 0, {76, 18, 16, 12}, 180,
-            2, {{72, 12, 25, 3}, {95, 15, 3, 17}},
+            2, {{72, 13, 25, 3}, {95, 15, 3, 17}},
             0, {},
             2, {{56, 24, 180}, {84, 24, 180}}},
         //5: the first moving flat: wait until it opens the way below
@@ -118,6 +127,70 @@ namespace{
             2, {{Kind::WAGON, {30, -14, 10, 12}, 0, 48, 170, 50}, {Kind::TURN, {57, 15, 19, 3}, 0, 0, 400, 0}},
             4, {{20, 16, 0}, {47, 26, 0, 1, {29, 6, 12, 26}, 60}, {88, 26, 0, 2, {52, 20, 28, 12}, 60},
                 {113, 22, -90}}},
+        //13: crab walk: facing up in a corridor too low to turn in, sideways all the way and down the step
+        {10, 16, -90, {104, 13, 12, 14}, -90,
+            4, {{0, 7, 58, 3}, {0, 23, 48, 3}, {58, 12, 36, 3}, {48, 28, 80, 3}},
+            0, {},
+            5, {{30, 16, -90}, {52.5f, 16, -90}, {52.5f, 21.2f, -90, S}, {80, 21, -90, S}, {109.5f, 19.5f, -90}}},
+        //14: three pivots: along the top slot, turn, down through the gap, turn, along the bottom, turn, up into the bay
+        {10, 5.2f, 0, {79, 1, 11, 13}, -90,
+            9, {{0, 11, 30, 2}, {0, 15, 34, 2}, {43, 15, 5, 2}, {46, 0, 2, 15}, {48, 20, 28, 2}, {76, 15, 4, 2},
+                {89, 15, 6, 2}, {93, 17, 2, 15}, {72, 0, 2, 15}},
+            0, {},
+            11, {{24, 5.2f, 0}, {38, 7, 0}, {38, 7.2f, 90, S}, {38, 24, 90, S}, {38, 24, 0, S}, {38, 26.3f, 0, S},
+                {60, 26.3f, 0, S}, {84, 26.3f, 0}, {84, 24.5f, 0, S}, {84, 24.5f, -90, S}, {84, 7.2f, -90, S}}},
+        //15: over the slanted flat, then line up for the slanted bay: no room to turn between its walls
+        {12, 24, 0, {77, 14, 15, 11}, 45,
+            3, {{30, 20, 26, 3, -45}, {71, 24, 15, 3, 45}, {83, 12, 15, 3, 45}},
+            0, {},
+            5, {{22, 5, 0}, {60, 5, 0}, {72, 7, 0, S}, {72, 7, 45, S}, {84, 19, 45, S}}},
+        //16: parallel parking: along the lane under the flat, turn round at its end, back under the flat and sideways
+        //up into the slot, nose to the left
+        {12, 25.8f, 0, {41, 10, 14, 10}, 180,
+            6, {{0, 20, 38, 2}, {38, 7, 2, 15}, {40, 7, 16, 2}, {56, 7, 2, 15}, {58, 20, 7, 2}, {73, 20, 9, 2}},
+            1, {{Kind::SLIDE, {66, 7, 6, 13}, 0, 12, 60, 90}},
+            7, {{52, 25.8f, 0}, {88, 25.8f, 0, 1, {62, 21, 14, 11}, 70}, {100, 21.5f, 0, S}, {100, 21.5f, 180, S},
+                {84, 25.8f, 180, S}, {47.5f, 25.8f, 180, 1, {62, 21, 14, 11}, 70}, {47.5f, 14.5f, 180, S}}},
+        //17: twin turntables turning against each other: over the first, under the second, down into the bay
+        {10, 16, 0, {106, 13, 11, 17}, 90,
+            0, {},
+            2, {{Kind::TURN, {31, 15, 19, 3}, -1, 0, 300, 0}, {Kind::TURN, {71, 15, 19, 3}, 0, 0, 260, 0}},
+            6, {{14, 3.8f, 0}, {60, 3.8f, 0, 1, {24, 0, 32, 10}, 100}, {60, 27.2f, 0, S}, {100, 27.2f, 0, 2, {64, 22, 32, 10}, 95},
+                {111, 21, 0, S}, {111, 21, 90, S}}},
+        //18: three crushers: under the first, over the second, under the third, each in its own time
+        {12, 16, 0, {100, 17, 20, 12}, 0,
+            0, {},
+            3, {{Kind::SLIDE, {36, 0, 6, 20}, 0, 12, 50, 60}, {Kind::SLIDE, {62, 12, 6, 20}, 0, -12, 45, 75},
+                {Kind::SLIDE, {86, 0, 6, 20}, 0, 12, 40, 50}},
+            6, {{26, 25.5f, 0}, {52, 25.5f, 0, 1, {33, 20, 12, 12}, 60}, {52, 5.5f, 0, S}, {76, 5.5f, 0, 2, {59, 0, 12, 12}, 60},
+                {76, 25.5f, 0, S}, {110, 22.5f, 0, 3, {83, 20, 12, 12}, 60}}},
+        //19: slanted gates: each lets the vehicle through only lined up with it, a quarter turn between them
+        {10, 12, 0, {100, 17, 13, 11}, -45,
+            8, {{27, 20, 7, 3, 45}, {37, 10, 7, 3, 45}, {31, 23, 3, 9}, {37, 0, 3, 9},
+                {56, 10, 7, 3, -45}, {66, 20, 7, 3, -45}, {60, 0, 3, 9}, {66, 23, 3, 9}},
+            0, {},
+            11, {{14, 12, 0, S}, {14, 12, 45, S}, {27.6f, 8.6f, 45, S}, {42.4f, 23.4f, 45, S}, {49.5f, 22, 45, S},
+                {49.5f, 22, -45, S}, {56.6f, 23.4f, -45, S}, {72.5f, 7.5f, -45, S}, {80, 10, -45, S}, {84, 18, -45, S},
+                {106, 22, -45, S}}},
+        //20: crab under the pistons: facing down in a corridor too low to turn in, sideways past two drops
+        {8, 24.8f, 90, {108, 19, 12, 13}, 90,
+            3, {{0, 17, 36, 2}, {42, 17, 30, 2}, {78, 17, 24, 2}},
+            2, {{Kind::SLIDE, {37, 4, 4, 12}, 0, 15, 40, 50}, {Kind::SLIDE, {73, 4, 4, 12}, 0, 15, 35, 70}},
+            4, {{26, 24.8f, 90}, {55, 24.8f, 90, 1, {30, 18, 18, 14}, 50}, {91, 24.8f, 90, 2, {66, 18, 18, 14}, 50},
+                {113.5f, 25, 90, S}}},
+        //21: slanted crab: sideways down the slanted corridor, too narrow to turn in, out into the slanted bay
+        {30, 9, -80, {98, 18, 13, 9}, -80,
+            2, {{17, 3, 71, 3, 10}, {13, 20, 71, 3, 10}},
+            0, {},
+            3, {{55, 13.4f, -80}, {80, 17.8f, -80}, {104, 22, -80, S}}},
+        //22: all of it: along the top slot, turn, down through the gap, sideways under two pistons, turn round, into
+        //the slanted bay
+        {10, 5.2f, 0, {106, 17, 13, 11}, -45,
+            6, {{0, 11, 30, 2}, {0, 17, 34, 2}, {46, 0, 2, 17}, {43, 17, 15, 2}, {64, 17, 16, 2}, {86, 17, 10, 2}},
+            2, {{Kind::SLIDE, {59, 3, 4, 12}, 0, 16, 35, 45}, {Kind::SLIDE, {81, 3, 4, 12}, 0, 16, 30, 60}},
+            10, {{24, 5.2f, 0}, {38, 7, 0}, {38, 8.2f, 90, S}, {38, 24.8f, 90, S}, {50, 24.8f, 90, S},
+                {70, 24.8f, 90, 1, {52, 18, 18, 14}, 50}, {97, 24.8f, 90, 2, {74, 18, 18, 14}, 50}, {110, 21.5f, 90, S},
+                {110, 21.5f, -45, S}, {112, 22, -45, S}}},
     };
 
     float wrapAngle(float a){
@@ -177,6 +250,35 @@ namespace{
 
     float margined(Kind kind){ return kind == Kind::TURN ? turnMargin : margin; }
 
+    //a fixed piece's shape with its contact margin (a slanted one is drawn rounded: the turning margin)
+    ParkingGame::Obb pieceShape(const Piece& p){
+        Box b = {p.x, p.y, p.w, p.h};
+        if(p.angleDeg == 0) return boxShape(b, margin);
+        ParkingGame::Obb o = boxShape(b, turnMargin);
+        o.c = cosf(p.angleDeg * DEG);
+        o.s = sinf(p.angleDeg * DEG);
+        return o;
+    }
+
+    //every pixel whose centre lies in the shape (grown by 0.35 px): an even stroke at any angle (two triangles from
+    //rounded corners break up on a thin bar)
+    void fillShape(Adafruit_GFX& out, const ParkingGame::Obb& m){
+        float reach = m.hx + m.hy + 1.0f;
+        for(int16_t py = int16_t(m.cy - reach); py <= int16_t(m.cy + reach) + 1; py++){
+            for(int16_t px = int16_t(m.cx - reach); px <= int16_t(m.cx + reach) + 1; px++){
+                float dx = px - m.cx, dy = py - m.cy;
+                if(fabsf(dx * m.c + dy * m.s) <= m.hx + 0.35f && fabsf(-dx * m.s + dy * m.c) <= m.hy + 0.35f) out.drawPixel(px, py, GameDraw::ON);
+            }
+        }
+    }
+
+    bool isSlanted(int16_t headingDeg){ return headingDeg % 90 != 0; }
+
+    //the demo player's lapses: the chance of a charge at a point on the path, rising with the stage
+    float lapseChance(uint8_t level){ return 0.08f + 0.03f * level; }
+    const uint16_t lapseLongestTicks = 45;
+    const uint16_t wreckCardTicks = 30;     //the wreck blinks 0.6 s before the word covers it
+
     //sound [D-157]: the motor whines in grains of 30 ms every 40 ms, its pitch and level with the speed; sliding
     //along a wall, a scrape of noise every tick instead (synth noise: softer than the remote's square grind)
     const uint8_t motorPeriodTicks = 2;
@@ -193,6 +295,16 @@ ParkingGame::ParkingGame(){
     impactNotes.burst(0, 1400, 110, 100, 45, 0);
     impactNotes.sweep(0, 150, 85, 180, 6, Synth::Wave::SQUARE, 95, 1, 60);
     impactCue = impactNotes.cue();
+    //wrecked: a long crash of noise, the motor dying in a falling buzz, loose parts clattering, a last hiss
+    wreckNotes.burst(0, 1800, 160, 100, 120, 0);
+    wreckNotes.burst(140, 900, 260, 90, 200, 1);
+    wreckNotes.sweep(0, 420, 60, 700, 16, Synth::Wave::SQUARE, 95, 2, 120);
+    wreckNotes.synth(260, 2300, 30, 75, 20, Synth::Wave::PULSE25, 0);
+    wreckNotes.synth(360, 1900, 30, 70, 20, Synth::Wave::PULSE25, 0);
+    wreckNotes.synth(430, 2600, 25, 65, 15, Synth::Wave::PULSE25, 0);
+    wreckNotes.synth(540, 1700, 30, 60, 20, Synth::Wave::PULSE25, 0);
+    wreckNotes.burst(720, 5000, 300, 55, 260, 0);
+    wreckCue = wreckNotes.cue();
     //parked: a bell of three notes, C G C
     chimeNotes.synth(0, hertz(C6), 260, 85, 90, Synth::Wave::SQUARE, 0);
     chimeNotes.synth(90, hertz(G6), 280, 75, 110, Synth::Wave::PULSE25, 1);
@@ -213,9 +325,12 @@ ParkingGame::ParkingGame(){
 
 void ParkingGame::reset(uint32_t seed){
     random.seed(seed);
+    demoRandom.seed(seed ^ 0x5A17C0DEu);
     clockTicks = 0;
     penaltyCount = 0;
     penaltyShowTicks = 0;
+    damage = 0;
+    b_wrecked = false;
     levelsDone = 0;
     //the demo player's temper changes a little from game to game
     demoGain = 2.6f + 0.8f * random.unit();
@@ -235,10 +350,15 @@ void ParkingGame::startLevel(uint8_t index){
     scrapeSpeed = 0.0f;
     place(l.startX + (random.unit() - 0.5f) * 3.0f, l.startY + (random.unit() - 0.5f) * 2.0f,
           (l.startHeadingDeg + (random.unit() - 0.5f) * 10.0f) * DEG);
+    //a tight start (a corridor too low to turn in): on its mark exactly
+    if(overlapsNow()) place(l.startX, l.startY, l.startHeadingDeg * DEG);
     freeTicks = 1000;
     parkedTicks = 0;
     waypoint = 0;
     b_demoGo = false;
+    lapseTicks = 0;
+    stallTicks = unwindTicks = 0;
+    b_turnLate = false;
 }
 
 void ParkingGame::place(float px, float py, float headingRad){
@@ -269,7 +389,7 @@ ParkingGame::Obb ParkingGame::moverAt(uint8_t index, uint16_t ticks) const {
     Obb o = boxShape(m.box, 0.0f);
     ticks %= moverCycle(index);
     if(m.kind == Kind::TURN){
-        float angle = PI_F * float(ticks) / float(m.moveTicks);
+        float angle = (m.dx < 0 ? -PI_F : PI_F) * float(ticks) / float(m.moveTicks);
         o.c = cosf(angle);
         o.s = sinf(angle);
         return o;
@@ -330,7 +450,7 @@ bool ParkingGame::deepestContact(const Obb& v, float& depth, float& nx, float& n
     if(penetration(v, boxShape(booth, margin), d, ux, uy) && d > depth){ depth = d; nx = ux; ny = uy; }
     const Level& l = levels[level];
     for(uint8_t i = 0; i < l.pieceCount; i++){
-        if(penetration(v, boxShape(l.pieces[i], margin), d, ux, uy) && d > depth){ depth = d; nx = ux; ny = uy; }
+        if(penetration(v, pieceShape(l.pieces[i]), d, ux, uy) && d > depth){ depth = d; nx = ux; ny = uy; }
     }
     for(uint8_t i = 0; i < l.moverCount; i++){
         if(penetration(v, grown(movers[i], margined(l.movers[i].kind)), d, ux, uy) && d > depth){ depth = d; nx = ux; ny = uy; }
@@ -389,33 +509,45 @@ void ParkingGame::moveVehicle(const GameInput& input){
 
     float c = cosf(heading), s = sinf(heading);
     float vx = forwardSpeed * c - strafeSpeed * s, vy = forwardSpeed * s + strafeSpeed * c;
-    float nh = wrapAngle(heading + turnRate * dt);
-    float nx = x + vx * dt, ny = y + vy * dt;
     float impact = 0.0f;
     bool b_free = false;
     bool b_touched = false;
-    for(int attempt = 0; attempt < 5; attempt++){
-        float depth, ux, uy;
-        if(!deepestContact(vehicleAt(nx, ny, nh), depth, ux, uy)){
-            b_free = true;
-            break;
+    //the move with the turn first; when the turn is what wedges it (a slot too narrow to turn in), the move without
+    //the turn, so turning against a wall never stops the vehicle driving
+    for(int pass = 0; pass < 2 && !b_free; pass++){
+        if(pass == 1 && turnRate == 0.0f) break;
+        float nh = pass == 0 ? wrapAngle(heading + turnRate * dt) : heading;
+        float nx = x + vx * dt, ny = y + vy * dt;
+        float wx = vx, wy = vy, hit = 0.0f;
+        bool b_hit = false;
+        for(int attempt = 0; attempt < 5; attempt++){
+            float depth, ux, uy;
+            if(!deepestContact(vehicleAt(nx, ny, nh), depth, ux, uy)){
+                b_free = true;
+                break;
+            }
+            b_hit = true;
+            nx += ux * (depth + 0.01f);
+            ny += uy * (depth + 0.01f);
+            float into = wx * ux + wy * uy;
+            if(into < 0.0f){
+                if(-into > hit) hit = -into;
+                wx -= into * ux;
+                wy -= into * uy;
+            }
         }
-        b_touched = true;
-        nx += ux * (depth + 0.01f);
-        ny += uy * (depth + 0.01f);
-        float into = vx * ux + vy * uy;
-        if(into < 0.0f){
-            if(-into > impact) impact = -into;
-            vx -= into * ux;
-            vy -= into * uy;
-        }
-    }
-    if(b_free){
+        if(!b_free) continue;
         x = nx;
         y = ny;
         heading = nh;
-    }else{
-        //wedged (a turn in a pocket): stays where it was, which is always free
+        vx = wx;
+        vy = wy;
+        impact = hit;
+        b_touched = b_hit;
+        if(pass == 1) turnRate = 0.0f;
+    }
+    if(!b_free){
+        //wedged: stays where it was, which is always free
         vx = vy = 0.0f;
         turnRate = 0.0f;
     }
@@ -423,10 +555,8 @@ void ParkingGame::moveVehicle(const GameInput& input){
     forwardSpeed = vx * nc + vy * ns;
     strafeSpeed = -vx * ns + vy * nc;
     if(impact > bumpSpeed && freeTicks >= bumpCooldownTicks){
-        penaltyCount++;
-        penaltyShowTicks = 40;
         freeTicks = 0;
-        sound().play(impactCue);
+        bump(impact);
     }
     //sliding along what it touches: the scrape (sound only)
     else if(b_free && b_touched){
@@ -436,13 +566,50 @@ void ParkingGame::moveVehicle(const GameInput& input){
     if(freeTicks < 1000) freeTicks++;
 }
 
+uint8_t ParkingGame::damageFor(float impactSpeed){
+    if(impactSpeed <= bumpSpeed) return 0;
+    float amount = minDamage + (fullDamage - minDamage) * (impactSpeed - bumpSpeed) / (maxSpeed - bumpSpeed);
+    if(amount > maxDamage) amount = maxDamage;
+    return uint8_t(amount + 0.5f);
+}
+
+void ParkingGame::bump(float impactSpeed){
+    penaltyCount++;
+    penaltyShowTicks = 40;
+    uint16_t total = uint16_t(damage + damageFor(impactSpeed));
+    if(total < 100){
+        damage = uint8_t(total);
+        sound().play(impactCue);
+        return;
+    }
+    //wrecked: it stops where it is, the clock with it
+    damage = 100;
+    b_wrecked = true;
+    phase = Phase::WRECKED;
+    phaseTicks = 0;
+    forwardSpeed = strafeSpeed = turnRate = 0;
+    scrapeSpeed = 0.0f;
+    sound().play(wreckCue);
+}
+
 bool ParkingGame::isParkedNow() const {
     const Level& l = levels[level];
     float cx[4], cy[4];
     corners(x, y, heading, cx, cy);
-    for(int i = 0; i < 4; i++){
-        if(cx[i] < l.bay.x || cx[i] > l.bay.x + l.bay.w - 1) return false;
-        if(cy[i] < l.bay.y || cy[i] > l.bay.y + l.bay.h - 1) return false;
+    if(isSlanted(l.bayHeadingDeg)){
+        //in the bay's own frame: along its heading, across it
+        float bx = l.bay.x + (l.bay.w - 1) * 0.5f, by = l.bay.y + (l.bay.h - 1) * 0.5f;
+        float c = cosf(l.bayHeadingDeg * DEG), s = sinf(l.bayHeadingDeg * DEG);
+        for(int i = 0; i < 4; i++){
+            float dx = cx[i] - bx, dy = cy[i] - by;
+            if(fabsf(dx * c + dy * s) > (l.bay.w - 1) * 0.5f) return false;
+            if(fabsf(-dx * s + dy * c) > (l.bay.h - 1) * 0.5f) return false;
+        }
+    }else{
+        for(int i = 0; i < 4; i++){
+            if(cx[i] < l.bay.x || cx[i] > l.bay.x + l.bay.w - 1) return false;
+            if(cy[i] < l.bay.y || cy[i] > l.bay.y + l.bay.h - 1) return false;
+        }
     }
     if(fabsf(wrapAngle(heading - l.bayHeadingDeg * DEG)) > 10.0f * DEG) return false;
     //nearly stopped
@@ -463,6 +630,10 @@ void ParkingGame::update(const GameInput& input){
         }
         return;
     }
+    if(phase == Phase::WRECKED){
+        if(phaseTicks >= wreckTicks) phase = Phase::OVER;
+        return;
+    }
     if(phase == Phase::PARKED){
         if(phaseTicks >= flashTicks){
             if(level + 1 >= levelCount) phase = Phase::OVER;
@@ -474,10 +645,12 @@ void ParkingGame::update(const GameInput& input){
     //DRIVE: the clock runs
     clockTicks++;
     moveVehicle(input);
+    if(phase == Phase::WRECKED) return;
 
     if(isParkedNow()){
         if(++parkedTicks >= parkedHoldTicks){
             levelsDone++;
+            damage = damage > repairDamage ? uint8_t(damage - repairDamage) : 0;
             phase = Phase::PARKED;
             phaseTicks = 0;
             forwardSpeed = strafeSpeed = turnRate = 0;
@@ -520,6 +693,16 @@ void ParkingGame::scoreText(char* out, size_t size, uint32_t value) const {
     snprintf(out, size, "%lu.%lus", (unsigned long)(value / 10), (unsigned long)(value % 10));
 }
 
+void ParkingGame::overText(char* out, size_t size, uint32_t value) const {
+    if(!b_wrecked){
+        scoreText(out, size, value);
+        return;
+    }
+    char text[12];
+    scoreText(text, sizeof(text), value);
+    snprintf(out, size, "WRECKED %s", text);
+}
+
 void ParkingGame::drawVehicle(Adafruit_GFX& out, uint16_t color) const {
     float cx[4], cy[4];
     corners(x, y, heading, cx, cy);
@@ -540,22 +723,20 @@ void ParkingGame::drawVehicle(Adafruit_GFX& out, uint16_t color) const {
 
 void ParkingGame::draw(Adafruit_GFX& out) const {
     const Level& l = levels[level];
-    for(uint8_t i = 0; i < l.pieceCount; i++) out.fillRect(l.pieces[i].x, l.pieces[i].y, l.pieces[i].w, l.pieces[i].h, GameDraw::ON);
+    for(uint8_t i = 0; i < l.pieceCount; i++){
+        const Piece& p = l.pieces[i];
+        if(p.angleDeg == 0) out.fillRect(p.x, p.y, p.w, p.h, GameDraw::ON);
+        else{
+            Obb o = pieceShape(p);
+            fillShape(out, grown(o, -turnMargin));
+        }
+    }
 
     //the moving pieces: a dark line along a wide flat or a wagon tells it from the fixed set
     for(uint8_t i = 0; i < l.moverCount; i++){
         const Obb& m = movers[i];
-        if(l.movers[i].kind == Kind::TURN){
-            //every pixel whose centre lies in the bar: an even 3 px stroke at any angle (two triangles from rounded
-            //corners break up on a thin bar)
-            float reach = m.hx + m.hy + 1.0f;
-            for(int16_t py = int16_t(m.cy - reach); py <= int16_t(m.cy + reach) + 1; py++){
-                for(int16_t px = int16_t(m.cx - reach); px <= int16_t(m.cx + reach) + 1; px++){
-                    float dx = px - m.cx, dy = py - m.cy;
-                    if(fabsf(dx * m.c + dy * m.s) <= m.hx + 0.35f && fabsf(-dx * m.s + dy * m.c) <= m.hy + 0.35f) out.drawPixel(px, py, GameDraw::ON);
-                }
-            }
-        }else{
+        if(l.movers[i].kind == Kind::TURN) fillShape(out, m);
+        else{
             int16_t x0 = int16_t(lroundf(m.cx - m.hx)), y0 = int16_t(lroundf(m.cy - m.hy));
             int16_t w = int16_t(lroundf(2.0f * m.hx)) + 1, h = int16_t(lroundf(2.0f * m.hy)) + 1;
             out.fillRect(x0, y0, w, h, GameDraw::ON);
@@ -566,45 +747,104 @@ void ParkingGame::draw(Adafruit_GFX& out) const {
         }
     }
 
-    //the bay: corner marks, the marked (front) side drawn in full
-    const Box& b = l.bay;
-    int16_t x0 = b.x, y0 = b.y, x1 = b.x + b.w - 1, y1 = b.y + b.h - 1;
-    bool b_flash = phase == Phase::PARKED;
-    if(b_flash && (phaseTicks / 5) % 2 == 0){
-        out.fillRect(x0, y0, b.w, b.h, GameDraw::ON);
-        drawVehicle(out, GameDraw::OFF);
-    }else{
-        const int16_t leg = 3;
-        out.drawFastHLine(x0, y0, leg, GameDraw::ON);
-        out.drawFastHLine(x1 - leg + 1, y0, leg, GameDraw::ON);
-        out.drawFastHLine(x0, y1, leg, GameDraw::ON);
-        out.drawFastHLine(x1 - leg + 1, y1, leg, GameDraw::ON);
-        out.drawFastVLine(x0, y0, leg, GameDraw::ON);
-        out.drawFastVLine(x0, y1 - leg + 1, leg, GameDraw::ON);
-        out.drawFastVLine(x1, y0, leg, GameDraw::ON);
-        out.drawFastVLine(x1, y1 - leg + 1, leg, GameDraw::ON);
-        if(l.bayHeadingDeg == 0) out.drawFastVLine(x1, y0, b.h, GameDraw::ON);
-        else if(l.bayHeadingDeg == 180) out.drawFastVLine(x0, y0, b.h, GameDraw::ON);
-        else if(l.bayHeadingDeg == 90) out.drawFastHLine(x0, y1, b.w, GameDraw::ON);
-        else out.drawFastHLine(x0, y0, b.w, GameDraw::ON);
-        drawVehicle(out, GameDraw::ON);
-    }
+    drawBay(out);
+    drawBooth(out);
 
-    //the time in its corner, or the penalty while it shows
-    out.drawFastVLine(booth.x, 0, booth.h, GameDraw::ON);
-    out.drawFastHLine(booth.x, booth.h - 1, booth.w, GameDraw::ON);
     char label[12];
-    if(penaltyShowTicks){
-        GameDraw::pill(out, 126 - GameDraw::pillWidth("+2s") + 1, 0, "+2s", false);
-    }else{
-        uint32_t tenths = getClockTicks() / 5;
-        snprintf(label, sizeof(label), "%lu.%lu", (unsigned long)(tenths / 10), (unsigned long)(tenths % 10));
-        GameDraw::textRight(out, 126, 1, label);
-    }
-
     if(phase == Phase::INTRO){
         snprintf(label, sizeof(label), "STAGE %u/%u", unsigned(level + 1), unsigned(levelCount));
         GameDraw::pillCentered(out, 64, 12, label);
+    }
+    //wrecked: the vehicle blinks where it hit, then the word on a cleared screen, the stage it got to under it
+    if((phase == Phase::WRECKED && phaseTicks >= wreckCardTicks) || (phase == Phase::OVER && b_wrecked)){
+        out.fillRect(0, 0, width, height, GameDraw::OFF);
+        GameDraw::bigTextCentered(out, 64, 14, "WRECKED");
+        snprintf(label, sizeof(label), "STAGE %u/%u", unsigned(level + 1), unsigned(levelCount));
+        GameDraw::pillCentered(out, 64, 19, label, false);
+    }
+}
+
+//the bay: corner marks, the marked (front) side drawn in full; flashing filled once parked
+void ParkingGame::drawBay(Adafruit_GFX& out) const {
+    const Level& l = levels[level];
+    const Box& b = l.bay;
+    bool b_flash = phase == Phase::PARKED && (phaseTicks / 5) % 2 == 0;
+    //a wreck blinks
+    bool b_show = !(phase == Phase::WRECKED && (phaseTicks / 4) % 2 == 1);
+    if(isSlanted(l.bayHeadingDeg)){
+        Obb o = boxShape(b, 0.0f);
+        o.c = cosf(l.bayHeadingDeg * DEG);
+        o.s = sinf(l.bayHeadingDeg * DEG);
+        if(b_flash){
+            fillShape(out, o);
+            drawVehicle(out, GameDraw::OFF);
+            return;
+        }
+        //corners: front left, front right, back right, back left
+        const float along[4] = {o.hx, o.hx, -o.hx, -o.hx};
+        const float across[4] = {-o.hy, o.hy, o.hy, -o.hy};
+        float px[4], py[4];
+        for(int i = 0; i < 4; i++){
+            px[i] = o.cx + along[i] * o.c - across[i] * o.s;
+            py[i] = o.cy + along[i] * o.s + across[i] * o.c;
+        }
+        const float leg = 3.0f;
+        for(int i = 0; i < 4; i++){
+            int next = (i + 1) % 4, previous = (i + 3) % 4;
+            for(int k = 0; k < 2; k++){
+                int other = k ? next : previous;
+                float dx = px[other] - px[i], dy = py[other] - py[i];
+                float length = sqrtf(dx * dx + dy * dy);
+                float ex = px[i] + dx / length * (leg - 1.0f), ey = py[i] + dy / length * (leg - 1.0f);
+                out.drawLine(int16_t(lroundf(px[i])), int16_t(lroundf(py[i])), int16_t(lroundf(ex)), int16_t(lroundf(ey)), GameDraw::ON);
+            }
+        }
+        out.drawLine(int16_t(lroundf(px[0])), int16_t(lroundf(py[0])), int16_t(lroundf(px[1])), int16_t(lroundf(py[1])), GameDraw::ON);
+        if(b_show) drawVehicle(out, GameDraw::ON);
+        return;
+    }
+    int16_t x0 = b.x, y0 = b.y, x1 = b.x + b.w - 1, y1 = b.y + b.h - 1;
+    if(b_flash){
+        out.fillRect(x0, y0, b.w, b.h, GameDraw::ON);
+        drawVehicle(out, GameDraw::OFF);
+        return;
+    }
+    const int16_t leg = 3;
+    out.drawFastHLine(x0, y0, leg, GameDraw::ON);
+    out.drawFastHLine(x1 - leg + 1, y0, leg, GameDraw::ON);
+    out.drawFastHLine(x0, y1, leg, GameDraw::ON);
+    out.drawFastHLine(x1 - leg + 1, y1, leg, GameDraw::ON);
+    out.drawFastVLine(x0, y0, leg, GameDraw::ON);
+    out.drawFastVLine(x0, y1 - leg + 1, leg, GameDraw::ON);
+    out.drawFastVLine(x1, y0, leg, GameDraw::ON);
+    out.drawFastVLine(x1, y1 - leg + 1, leg, GameDraw::ON);
+    if(l.bayHeadingDeg == 0) out.drawFastVLine(x1, y0, b.h, GameDraw::ON);
+    else if(l.bayHeadingDeg == 180) out.drawFastVLine(x0, y0, b.h, GameDraw::ON);
+    else if(l.bayHeadingDeg == 90) out.drawFastHLine(x0, y1, b.w, GameDraw::ON);
+    else out.drawFastHLine(x0, y0, b.w, GameDraw::ON);
+    if(b_show) drawVehicle(out, GameDraw::ON);
+}
+
+//the time in its corner (or the penalty while it shows), the damage meter under it: the booth's bottom edge is the
+//meter's track, the damage two rows on it from the left (one under the penalty's pill, 1 px apart), blinking just
+//after a bump
+void ParkingGame::drawBooth(Adafruit_GFX& out) const {
+    out.drawFastVLine(booth.x, 0, booth.h, GameDraw::ON);
+    out.drawFastHLine(booth.x, booth.h - 1, booth.w, GameDraw::ON);
+    int16_t fill = int16_t((damage * (booth.w - 1) + 50) / 100);
+    if(damage > 0 && fill < 1) fill = 1;
+    bool b_blink = penaltyShowTicks && (penaltyShowTicks / 5) % 2 == 0;
+    if(fill > 0 && !b_blink){
+        int16_t rows = penaltyShowTicks ? 1 : 2;
+        out.fillRect(booth.x + 1, booth.h - 1 - rows, fill, rows, GameDraw::ON);
+    }
+    if(penaltyShowTicks){
+        GameDraw::pill(out, 126 - GameDraw::pillWidth("+2s") + 1, 0, "+2s", false);
+    }else{
+        char label[12];
+        uint32_t tenths = getClockTicks() / 5;
+        snprintf(label, sizeof(label), "%lu.%lu", (unsigned long)(tenths / 10), (unsigned long)(tenths % 10));
+        GameDraw::textRight(out, 126, 1, label);
     }
 }
 
@@ -612,7 +852,7 @@ void ParkingGame::draw(Adafruit_GFX& out) const {
 //the time it needs, predicted from the piece's cycle (as an operator who has watched it come round)
 bool ParkingGame::gateOpen(uint8_t index) const {
     const Waypoint& w = levels[level].waypoints[index];
-    if(w.gate == 0) return true;
+    if(w.gate == 0 || w.gate == S) return true;
     uint8_t m = w.gate - 1;
     Obb zone = boxShape(w.zone, 0.0f);
     float depth, nx, ny;
@@ -625,6 +865,27 @@ bool ParkingGame::gateOpen(uint8_t index) const {
 void ParkingGame::demo(GameInput& input){
     if(phase != Phase::DRIVE) return;
     const Level& l = levels[level];
+    //stuck: did the last tick move it at all
+    bool b_moved = fabsf(x - demoLastX) + fabsf(y - demoLastY) > 0.005f || fabsf(heading - demoLastHeading) > 0.001f;
+    demoLastX = x;
+    demoLastY = y;
+    demoLastHeading = heading;
+    if(unwindTicks){
+        unwindTicks--;
+        input.stick[2] = unwindTurn;
+        return;
+    }
+    //a lapse: full stick one way until it hits something (or gives up), then back to the path
+    if(lapseTicks){
+        if(penaltyCount != lapsePenalties) lapseTicks = 0;
+        else{
+            lapseTicks--;
+            float c = cosf(heading), s = sinf(heading);
+            input.stick[1] = clampf(lapseX * c + lapseY * s, -1.0f, 1.0f);
+            input.stick[0] = clampf(-lapseX * s + lapseY * c, -1.0f, 1.0f);
+            return;
+        }
+    }
     //waiting for a moving piece: it holds at the point before the gated one until the way is clear
     if(!b_demoGo && (waypoint == 0 || gateOpen(waypoint))) b_demoGo = true;
     uint8_t target = b_demoGo ? waypoint : uint8_t(waypoint - 1);
@@ -635,9 +896,27 @@ void ParkingGame::demo(GameInput& input){
     float dx = w.x - x, dy = w.y - y;
     float distance = sqrtf(dx * dx + dy * dy);
     float headingError = wrapAngle(w.headingDeg * DEG - heading);
-    if(b_demoGo && !b_last && distance < 3.0f && fabsf(headingError) < 10.0f * DEG){
+    bool b_precise = !b_last && l.waypoints[waypoint + 1].gate != 0;
+    if(b_demoGo && !b_last && distance < (b_precise ? 1.0f : 3.0f) && fabsf(headingError) < 10.0f * DEG){
         waypoint++;
         b_demoGo = false;
+        b_turnLate = false;
+        //now and then it charges at the next point instead (more often on the later stages); never where pieces move,
+        //where it could stop a turntable on itself while it waits for that turntable
+        if(b_demoLapses && l.moverCount == 0 && demoRandom.unit() < lapseChance(level)){
+            const Waypoint& n = l.waypoints[waypoint];
+            float ex = n.x - x, ey = n.y - y;
+            float length = sqrtf(ex * ex + ey * ey);
+            if(length > 0.5f){
+                lapseX = ex / length;
+                lapseY = ey / length;
+            }else{
+                lapseX = cosf(heading);
+                lapseY = sinf(heading);
+            }
+            lapseTicks = lapseLongestTicks;
+            lapsePenalties = penaltyCount;
+        }
         return demo(input);
     }
     //speed toward the point: slows down where it stops, keeps some way through the points on the path
@@ -655,6 +934,16 @@ void ParkingGame::demo(GameInput& input){
     input.stick[1] = clampf(forward / maxSpeed, -1.0f, 1.0f);
     input.stick[0] = clampf(strafe / maxSpeed, -1.0f, 1.0f);
     input.stick[2] = clampf(3.0f * headingError / maxTurnRate, -1.0f, 1.0f);
+    if(b_turnLate && distance > 2.0f) input.stick[2] = 0.0f;
     //the handheld's deadband
     for(int i = 0; i < 4; i++) if(fabsf(input.stick[i]) < 0.01f) input.stick[i] = 0.0f;
+    //pushing the sticks and not moving for 0.2 s: wedged by its own turn. Turn back a little, then turn at the point
+    bool b_pushing = fabsf(input.stick[0]) > 0.2f || fabsf(input.stick[1]) > 0.2f || fabsf(input.stick[2]) > 0.2f;
+    stallTicks = b_pushing && !b_moved ? uint8_t(stallTicks + 1) : 0;
+    if(stallTicks >= 10){
+        stallTicks = 0;
+        unwindTicks = 15;
+        unwindTurn = headingError > 0.0f ? -0.6f : 0.6f;
+        b_turnLate = true;
+    }
 }

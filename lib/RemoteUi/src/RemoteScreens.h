@@ -8,6 +8,7 @@
 #include <BootGuard.h>
 #include <RobotStates.h>
 #include <Stopwatch.h>
+#include <ReplyFrame.h>
 
 //Everything the remote's screens show, filled by RemoteBoard once per frame. The drawing below only reads it, so the
 //same code draws on the OLED and, on the Mac, into a canvas saved as a picture (tools/screens)
@@ -52,11 +53,20 @@ struct ScreenModel{
 
     //pages
     Page page = Page::STATUS;
-    uint8_t pageCount = 6;
+    uint8_t pageCount = 7;
     //transitions that animate the header itself: a title shown instead of the page's own, and the active page dot
     //between two positions (-1: on the page's own dot)
     const char* titleOverride = nullptr;
     float pageDotPosition = -1.0f;
+
+    //motion and motors pages [D-161, D-163]: the vehicle's state as reported (the 3 bit state; the finer one is
+    //motion.vehicleState), and the motion from the reply
+    uint8_t reportedState = 0;          //RobotState, 0 unknown
+    Reply::MotionAvailability motionAvailability = Reply::MotionAvailability::NO_LINK;
+    Reply::MotionView motion;
+    //the rollers' scroll per wheel (FL, FR, RL, RR), px along the wheel, advanced by RemoteBoard from the frame time
+    //and the wheel velocity (RemoteUi::advanceWheelPhase); a picture is set here directly
+    float wheelPhase[4] = {0, 0, 0, 0};
 
     //radio page
     bool b_radioUp = false;
@@ -108,6 +118,14 @@ namespace RemoteUi{
     void draw(Adafruit_GFX& g, const ScreenModel& m);
 
     const char* pageTitle(Page page);
+
+    //[D-163] the vehicle state in capitals (NO STACATO, BUS START, ...); UNKNOWN: the 3 bit state's text or nullptr
+    const char* vehicleStateText(Reply::VehicleState state, uint8_t reportedState);
+
+    //the Motors page's rollers: px per second along the wheel at 100 % of the drive's velocity limit
+    static constexpr float wheelPixelsPerSecond = 40.0f;
+    //one frame's step (elapsed capped at 100 ms, NaN velocity: no step)
+    float advanceWheelPhase(float phase, float velocity, uint32_t elapsedMillis);
 
     //parts, also used by RemoteBoard
     void drawStatus(Adafruit_GFX& g, const ScreenModel& m);

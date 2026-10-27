@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <string>
 #include <vector>
+#include <initializer_list>
 
 struct Example{
     std::string name;
@@ -116,7 +117,143 @@ int main(int argc, char** argv){
     { ScreenModel m = base(); m.page = Page::ABOUT; m.b_arcadeReady = true; m.now = 0; add("24c_page_about_play_up", m); }
     { ScreenModel m = base(); m.page = Page::ABOUT; m.b_arcadeReady = true; m.now = 100; add("24d_page_about_play_pressed", m); }
     { ScreenModel m = base(); m.page = Page::ABOUT; m.arcadeLoading = 0.45f; m.now = 500; add("24e_arcade_loading", m); }
-    { ScreenModel m = base(); m.page = Page::SETTINGS; m.pageCount = 7; m.speedState = 0; add("25_page_settings", m); }
+    { ScreenModel m = base(); m.page = Page::SETTINGS; m.pageCount = 8; m.speedState = 0; add("25_page_settings", m); }
+    //the Motion page [D-161, D-163], a main page with the timer [D-160]: two columns on the text lines from row 9 (5x
+    //live, 6x without motion data or editing; render.py)
+    using VS = Reply::VehicleState;
+    struct StateCase{ VS state; RobotState reported; const char* name; };
+    //every vehicle state with the 3 bit state the receiver would send beside it
+    const StateCase states[] = {
+        {VS::NO_STACATO, RobotState(0), "no_stacato"},
+        {VS::BUS_START, RobotState::DISABLED, "bus_start"},
+        {VS::BUS_OFF, RobotState::DISABLED, "bus_off"},
+        {VS::VEHICLE_OFF, RobotState::DISABLED, "vehicle_off"},
+        {VS::DISABLED, RobotState::DISABLED, "disabled"},
+        {VS::ENABLING, RobotState::ENABLING, "enabling"},
+        {VS::ENABLED, RobotState::ENABLED, "enabled"},
+        {VS::DISABLING, RobotState::EMERGENCY_STOPPING, "disabling_ramp"},
+        {VS::DISABLING, RobotState::DISABLING, "disabling"},
+        {VS::E_STOPPING, RobotState::EMERGENCY_STOPPING, "e_stopping"},
+        {VS::E_STOP, RobotState::EMERGENCY_STOPPED, "e_stop"},
+        {VS::AXIS_FAULT, RobotState::EMERGENCY_STOPPED, "axis_fault"},
+        {VS::AXIS_FAULT, RobotState::DISABLED, "axis_fault_disabled"},
+        {VS::UNKNOWN, RobotState::ENABLED, "unknown_enabled"},
+        {VS::UNKNOWN, RobotState(0), "unknown_none"},
+    };
+    //the Status message the board would select from the 3 bit state (StatusView)
+    auto statusFor = [](RobotState reported){
+        StatusInputs in;
+        in.b_linkUp = true;
+        in.reportedState = uint8_t(reported);
+        return Status::select(in);
+    };
+    auto motion = [](float vx, float vy, float vr, std::initializer_list<float> velocity, std::initializer_list<float> torque, uint16_t flags){
+        Reply::MotionView v;
+        v.b_velocityLive = true;
+        v.vx = vx;
+        v.vy = vy;
+        v.vr = vr;
+        int i = 0;
+        for(float f : velocity) v.wheelVelocity[i++] = f;
+        i = 0;
+        for(float f : torque) v.wheelTorque[i++] = f;
+        v.b_torqueKnown = true;
+        v.wheelFlags = flags;
+        v.b_flagsKnown = true;
+        v.poseX = 12.345f;
+        v.poseY = -3.2f;
+        v.heading = 179.94f;
+        v.vehicleState = VS::ENABLED;
+        return v;
+    };
+    auto live = [&](VS state, RobotState reported, Reply::MotionView v){
+        ScreenModel m = base();
+        m.page = Page::MOTION;
+        m.reportedState = uint8_t(reported);
+        m.status = statusFor(reported);
+        m.motionAvailability = Reply::MotionAvailability::LIVE;
+        v.vehicleState = state;
+        m.motion = v;
+        return m;
+    };
+    Reply::MotionView driving = motion(0.312f, -0.048f, 0.1f, {0.45f, -0.2f, 1.0f, -1.0f}, {0.3f, -0.15f, 0.8f, -0.6f}, 0x00FF);
+    Reply::MotionView atRest = motion(0.0f, 0.0f, 0.0f, {0, 0, 0, 0}, {0, 0, 0, 0}, 0x00F0);
+    //Status: every vehicle state (0v_)
+    for(const StateCase& c : states){
+        ScreenModel m = live(c.state, c.reported, atRest);
+        m.page = Page::STATUS;
+        add((std::string("0v_status_") + c.name).c_str(), m);
+    }
+    { ScreenModel m = live(VS::AXIS_FAULT, RobotState::EMERGENCY_STOPPED, atRest); m.page = Page::STATUS; m.now = 600; add("0v_status_axis_fault_pulse", m); }
+    { ScreenModel m = live(VS::E_STOPPING, RobotState::EMERGENCY_STOPPING, atRest); m.page = Page::STATUS; m.b_worldFrame = true; m.now = 200; add("0v_status_e_stopping_plain", m); }
+    { ScreenModel m = live(VS::VEHICLE_OFF, RobotState::DISABLED, atRest); m.page = Page::STATUS; m.b_worldFrame = true; m.speedState = 2;
+      m.stopwatch = timer(300000, 150000, Stopwatch::State::RUNNING); add("0v_status_vehicle_off_countdown_world", m); }
+    { ScreenModel m = live(VS::NO_STACATO, RobotState(0), atRest); m.page = Page::STATUS; m.b_worldFrame = true; add("0v_status_no_stacato_world", m); }
+    //Motion: every vehicle state in the title (5v_)
+    for(const StateCase& c : states){
+        ScreenModel m = live(c.state, c.reported, driving);
+        add((std::string("5v_motion_") + c.name).c_str(), m);
+    }
+    { ScreenModel m = base(); m.page = Page::MOTION; m.b_linkUp = false; m.motionAvailability = Reply::MotionAvailability::NO_LINK; add("60_motion_no_link", m); }
+    { ScreenModel m = base(); m.page = Page::MOTION; m.reportedState = uint8_t(RobotState::DISABLED); m.motion.vehicleState = VS::NO_STACATO;
+      m.motionAvailability = Reply::MotionAvailability::NO_DATA; add("61_motion_no_data", m); }
+    { ScreenModel m = base(); m.page = Page::MOTION; m.reportedState = uint8_t(RobotState::DISABLED); m.motion.vehicleState = VS::DISABLED;
+      m.motionAvailability = Reply::MotionAvailability::NO_DATA; m.stopwatch = timer(300000, 150000, Stopwatch::State::RUNNING); add("62_motion_no_data_countdown", m); }
+    add("50_motion_driving", live(VS::ENABLED, RobotState::ENABLED, driving));
+    add("51_motion_disabled_at_rest", live(VS::DISABLED, RobotState::DISABLED, atRest));
+    add("52_motion_widest_values", live(VS::ENABLED, RobotState::ENABLED, [&]{ Reply::MotionView v = motion(-1.25f, -12.5f, -2.2f, {0, 0, 0, 0}, {0, 0, 0, 0}, 0x000F);
+        v.poseX = -99.99f; v.poseY = -123.4f; v.heading = -179.9f; return v; }()));
+    { Reply::MotionView v = motion(0.02f, 1.5f, 0.0f, {0.8f, 0.8f, 0.8f, 0.8f}, {0, 0, 0, 0}, 0); v.poseX = v.poseY = v.heading = NAN;
+      add("53_motion_without_pose", live(VS::ENABLING, RobotState::ENABLING, v)); }
+    { Reply::MotionView v = driving; v.heading = NAN; add("53b_motion_pose_without_heading", live(VS::ENABLED, RobotState::ENABLED, v)); }
+    { Reply::MotionView v = driving; v.vr = 22.0f; v.heading = 0.04f; v.poseX = 0.0f; v.poseY = 0.004f; add("53c_motion_fast_turn_at_origin", live(VS::ENABLED, RobotState::ENABLED, v)); }
+    //the timer on the Motion page [D-160]
+    { ScreenModel m = live(VS::ENABLED, RobotState::ENABLED, driving); m.stopwatch = timer(0, 133400, Stopwatch::State::RUNNING); add("56_motion_timer_counting", m); }
+    { ScreenModel m = live(VS::ENABLED, RobotState::ENABLED, driving); m.stopwatch = timer(0, 133400, Stopwatch::State::STOPPED); m.now = 1000; add("56b_motion_timer_stopped_blank", m); }
+    { ScreenModel m = live(VS::ENABLED, RobotState::ENABLED, driving); m.stopwatch = timer(300000, 150000, Stopwatch::State::RUNNING); add("57_motion_countdown_half", m); }
+    { ScreenModel m = live(VS::ENABLED, RobotState::ENABLED, driving); m.stopwatch = timer(300000, 285000, Stopwatch::State::RUNNING); add("57b_motion_countdown_nearly", m); }
+    { ScreenModel m = live(VS::ENABLED, RobotState::ENABLED, driving); m.stopwatch = timer(300000, 305000, Stopwatch::State::RUNNING); m.now = 0; add("58_motion_overtime_shown", m); }
+    { ScreenModel m = live(VS::ENABLED, RobotState::ENABLED, driving); m.stopwatch = timer(300000, 305000, Stopwatch::State::RUNNING); m.now = 600; add("58b_motion_overtime_blank", m); }
+    { ScreenModel m = live(VS::DISABLED, RobotState::DISABLED, driving); m.stopwatch = timer(300000, 372300, Stopwatch::State::STOPPED); m.now = 600; add("58c_motion_overtime_stopped", m); }
+    { ScreenModel m = live(VS::VEHICLE_OFF, RobotState::DISABLED, driving); m.stopwatch = timer(60000, 814500, Stopwatch::State::RUNNING); m.now = 0; add("58d_motion_widest_title", m); }
+    { ScreenModel m = live(VS::E_STOPPING, RobotState::EMERGENCY_STOPPING, driving); m.stopwatch = timer(60000, 814500, Stopwatch::State::RUNNING); m.now = 0; add("58e_motion_widest_title_e_stopping", m); }
+    { ScreenModel m = live(VS::E_STOP, RobotState::EMERGENCY_STOPPED, atRest); m.stopwatch = timer(300000, 150000, Stopwatch::State::RUNNING); add("59_motion_estop_countdown", m); }
+    { ScreenModel m = live(VS::DISABLED, RobotState::DISABLED, driving); m.speedState = 0; m.stopwatch = timer(150000, 0, Stopwatch::State::IDLE); m.stopwatch.b_editing = true; add("63_motion_edit_2m30", m); }
+    { ScreenModel m = live(VS::DISABLED, RobotState::DISABLED, driving); m.speedState = 0; m.stopwatch.b_editing = true; add("63b_motion_edit_0m00", m); }
+    //the Motors page [D-163] (7x; render.py): every wheel state, values, animation phases
+    auto motors = [&](VS state, RobotState reported, Reply::MotionView v){
+        ScreenModel m = live(state, reported, v);
+        m.page = Page::MOTORS;
+        return m;
+    };
+    {
+        std::string p = "7_motors_";
+        add((p + "driving").c_str(), motors(VS::ENABLED, RobotState::ENABLED, driving));
+        //ON, RDY, OFF, -- (FL enabled, FR ready, RL neither, RR enabled and ready)
+        { Reply::MotionView v = motion(0, 0, 0, {0.05f, 0, 0, -0.004f}, {0.02f, 0, 0, 0}, 0x00A9);
+          add((p + "states_on_rdy_off").c_str(), motors(VS::ENABLING, RobotState::ENABLING, v)); }
+        { Reply::MotionView v = atRest; v.b_flagsKnown = false; v.b_torqueKnown = false; for(int i = 0; i < 4; i++) v.wheelVelocity[i] = NAN;
+          add((p + "unknown").c_str(), motors(VS::ENABLED, RobotState::ENABLED, v)); }
+        //FL fault, FR STO, RL fault and STO (FLT at 0 s, STO at 1 s), RR ready
+        { Reply::MotionView v = motion(0, 0, 0, {0, 0, 0, 0}, {0, 0, 0, 0}, 0x6580);
+          ScreenModel m = motors(VS::AXIS_FAULT, RobotState::EMERGENCY_STOPPED, v); m.now = 0; add((p + "fault_sto_flt").c_str(), m);
+          m.now = 1000; add((p + "fault_sto_sto").c_str(), m); }
+        { Reply::MotionView v = motion(0, 0, 0, {0, 0, 0, 0}, {0, 0, 0, 0}, 0xF000);
+          add((p + "estop_all_sto").c_str(), motors(VS::E_STOP, RobotState::EMERGENCY_STOPPED, v)); }
+        { ScreenModel m = base(); m.page = Page::MOTORS; m.b_linkUp = false; m.motionAvailability = Reply::MotionAvailability::NO_LINK;
+          add((p + "no_link").c_str(), m); }
+        //the rollers scrolling: four frames 25 ms apart (the phase as RemoteBoard advances it)
+        for(int frame = 0; frame < 4; frame++){
+            ScreenModel m = motors(VS::ENABLED, RobotState::ENABLED, driving);
+            for(int i = 0; i < 4; i++){
+                float phase = 0.0f;
+                for(int f = 0; f < frame; f++) phase = RemoteUi::advanceWheelPhase(phase, m.motion.wheelVelocity[i], 25);
+                m.wheelPhase[i] = phase;
+            }
+            m.frame = uint8_t(frame * 3);
+            add((p + "phase_" + std::to_string(frame)).c_str(), m);
+        }
+    }
     { ScreenModel m = base(); m.b_menuOpen = true; m.speedState = 0; m.pending.channel = 5; add("30_menu_channel", m); }
     { ScreenModel m = base(); m.b_menuOpen = true; m.speedState = 0; m.menuItem = SettingsMenu::Item::STICKS; add("31_menu_sticks", m); }
     { ScreenModel m = base(); m.b_menuOpen = true; m.speedState = 0; m.menuItem = SettingsMenu::Item::SAVE; m.pending.contrast = 2; m.saveProgress = 0.6f; add("32_menu_save", m); }
@@ -232,6 +369,31 @@ int main(int argc, char** argv){
             char name[64];
             snprintf(name, sizeof(name), "/g_alive_%s_%d.pbm", page == 0 ? "enabled" : (page == 1 ? "disabled" : "page"), frame);
             writePbm(canvas, outDir + name);
+        }
+    }
+
+    //the Motors page's rollers at 50 Hz, 2 s (g_motors_<frame>.pbm), RemoteBoard's phase steps [D-163]
+    {
+        ScreenModel m = base();
+        m.page = Page::MOTORS;
+        m.motionAvailability = Reply::MotionAvailability::LIVE;
+        m.motion.b_velocityLive = true;
+        m.motion.b_flagsKnown = true;
+        m.motion.b_torqueKnown = true;
+        m.motion.wheelFlags = 0x00FF;
+        const float velocity[4] = {0.45f, -0.2f, 1.0f, -1.0f};
+        const float torque[4] = {0.3f, -0.15f, 0.8f, -0.6f};
+        for(int i = 0; i < 4; i++){ m.motion.wheelVelocity[i] = velocity[i]; m.motion.wheelTorque[i] = torque[i]; }
+        for(int frame = 0; frame < 100; frame++){
+            m.now = 100 + frame * 20;
+            m.frame = uint8_t(frame);
+            GFXcanvas1 canvas(128, 32);
+            canvas.fillScreen(0);
+            RemoteUi::draw(canvas, m);
+            char name[64];
+            snprintf(name, sizeof(name), "/g_motors_%d.pbm", frame);
+            writePbm(canvas, outDir + name);
+            for(int i = 0; i < 4; i++) m.wheelPhase[i] = RemoteUi::advanceWheelPhase(m.wheelPhase[i], velocity[i], 20);
         }
     }
 

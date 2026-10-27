@@ -33,7 +33,7 @@ namespace RemoteSounds{
             {0, SQ, 0, W::SQUARE, 2093, 50, 0, 0},
             {60, SQ, 0, W::SQUARE, 1568, 50, 0, 0},
         };
-        //pages: C6 D6 E6 G6 A6 C7 D7 (a pentatonic run, Status lowest)
+        //pages: C6 D6 E6 G6 A6 C7 D7 E7 (a pentatonic run, Status lowest; Motion [D-161] took D6, the rest moved up one)
         const SoundNote pageNotes[] = {
             {0, SQ, 0, W::SQUARE, 1047, 40, 0, 0},
             {0, SQ, 0, W::SQUARE, 1175, 40, 0, 0},
@@ -42,6 +42,8 @@ namespace RemoteSounds{
             {0, SQ, 0, W::SQUARE, 1760, 40, 0, 0},
             {0, SQ, 0, W::SQUARE, 2093, 40, 0, 0},
             {0, SQ, 0, W::SQUARE, 2349, 40, 0, 0},
+            {0, SQ, 0, W::SQUARE, 2637, 40, 0, 0},
+            {0, SQ, 0, W::SQUARE, 3136, 40, 0, 0},
         };
 
         //the arcade's way in: eight major chords climbing C5 to C6, 262 ms each, every chord arpeggiated twice
@@ -209,9 +211,9 @@ namespace RemoteSounds{
         #undef NOTES
         static_assert(sizeof(table) / sizeof(Entry) == size_t(Sound::COUNT), "one entry per sound");
 
-        //an E-stop shown: own or external. Not STOPPING: Stacato reports a vehicle ramping down the same way after a
-        //disable and after an E-stop (MAV_STATE_CRITICAL), so it is the stopping sound, and the E-stop sound comes
-        //only when the E-stop is certain (own button, or the vehicle reporting itself E-stopped)
+        //an E-stop shown: own or external. Not STOPPING: the 3 bit state reports a vehicle ramping down the same way
+        //after a disable and after an E-stop (MAV_STATE_CRITICAL), so it is the stopping sound here; the vehicle state
+        //of byte 12 tells them apart [D-163] (the four-argument forStatusChange)
         bool isEstop(BigMessage m){
             return m == BigMessage::ESTOP || m == BigMessage::EXT_ESTOP;
         }
@@ -307,6 +309,29 @@ namespace RemoteSounds{
         if(to == BigMessage::NO_LINK && isReported(from)) return Sound::WARNING;
         if(to == BigMessage::RADIO_FAULT || to == BigMessage::ESTOP_WIRING || to == BigMessage::BATTERY_CRITICAL) return Sound::WARNING;
         return Sound::NONE;
+    }
+
+    namespace{
+        bool isEstopRamp(Reply::VehicleState v){
+            return v == Reply::VehicleState::E_STOPPING || v == Reply::VehicleState::E_STOP;
+        }
+    }
+
+    Sound forStatusChange(BigMessage from, BigMessage to, Reply::VehicleState fromVehicle, Reply::VehicleState toVehicle){
+        if(from == BigMessage::UNKNOWN) return Sound::NONE;
+        if(from == to){
+            //the vehicle state alone changed: a disable ramp became an E-stop ramp
+            if(isStopping(to) && isEstopRamp(toVehicle) && !isEstopRamp(fromVehicle)) return Sound::STATUS_ESTOP;
+            return Sound::NONE;
+        }
+        Sound sound = forStatusChange(from, to);
+        if(sound == Sound::STATUS_DISABLING && isEstopRamp(toVehicle)) return Sound::STATUS_ESTOP;
+        if(sound == Sound::STATUS_ESTOP && to == BigMessage::EXT_ESTOP){
+            //the E-stop ramp ending in E-stopped sounded already
+            if(isStopping(from) && isEstopRamp(fromVehicle)) return Sound::NONE;
+            if(toVehicle == Reply::VehicleState::AXIS_FAULT) return Sound::WARNING;
+        }
+        return sound;
     }
 
     bool refusesDisable(BigMessage message){

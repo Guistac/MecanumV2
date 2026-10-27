@@ -102,8 +102,8 @@ struct StopwatchView{
 };
 
 //The stopwatch's controls, the decision logic kept off the board so it can be tested on the host [D-160]. Only while
-//the board says they are active: the Status page shows, no menu, no games, no calibration, the sticks zeroed, no alarm
-//and no sticks to release. Both stick buttons together do nothing: a press acts only after bothWindowMillis (or on
+//the board says they are active: a main page (Status or Motion, isMainPage) shows, no menu, no games, no calibration,
+//the sticks zeroed, no alarm and no sticks to release. Both stick buttons together do nothing: a press acts only after bothWindowMillis (or on
 //its release, if sooner) without the other button, and a press while the other one is held is ignored. The time
 //taken is the press's, so starting and stopping lose nothing to the wait.
 //  right click: start / stop (stopped: start continues)
@@ -127,7 +127,7 @@ public:
     static constexpr uint32_t minuteMillis = 60000;
 
     struct Inputs{
-        bool b_active = false;      //the Status page with the controls allowed (see above)
+        bool b_active = false;      //a main page with the controls allowed (see above)
         bool b_leftHeld = false;    //left stick button
         bool b_rightHeld = false;   //right stick button
         bool b_speedOff = false;    //speed switch at OFF

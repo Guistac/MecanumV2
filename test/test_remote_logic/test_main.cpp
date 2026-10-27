@@ -325,6 +325,46 @@ void test_sounds_follow_the_setting(){
     TEST_ASSERT_EQUAL_UINT8(off, RemoteSettings::fromStored(0, 0, 0, off).sound);
 }
 
+//[D-163] the vehicle state (reply byte 12) picks between the disabling loop and the E-stop sound; the 3 bit state
+//still makes the big message
+void test_status_sound_from_the_vehicle_state(){
+    using namespace RemoteSounds;
+    using M = BigMessage;
+    using V = Reply::VehicleState;
+    //a disable: the 3 bit STOPPING with DISABLING (CRITICAL, armed) loops the disabling sound, ends on disabled
+    TEST_ASSERT_TRUE(forStatusChange(M::ENABLED, M::STOPPING, V::ENABLED, V::DISABLING) == Sound::STATUS_DISABLING);
+    TEST_ASSERT_TRUE(forStatusChange(M::STOPPING, M::DISABLED, V::DISABLING, V::DISABLED) == Sound::STATUS_DISABLED);
+    TEST_ASSERT_TRUE(forStatusChange(M::ENABLED, M::DISABLING, V::ENABLED, V::DISABLING) == Sound::STATUS_DISABLING);
+    //an E-stop from elsewhere: E_STOPPING (CRITICAL, not armed) sounds the E-stop at once, and not again at E_STOP
+    TEST_ASSERT_TRUE(forStatusChange(M::ENABLED, M::STOPPING, V::ENABLED, V::E_STOPPING) == Sound::STATUS_ESTOP);
+    TEST_ASSERT_TRUE(forStatusChange(M::STOPPING, M::EXT_ESTOP, V::E_STOPPING, V::E_STOP) == Sound::NONE);
+    TEST_ASSERT_TRUE(forStatusChange(M::ENABLED, M::EXT_ESTOP, V::ENABLED, V::E_STOP) == Sound::STATUS_ESTOP);
+    //a disable ramp E-stopped on the way: the E-stop sound when the vehicle state turns, the big message unchanged
+    TEST_ASSERT_TRUE(forStatusChange(M::STOPPING, M::STOPPING, V::DISABLING, V::E_STOPPING) == Sound::STATUS_ESTOP);
+    TEST_ASSERT_TRUE(forStatusChange(M::STOPPING, M::EXT_ESTOP, V::DISABLING, V::E_STOP) == Sound::STATUS_ESTOP);
+    TEST_ASSERT_TRUE(forStatusChange(M::STOPPING, M::STOPPING, V::E_STOPPING, V::DISABLING) == Sound::NONE);
+    TEST_ASSERT_TRUE(forStatusChange(M::DISABLED, M::DISABLED, V::DISABLED, V::DISABLED) == Sound::NONE);
+    TEST_ASSERT_TRUE(forStatusChange(M::ESTOP, M::ESTOP, V::ENABLED, V::E_STOPPING) == Sound::NONE);   //own E-stop shown
+    //an axis fault (EMERGENCY while armed) is not an E-stop: it warns
+    TEST_ASSERT_TRUE(forStatusChange(M::ENABLED, M::EXT_ESTOP, V::ENABLED, V::AXIS_FAULT) == Sound::WARNING);
+    //the own E-stop keeps its sound whatever the vehicle says; its release as before
+    TEST_ASSERT_TRUE(forStatusChange(M::ENABLED, M::ESTOP, V::ENABLED, V::ENABLED) == Sound::STATUS_ESTOP);
+    TEST_ASSERT_TRUE(forStatusChange(M::ESTOP, M::EXT_ESTOP, V::E_STOP, V::E_STOP) == Sound::NONE);
+    TEST_ASSERT_TRUE(forStatusChange(M::EXT_ESTOP, M::DISABLED, V::E_STOP, V::DISABLED) == Sound::STATUS_ESTOP_RELEASED);
+    //without byte 12 (no Stacato on a D-161 path, unknown): as the 3 bit state alone
+    TEST_ASSERT_TRUE(forStatusChange(M::ENABLED, M::STOPPING, V::ENABLED, V::UNKNOWN) == Sound::STATUS_DISABLING);
+    TEST_ASSERT_TRUE(forStatusChange(M::STOPPING, M::EXT_ESTOP, V::UNKNOWN, V::UNKNOWN) == Sound::STATUS_ESTOP);
+    //nothing at power on
+    TEST_ASSERT_TRUE(forStatusChange(M::UNKNOWN, M::EXT_ESTOP, V::NO_LINK, V::E_STOP) == Sound::NONE);
+    TEST_ASSERT_TRUE(forStatusChange(M::UNKNOWN, M::UNKNOWN, V::NO_LINK, V::E_STOPPING) == Sound::NONE);
+    //every other change as the two-argument rule
+    const M messages[] = {M::ESTOP, M::NO_LINK, M::RADIO_FAULT, M::EXT_ESTOP, M::STOPPING, M::DISABLING, M::DISABLED, M::ENABLING, M::ENABLED};
+    for(M from : messages) for(M to : messages){
+        if(from == to) continue;
+        TEST_ASSERT_TRUE(forStatusChange(from, to, V::ENABLED, V::ENABLED) == forStatusChange(from, to));
+    }
+}
+
 void test_status_changes_sound_once_and_not_at_power_on(){
     using namespace RemoteSounds;
     using M = BigMessage;
@@ -667,12 +707,41 @@ void test_pages_cycle_and_settings_only_at_off(){
 
 void test_pages_return_to_status_after_10s(){
     PageNavigator pages;
+    pages.update(false, true, false, false, 990);
+    TEST_ASSERT_TRUE(pages.getPage() == Page::MOTION);          //right after Status [D-161]
+    pages.update(false, true, false, false, 995);
+    TEST_ASSERT_TRUE(pages.getPage() == Page::MOTORS);          //right after Motion [D-163]
     pages.update(false, true, false, false, 1000);
     TEST_ASSERT_TRUE(pages.getPage() == Page::LINK);
     pages.update(false, false, false, true, 9000);              //menu activity keeps it
     pages.update(false, false, false, false, 19000);
     TEST_ASSERT_TRUE(pages.getPage() == Page::LINK);
     pages.update(false, false, false, false, 19001);
+    TEST_ASSERT_TRUE(pages.getPage() == Page::STATUS);
+}
+
+void test_pages_motion_is_a_main_page_without_return(){
+    for(uint8_t i = 0; i < uint8_t(Page::COUNT); i++){
+        Page page = Page(i);
+        TEST_ASSERT_EQUAL(page == Page::STATUS || page == Page::MOTION, isMainPage(page));
+    }
+    PageNavigator pages;
+    pages.update(false, true, false, false, 1000);
+    TEST_ASSERT_TRUE(pages.getPage() == Page::MOTION);
+    //no return to Status, however long without input
+    pages.update(false, false, false, false, 11001);
+    pages.update(false, false, false, false, 600000);
+    TEST_ASSERT_TRUE(pages.getPage() == Page::MOTION);
+    //Motors after it stays too [D-163]; the pages after that still return; a new alarm still brings Status (the board
+    //calls showStatus)
+    pages.update(false, true, false, false, 600005);
+    TEST_ASSERT_TRUE(pages.getPage() == Page::MOTORS);
+    pages.update(false, true, false, false, 600010);
+    TEST_ASSERT_TRUE(pages.getPage() == Page::LINK);
+    pages.update(false, false, false, false, 610011);
+    TEST_ASSERT_TRUE(pages.getPage() == Page::STATUS);
+    pages.update(false, true, false, false, 610020);
+    pages.showStatus();
     TEST_ASSERT_TRUE(pages.getPage() == Page::STATUS);
 }
 
@@ -728,6 +797,13 @@ void test_status_estop_with_link_and_ext_estop(){
     TEST_ASSERT_TRUE(Status::select(in).message == BigMessage::EXT_ESTOP);
     in.reportedState = uint8_t(RobotState::EMERGENCY_STOPPING);
     TEST_ASSERT_TRUE(Status::select(in).message == BigMessage::STOPPING);
+    //[D-163] the same 3 bit state from a normal disable ramp: Disabling, not an alarm; an E-stop ramp stays STOPPING
+    in.vehicle = Reply::VehicleState::DISABLING;
+    TEST_ASSERT_TRUE(Status::select(in).message == BigMessage::DISABLING);
+    TEST_ASSERT_FALSE(Status::isAlarm(Status::select(in).message));
+    in.vehicle = Reply::VehicleState::E_STOPPING;
+    TEST_ASSERT_TRUE(Status::select(in).message == BigMessage::STOPPING);
+    in.vehicle = Reply::VehicleState::UNKNOWN;
     in.reportedState = 0;
     TEST_ASSERT_TRUE(Status::select(in).message == BigMessage::UNKNOWN);
 }
@@ -1251,6 +1327,59 @@ void test_stopwatch_runs_across_pages_and_clicks_elsewhere_do_nothing(){
     TEST_ASSERT_TRUE(r.c.stopwatch().isRunning());
 }
 
+//the board's gate, page by page (RemoteBoard::updateStopwatch: isMainPage and the rest of its conditions)
+void test_stopwatch_controls_on_status_and_motion_only(){
+    for(uint8_t i = 0; i < uint8_t(Page::COUNT); i++){
+        StopwatchRig r;
+        r.in.b_active = isMainPage(Page(i));
+        r.at(0);
+        r.in.b_rightHeld = true; r.at(1000);
+        uint16_t events = r.at(1050);
+        TEST_ASSERT_EQUAL_UINT16(r.in.b_active ? StopwatchControl::STARTED : 0, events);
+        r.in.b_rightHeld = false; r.at(1100);
+        //edit mode (left held at OFF, a step up)
+        r.in.b_speedOff = true;
+        r.in.b_leftHeld = true; r.at(2000); r.at(2100);
+        r.in.rightY = 1.0f; r.at(2200);
+        TEST_ASSERT_EQUAL(r.in.b_active, r.c.isEditing());
+        TEST_ASSERT_EQUAL_UINT32(r.in.b_active ? 1000 : 0, r.c.stopwatch().getSetMillis());
+    }
+}
+
+void test_stopwatch_one_timer_shared_by_status_and_motion(){
+    //started on Status, stopped on Motion, edited on Motion: one timer, the same view on both pages
+    StopwatchRig r;
+    PageNavigator pages;
+    auto gate = [&](){ r.in.b_active = isMainPage(pages.getPage()); };
+    gate(); r.at(0);
+    r.in.b_rightHeld = true; r.at(1000); r.at(1050);
+    r.in.b_rightHeld = false; r.at(1100);
+    TEST_ASSERT_TRUE(r.c.stopwatch().isRunning());
+    pages.update(false, true, false, false, 1200);      //to Motion
+    gate();
+    TEST_ASSERT_TRUE(r.in.b_active);
+    TEST_ASSERT_EQUAL_UINT32(4000, r.c.view(5000).shownMillis);
+    r.in.b_rightHeld = true; r.at(5000);
+    TEST_ASSERT_EQUAL_UINT16(StopwatchControl::STOPPED, r.at(5050));
+    r.in.b_rightHeld = false; r.at(5100);
+    //on to Motors and Link [D-163]: a click there does nothing, and Link returns to Status after 10 s, Motion never did
+    pages.update(false, true, false, false, 30000);
+    gate();
+    TEST_ASSERT_TRUE(pages.getPage() == Page::MOTORS);
+    TEST_ASSERT_FALSE(r.in.b_active);
+    pages.update(false, true, false, false, 30000);
+    gate();
+    TEST_ASSERT_FALSE(r.in.b_active);
+    r.in.b_rightHeld = true; r.at(30100);
+    TEST_ASSERT_EQUAL_UINT16(0, r.at(30200));
+    r.in.b_rightHeld = false; r.at(30300);
+    TEST_ASSERT_FALSE(r.c.stopwatch().isRunning());
+    pages.update(false, false, false, false, 40001);
+    TEST_ASSERT_TRUE(pages.getPage() == Page::STATUS);
+    gate();
+    TEST_ASSERT_EQUAL_UINT32(4000, r.c.view(40001).shownMillis);
+}
+
 void test_stopwatch_edit_mode_set_clear_and_leave(){
     StopwatchRig r;
     r.in.b_speedOff = true;
@@ -1442,6 +1571,7 @@ int main(){
     RUN_TEST(test_synth_note_waits_swells_and_decays);
     RUN_TEST(test_sounds_follow_the_setting);
     RUN_TEST(test_status_changes_sound_once_and_not_at_power_on);
+    RUN_TEST(test_status_sound_from_the_vehicle_state);
     RUN_TEST(test_player_alarms_are_not_cut_by_lower_priority);
     RUN_TEST(test_player_layers_loop_and_notes_made_at_run_time);
     RUN_TEST(test_player_back_layer_has_three_voices);
@@ -1452,6 +1582,7 @@ int main(){
     RUN_TEST(test_recording_sink_remembers_per_layer);
     RUN_TEST(test_pages_cycle_and_settings_only_at_off);
     RUN_TEST(test_pages_return_to_status_after_10s);
+    RUN_TEST(test_pages_motion_is_a_main_page_without_return);
     RUN_TEST(test_status_priority);
     RUN_TEST(test_status_estop_with_link_and_ext_estop);
     RUN_TEST(test_status_thank_you_and_texts);
@@ -1475,6 +1606,8 @@ int main(){
     RUN_TEST(test_stopwatch_both_buttons_do_nothing);
     RUN_TEST(test_stopwatch_nothing_on_other_pages);
     RUN_TEST(test_stopwatch_runs_across_pages_and_clicks_elsewhere_do_nothing);
+    RUN_TEST(test_stopwatch_controls_on_status_and_motion_only);
+    RUN_TEST(test_stopwatch_one_timer_shared_by_status_and_motion);
     RUN_TEST(test_stopwatch_edit_mode_set_clear_and_leave);
     RUN_TEST(test_stopwatch_edit_ignores_a_stick_already_out);
     RUN_TEST(test_stopwatch_sounds);

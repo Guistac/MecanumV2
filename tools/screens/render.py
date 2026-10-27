@@ -43,7 +43,8 @@ def read_rows(pbm):
 
 
 # Rows that must stay empty, so nothing touches (docs: 1 px gap between elements). By file name prefix:
-# 0/1 status screen, 2 page, 3 menu, 4 calibration. x 127 is the firmware alive dot.
+# 0/1 status screen, 2 page, 3 menu, 4 calibration, 5 the Motion page live, 6 the Motion page's text lines, 7 the
+# Motors page. x 127 is the firmware alive dot.
 def components(rows):
     """Connected shapes (8-connected lit pixels): returns a label per pixel and each label's lowest and highest row."""
     labels = [[0] * 128 for _ in range(32)]
@@ -85,6 +86,21 @@ def check_gaps(name, rows):
         gaps = [(9, 0, 122, 8, 10), (19, 0, 122, 18, 20)]
     elif kind == "4":
         gaps = [(7, 31, 95, 6, 9), (15, 31, 95, 14, 17), (22, 31, 95, 21, 24)]
+    elif kind in "56":
+        # the Motion page [D-161, D-163]: the title line; row 8 the countdown bar (it notches over the tops in row 9);
+        # two columns (velocity x 0..61, pose x 66..126) of three text lines from row 9, or the text lines without
+        # motion data and while editing the countdown
+        gaps = [(7, 0, 126, 6, 9), (16, 0, 126, 15, 18), (24, 0, 126, 23, 26)]
+    elif kind == "7":
+        # the Motors page [D-163]: front wheels and their two text lines in rows 0..15, rear in rows 17..31 (row 16
+        # free but for the alive dot in the centre, rows 14..16); the text lines apart (rows 7 and 24) beside the
+        # wheels, whose bodies run through
+        gaps = [(16, 0, 127, 15, 17)]
+        for x0, x1 in [(0, 48), (78, 126)]:
+            gaps += [(7, x0, x1, 6, 8), (24, x0, x1, 23, 25)]
+    if name.startswith("24e"):
+        # the games' loading screen: title pill rows 0..8, blocks 11..19, text from row 24
+        gaps = [(10, 0, 126, 9, 11), (22, 0, 126, 21, 24)]
     problems = []
     for y, x0, x1, above, below in gaps:
         for x in range(x0, x1 + 1):

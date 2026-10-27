@@ -217,25 +217,41 @@ void test_music_starts_in_play_music(){
     TEST_ASSERT_EQUAL_UINT32(1, sink.cueCount(SoundLayer::BACK));
     TEST_ASSERT_EQUAL_UINT32(0, sink.count(SoundLayer::FRONT));
     const RecordingSink::Play* p = sink.last(SoundLayer::BACK);
-    //the folk melody from its first note (E6: an octave up, where the disc plays it), looping after its 16 bars,
+    //the folk melody from its first note (E6: an octave up, where the disc plays it), looping after its 34 bars,
     //melody and bass only at level 1
     TEST_ASSERT_EQUAL_UINT16(SoundKit::hertz(SoundKit::E6), p->note.hertz);
-    //written for the disc: the melody 880 Hz and up on a full square, the bass short and no lower than C4
+    //written for the disc: the melody from A5 to B6 on a full square, the bass short and no lower than E4 (330 Hz)
+    uint16_t voiceNotes[3] = {0, 0, 0};
     for(uint16_t i = 0; i < p->cue.noteCount; i++){
         const SoundNote& n = p->cue.notes[i];
-        if(n.voice == 0) TEST_ASSERT_TRUE(n.hertz >= 880 && n.wave == Synth::Wave::SQUARE);
-        if(n.voice == 1) TEST_ASSERT_TRUE(n.hertz >= 260 && n.millis <= 150);
+        voiceNotes[n.voice < 3 ? n.voice : 2]++;
+        if(n.voice == 0) TEST_ASSERT_TRUE(n.hertz >= 880 && n.hertz <= 1980 && n.wave == Synth::Wave::SQUARE);
+        if(n.voice == 1) TEST_ASSERT_TRUE(n.hertz >= 329 && n.hertz <= 880 && n.millis <= 150);
+        //every note shorter than its slot to the next on its voice: no voice cut mid-note (a click)
+        for(uint16_t j = uint16_t(i + 1); j < p->cue.noteCount; j++){
+            if(p->cue.notes[j].voice != n.voice) continue;
+            TEST_ASSERT_TRUE(uint32_t(n.atMillis) + n.millis < p->cue.notes[j].atMillis);
+            break;
+        }
     }
+    TEST_ASSERT_TRUE(voiceNotes[0] > 150 && voiceNotes[1] > 150);
     //the drum version holds every note of the plain one (nothing dropped for room), and the drums
     BlocksGame other;
     const SoundCue& plain = other.tuneCue(false);
     const SoundCue& drums = other.tuneCue(true);
+    TEST_ASSERT_TRUE(other.tuneFits());
     uint16_t drumNotes = 0;
     for(uint16_t i = 0; i < drums.noteCount; i++) if(drums.notes[i].voice == 2) drumNotes++;
     TEST_ASSERT_EQUAL_UINT16(plain.noteCount + drumNotes, drums.noteCount);
-    TEST_ASSERT_EQUAL_UINT16(8 * (3 * SoundKit::kickNoteCount + 4 + 2), drumNotes);
+    TEST_ASSERT_TRUE(drumNotes > 300);
+    //the whole loop: 34 bars, from 40 to 60 s at level 1, sounding to its end (no silence before it starts again)
+    TEST_ASSERT_EQUAL_UINT16(272, BlocksGame::tuneSteps);
     TEST_ASSERT_EQUAL_UINT16(BlocksGame::tuneSteps * BlocksGame::tuneStepMillis, p->cue.loopMillis);
+    TEST_ASSERT_EQUAL_UINT16(BlocksGame::tuneSteps * BlocksGame::tuneStepMillis, drums.loopMillis);
+    TEST_ASSERT_TRUE(p->cue.loopMillis >= 40000 && p->cue.loopMillis <= 60000);
     TEST_ASSERT_TRUE(p->cue.lengthMillis() <= p->cue.loopMillis);
+    TEST_ASSERT_TRUE(p->cue.lengthMillis() + 2 * BlocksGame::tuneStepMillis >= p->cue.loopMillis);
+    TEST_ASSERT_TRUE(drums.lengthMillis() <= drums.loopMillis);
     TEST_ASSERT_TRUE(p->cue.noteCount > 100);
     TEST_ASSERT_FALSE(hasDrums(p->cue));
     for(uint16_t i = 1; i < p->cue.noteCount; i++) TEST_ASSERT_TRUE(p->cue.notes[i - 1].atMillis <= p->cue.notes[i].atMillis);
@@ -284,6 +300,41 @@ void test_music_tempo_follows_the_level_and_drums_join_at_level_3(){
     game.playMusic();
     TEST_ASSERT_TRUE(hasDrums(sink.last(SoundLayer::BACK)->cue));
     TEST_ASSERT_EQUAL_UINT16(112, sink.getTempo(SoundLayer::BACK));
+}
+
+//the form: verse (part one twice), refrain (part two twice), our bridge, verse and refrain once more, the turnaround;
+//each section opens on its melody note, and with the drums each opens on a kick
+static uint16_t melodyAt(const SoundCue& cue, uint16_t step){
+    uint16_t at = uint16_t(step * BlocksGame::tuneStepMillis);
+    for(uint16_t i = 0; i < cue.noteCount; i++) if(cue.notes[i].atMillis == at && cue.notes[i].voice == 0) return cue.notes[i].hertz;
+    return 0;
+}
+
+void test_music_form_verse_refrain_bridge_turnaround(){
+    using namespace SoundKit;
+    BlocksGame game;
+    const SoundCue& plain = game.tuneCue(false);
+    const SoundCue& drums = game.tuneCue(true);
+    const uint16_t starts[] = {0, 32, 64, 96, 128, 192, 224, 256};
+    const uint8_t first[] = {E6, E6, D6, D6, G6, E6, D6, B5};
+    for(uint8_t s = 0; s < 8; s++){
+        TEST_ASSERT_EQUAL_UINT16(hertz(first[s]), melodyAt(plain, starts[s]));
+        TEST_ASSERT_EQUAL_UINT16(hertz(first[s]), melodyAt(drums, starts[s]));
+        bool b_kick = false;
+        uint16_t at = uint16_t(starts[s] * BlocksGame::tuneStepMillis);
+        for(uint16_t i = 0; i < drums.noteCount; i++){
+            if(drums.notes[i].atMillis == at && drums.notes[i].voice == 2) b_kick = true;
+        }
+        TEST_ASSERT_TRUE(b_kick);
+    }
+    //the bridge is in C major: no G sharp in its melody until its last bar (the E7 back to A minor)
+    for(uint16_t i = 0; i < plain.noteCount; i++){
+        const SoundNote& n = plain.notes[i];
+        if(n.voice != 0 || n.atMillis < 128 * BlocksGame::tuneStepMillis || n.atMillis >= 184 * BlocksGame::tuneStepMillis) continue;
+        TEST_ASSERT_TRUE(n.hertz != hertz(Gs5) && n.hertz != hertz(Gs6));
+    }
+    //at the fastest level the loop still lasts more than 30 s
+    TEST_ASSERT_TRUE(uint32_t(plain.loopMillis) * 100 / BlocksGame::musicTempo(200) > 30000);
 }
 
 void test_move_rotate_and_landing_sounds(){
@@ -471,6 +522,7 @@ int main(){
     RUN_TEST(test_demo_uses_only_the_player_controls);
     RUN_TEST(test_music_starts_in_play_music);
     RUN_TEST(test_music_tempo_follows_the_level_and_drums_join_at_level_3);
+    RUN_TEST(test_music_form_verse_refrain_bridge_turnaround);
     RUN_TEST(test_move_rotate_and_landing_sounds);
     RUN_TEST(test_clear_sweeps_and_the_four_column_fanfare);
     RUN_TEST(test_game_over_stops_the_music_and_falls);

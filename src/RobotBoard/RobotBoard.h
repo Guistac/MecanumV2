@@ -7,6 +7,7 @@
 #include <RobotStates.h>
 #include "Utilities/RobotConfig.h"
 #include "Utilities/RemoteProxy.h"
+#include <ReplyFrame.h>
 #include <vector>
 
 #define ROBOT_RADIO_SHUTDOWN 8
@@ -84,6 +85,7 @@ public:
     std::vector<LED*> leds;
 
     RemoteProxy remoteProxy;
+    Reply::Pager replyPager;        //the reply's slot sequence [D-161]
 
     RobotConfiguration configuration;
     RobotState state = RobotState::EMERGENCY_STOPPED;

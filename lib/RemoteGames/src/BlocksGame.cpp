@@ -417,46 +417,108 @@ uint16_t BlocksGame::musicTempo(uint8_t level){
     return percent < 160 ? percent : 160;
 }
 
-//Korobeiniki, the 19th-century folk song (public domain), in A minor: the folk melody's two parts, each twice, an
-//eighth a step. The bass and the drums are ours: the bass is roots and fifths a quarter apart, the root an octave up
-//every other bar; the drums a march, kick on 1, snare on 3, hats between.
+//Korobeiniki, the 19th-century folk song (public domain), in A minor, as our own full arrangement: the folk
+//melody's two parts (the verse and the refrain), our own bridge in the relative major, the two parts once more and
+//a turnaround on E7 back to the top. An eighth a step (150 quarters a minute at tempo 100), 34 bars of 4/4:
+//
+//  section     bars  melody                          chords (a bar, or half bars)        bass
+//  A  verse    1-8   part one, twice                  Am E | Am | E | Am  (twice)        roots and fifths, octave jumps
+//  B  refrain  9-16  part two, twice                  Dm | C | E | Am  (twice)           arpeggios, walking octaves
+//  C  bridge  17-24  ours, in C major                 C | G | Am | Em | F | C | Dm G | E7  half time, passing notes
+//  A' B'      25-32  part one, part two               as A and B                         walking octaves
+//  T  turn    33-34  an E7 arpeggio falling to B      E | E7                             E D C B down to the top's A
+//
+//The bass, the bridge, the turnaround and the drums are ours (no other arrangement is used). The drums (from
+//level 3): a march, kick on 1, snare on 3, hats between, a pickup kick before 3; the bridge in half time (one
+//snare a bar); a snare fill into each new section.
 //Written for the disc (loud only from about 1 kHz to 5 kHz, nearly silent below 400 Hz): the melody an octave above
-//the song's usual one (A5 to A6, 880 to 1760 Hz) on a full square, the bass an octave up too (C4 to A5) and short, a
-//narrow pulse under the melody, so the voices rarely sound together at full swing (the synth clips their sum at 1)
+//the song's usual one (A5 to B6, 880 to 1976 Hz) on a full square with a slow decay, so long notes swell down
+//instead of droning; the bass from E4 (330 Hz) up on a narrow pulse, plucked short and quieter, never lower than
+//the disc can play; the three voices at levels whose sum rarely reaches the synth's clip
 void BlocksGame::buildTune(){
     using namespace SoundKit;
     //Arduino owns A0 to A17 (the analog pins): the A notes under other names
     const uint8_t a4 = SoundKit::A4, a5 = SoundKit::A5, a6 = SoundKit::A6;
+    const uint8_t H = HOLD, R = REST;
+    //the melody, an entry an eighth (HOLD: the note before goes on)
     static const uint8_t partOne[32] PROGMEM = {
-        E6, HOLD, B5, C6,   D6, HOLD, C6, B5,   a5, HOLD, a5, C6,   E6, HOLD, D6, C6,
-        B5, HOLD, HOLD, C6, D6, HOLD, E6, HOLD, C6, HOLD, a5, HOLD, a5, HOLD, HOLD, HOLD,
+        E6, H, B5, C6,  D6, H, C6, B5,      a5, H, a5, C6,  E6, H, D6, C6,
+        B5, H, H, C6,   D6, H, E6, H,       C6, H, a5, H,   a5, H, H, H,
     };
     static const uint8_t partTwo[32] PROGMEM = {
-        D6, HOLD, HOLD, F6, a6, HOLD, G6, F6,   E6, HOLD, HOLD, C6, E6, HOLD, D6, C6,
-        B5, HOLD, B5, C6,   D6, HOLD, E6, HOLD, C6, HOLD, a5, HOLD, a5, HOLD, HOLD, HOLD,
+        D6, H, H, F6,   a6, H, G6, F6,      E6, H, H, C6,   E6, H, D6, C6,
+        B5, H, B5, C6,  D6, H, E6, H,       C6, H, a5, H,   a5, H, H, H,
     };
-    //a quarter an entry, two a 2/4 bar: Am E7 Am Am E E7 Am Am, then Dm Dm C C E E7 Am Am
-    static const uint8_t bassOne[16] PROGMEM = {
-        a4, E5,   E5, B4,   a4, E5,   a5, E5,   E4, B4,   E5, B4,   a4, E5,   a5, E5,
+    //the bridge: two four-bar phrases that rhyme (a rising figure, its answer), the second a third higher
+    static const uint8_t bridge[64] PROGMEM = {
+        G6, H, E6, F6,  G6, H, E6, C6,      D6, H, B5, C6,  D6, H, G6, H,
+        E6, H, C6, D6,  E6, F6, E6, D6,     E6, H, D6, C6,  B5, H, H, H,
+        a6, H, F6, G6,  a6, H, G6, F6,      E6, H, G6, E6,  C6, H, H, H,
+        D6, H, F6, H,   G6, H, F6, D6,      B5, H, D6, H,   E6, H, Gs6, H,
     };
-    static const uint8_t bassTwo[16] PROGMEM = {
-        D4, a4,   D5, a4,   C4, G4,   C5, G4,   E4, B4,   E5, B4,   a4, E5,   a5, E5,
+    static const uint8_t turnaround[16] PROGMEM = {
+        B5, E6, Gs6, E6, B5, E6, Gs6, B6,   Gs6, H, E6, H,  D6, C6, B5, H,
+    };
+    //the bass, an entry an eighth; each ending leads to the next section's first chord
+    static const uint8_t bassVerse[32] PROGMEM = {      //back to the verse: G# up to A
+        a4, H, E5, H,   E4, H, B4, H,       a4, H, E5, H,   a5, H, E5, H,
+        E4, H, B4, H,   E5, H, B4, H,       a4, H, E5, H,   a4, H, Gs4, H,
+    };
+    static const uint8_t bassVerseOut[32] PROGMEM = {   //on to the refrain: C C# up to D
+        a4, H, E5, H,   E4, H, B4, H,       a4, H, E5, H,   a5, H, E5, H,
+        E4, H, B4, H,   E5, H, B4, H,       a4, H, E5, H,   a4, H, C5, Cs5,
+    };
+    static const uint8_t bassRefrain[32] PROGMEM = {    //back to the refrain
+        D5, a4, D5, F5, a5, F5, D5, a4,     C5, G4, C5, E5, G5, E5, C5, G4,
+        E4, E5, E4, E5, E4, E5, Gs4, B4,    a4, a5, a4, a5, a4, H, C5, Cs5,
+    };
+    static const uint8_t bassRefrainOut[32] PROGMEM = { //on to the bridge: A B up to C
+        D5, a4, D5, F5, a5, F5, D5, a4,     C5, G4, C5, E5, G5, E5, C5, G4,
+        E4, E5, E4, E5, E4, E5, Gs4, B4,    a4, a5, a4, a5, a4, H, B4, H,
+    };
+    static const uint8_t bassBridge[64] PROGMEM = {     //half time: the root on 1, the fifth on 3, a passing note on 4
+        C5, H, R, R,    G4, H, a4, B4,      G4, H, R, R,    D5, H, B4, H,
+        a4, H, R, R,    E5, H, C5, H,       E4, H, R, R,    B4, H, E4, H,
+        F4, H, R, R,    C5, H, a4, H,       C5, H, R, R,    G4, H, C5, H,
+        D5, H, a4, H,   G4, H, D5, H,       E4, H, Gs4, H,  B4, H, D5, H,
+    };
+    static const uint8_t bassVerseOctaves[32] PROGMEM = {   //the verse again, walking octaves, on to the refrain
+        a4, a5, a4, a5, E4, E5, E4, E5,     a4, a5, a4, a5, a4, E5, a5, E5,
+        E4, E5, E4, E5, E4, E5, Gs4, B4,    a4, a5, a4, a5, a4, H, C5, Cs5,
+    };
+    static const uint8_t bassRefrainLast[32] PROGMEM = {    //the refrain again, on to the turnaround's E
+        D5, a4, D5, F5, a5, F5, D5, a4,     C5, G4, C5, E5, G5, E5, C5, G4,
+        E4, E5, E4, E5, E4, E5, Gs4, B4,    a4, a5, a4, a5, a4, E5, C5, B4,
+    };
+    static const uint8_t bassTurnaround[16] PROGMEM = {     //E, then down E D C B to the top's A
+        E4, H, E5, H,   Gs4, H, B4, H,      E5, H, D5, H,   C5, H, B4, H,
+    };
+    //the drums, a character a step: K kick, S snare, H hat
+    static const char groove[] = "K.H.S.H.K.HKS.H.K.H.S.H.K.HKS.H.";
+    static const char grooveFill[] = "K.H.S.H.K.HKS.H.K.H.S.H.K.S.SSS.";
+    static const char halfTime[] = "K.H.H.H.S.H.H.H.K.H.H.H.S.H.H.H.K.H.H.H.S.H.H.H.K.H.H.H.S.H.S.SS";
+    static const char turnFill[] = "K.H.S.H.K.S.SSSS";
+    struct Section{ const uint8_t* melody; const uint8_t* bass; uint8_t steps; const char* drums; };
+    static const Section form[] = {
+        {partOne, bassVerse, 32, groove},           {partOne, bassVerseOut, 32, grooveFill},
+        {partTwo, bassRefrain, 32, groove},         {partTwo, bassRefrainOut, 32, grooveFill},
+        {bridge, bassBridge, 64, halfTime},
+        {partOne, bassVerseOctaves, 32, groove},    {partTwo, bassRefrainLast, 32, grooveFill},
+        {turnaround, bassTurnaround, 16, turnFill},
     };
     for(uint8_t withDrums = 0; withDrums < 2; withDrums++){
         NoteWriter& out = withDrums ? static_cast<NoteWriter&>(tuneDrums) : static_cast<NoteWriter&>(tune);
         out.clear();
         Tracker t(out, tuneStepMillis);
-        //the melody legato on a full square; the bass plucked (a third of its quarter, decaying)
-        t.instrument(0, Synth::Wave::SQUARE, 88).instrument(1, Synth::Wave::PULSE12, 32, 60);
-        for(uint8_t half = 0; half < 2; half++){
-            const uint8_t* melody = half ? partTwo : partOne;
-            const uint8_t* bass = half ? bassTwo : bassOne;
-            for(uint8_t again = 0; again < 2; again++){
-                uint16_t at = uint16_t(half * 64 + again * 32);
-                t.line(0, melody, 32, at, 1, 78).line(1, bass, 16, at, 2, 45);
-            }
+        //the melody nearly legato on a full square, decaying slowly (a held note falls, it does not drone); the bass
+        //plucked: an eighth sounds 60 ms, a quarter 120, on a narrow pulse (bright enough for the disc, never muddy)
+        t.instrument(0, Synth::Wave::SQUARE, 86, 650).instrument(1, Synth::Wave::PULSE12, 30, 70);
+        uint16_t at = 0;
+        for(const Section& s : form){
+            t.line(0, s.melody, s.steps, at, 1, melodyLevel).line(1, s.bass, s.steps, at, 1, bassLevel);
+            if(withDrums) t.drums(s.drums, at, 1, drumsLevel);
+            at = uint16_t(at + s.steps);
         }
-        if(withDrums) t.drums("K.H.S.H.K.HKS.H.", 0, tuneSteps / 16, 70);
         music[withDrums] = t.cue(tuneSteps);
     }
     b_tuneBuilt = true;

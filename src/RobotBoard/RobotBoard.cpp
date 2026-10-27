@@ -152,8 +152,8 @@ void RobotBoard::update(){
 
 void RobotBoard::receiveData(){
   uint8_t incomingBuffer[20];
-  uint8_t length = 20;
-  if(radio.receive(incomingBuffer, &length)){
+  uint8_t length = 0;
+  if(radio.receive(incomingBuffer, sizeof(incomingBuffer), &length)){
     if(!decodeRemoteFrame(incomingBuffer, length, remoteProxy)) return;
 
     remoteProxy.lastReceiveTimeMillis = millis();
@@ -188,40 +188,28 @@ void RobotBoard::receiveData(){
   }
 }
 
+//The 13 byte reply [D-161, D-163] (lib/RemoteLogic/src/ReplyFrame.h): the status word as before, the vehicle's
+//motion from Stacato (zero and no wheel values when stale or without Stacato), the page's slot (wheels, flags, RSSI
+//and battery, pose), byte 12 with Stacato's MAV_STATE and armed flag (0xF without Stacato) and the page
 void RobotBoard::sendData(){
-  uint8_t outBuffer[8];
+  Reply::Status status;
+  if(mavlink->b_online) status.state = uint8_t(mavlink->stacatoState) & 0x7;
+  else status.state = uint8_t(state) & 0x7;
+  status.speed = uint8_t(motionControl.speedMode) & 0x3;
+  status.b_direction = motionControl.directionMode;
+  status.b_function = function1Button.isPressed();
+  status.txCounter = remoteProxy.txCounter & 0xF;
+  status.page = replyPager.next();
+  status.mavState = mavlink->vehicleMavState();
+  status.b_armed = mavlink->vehicleArmed();
 
-  uint8_t header = 0x7;
-  uint16_t statusword = header & 0x7; //3 bit header
-  if(mavlink->b_online) statusword |= (uint8_t(mavlink->stacatoState) & 0x7) << 3;
-  else statusword |= (uint8_t(state) & 0x7) << 3;
-  statusword |= (uint8_t(motionControl.speedMode) & 0x3) << 6;
-  if(motionControl.directionMode) statusword |= 0x100;
-  if(function1Button.isPressed()) statusword |= 0x200;
-  //two bytes free 0b00001100 00000000
-  statusword |= (remoteProxy.txCounter & 0xF) << 12;
-
-  uint8_t motorStatusWord = 0x0;
-  if(frontLeftServo.hasAlarm())     motorStatusWord |= 0x1;
-  if(backLeftServo.hasAlarm())      motorStatusWord |= 0x2;
-  if(frontRightServo.hasAlarm())    motorStatusWord |= 0x4;
-  if(backRightServo.hasAlarm())     motorStatusWord |= 0x8;
-  if(frontLeftServo.isEnabled())    motorStatusWord |= 0x10;
-  if(backLeftServo.isEnabled())     motorStatusWord |= 0x20;
-  if(frontRightServo.isEnabled())   motorStatusWord |= 0x40;
-  if(backRightServo.isEnabled())    motorStatusWord |= 0x80;
-
-  outBuffer[0] = statusword & 0xFF;
-  outBuffer[1] = (statusword >> 8) & 0xFF;
-  outBuffer[2] = motorStatusWord;
-  outBuffer[3] = map(motionControl.getXVelocityNormalized(), -1.0, 1.0, -127, 127);
-  outBuffer[4] = map(motionControl.getYVelocityNormalized(), -1.0, 1.0, -127, 127);
-  outBuffer[5] = map(motionControl.getRVelocityNormalized(), -1.0, 1.0, -127, 127);
-  outBuffer[6] = radio.getSignalStrength() + 150;
+  uint8_t rssiByte = radio.getSignalStrength() + 150;
   //45..70V on one byte for the handheld display; clamped so an out of range voltage can't wrap
-  outBuffer[7] = uint8_t(constrain(map(batteryReading.getVoltage(), 45.0, 70.0, 0.0, 255.0), 0.0, 255.0));
+  uint8_t batteryByte = uint8_t(constrain(map(batteryReading.getVoltage(), 45.0, 70.0, 0.0, 255.0), 0.0, 255.0));
 
-  radio.send(outBuffer, 8);
+  uint8_t outBuffer[Reply::length];
+  Reply::encode(status, mavlink->motionTelemetry(), rssiByte, batteryByte, outBuffer);
+  radio.send(outBuffer, Reply::length);
 }
 
 void RobotBoard::updateIO(){

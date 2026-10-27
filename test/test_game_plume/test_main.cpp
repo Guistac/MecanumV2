@@ -236,15 +236,120 @@ void test_hull_hit_bounces_and_grace_second(){
     TEST_ASSERT_EQUAL_UINT8(PlumeGame::maxHull - 2, game.getHull());
 }
 
-void test_long_edges_are_walls(){
+//the long edges (owner, 2026-10-27): a nuisance, not a penalty. Touching one bounces off it with a soft bump and costs
+//nothing; near one a soft push sends the canister back towards the middle, weaker than full thrust
+void test_long_edges_bump_and_push_back_without_a_hit(){
     PlumeGame game;
+    RecordingSink sink;
+    game.setSound(&sink);
     game.reset(5);
-    game.place(100.0f, 1.4f, 0.0f, -20.0f);
+    game.place(100.0f, 14.0f);
+    clearAround(game, 100, 30);
     GameInput none;
+    //into the top edge at speed: bounced, no hull point, no grace, the score unchanged, a soft bump (no clunk)
+    game.place(100.0f, 1.4f, 0.0f, -20.0f);
+    uint32_t score = game.score();
+    sink.clear();
     run(game, none, 5);
-    TEST_ASSERT_EQUAL_UINT8(PlumeGame::maxHull - 1, game.getHull());
+    TEST_ASSERT_EQUAL_UINT8(PlumeGame::maxHull, game.getHull());
+    TEST_ASSERT_FALSE(game.isInvulnerable());
+    TEST_ASSERT_EQUAL_UINT32(score, game.score());
     TEST_ASSERT_TRUE(game.getSpeedY() > 0.0f);
     TEST_ASSERT_TRUE(lroundf(game.getShipY()) >= 1);
+    TEST_ASSERT_FALSE(sink.heard(SoundLayer::FRONT, 150));
+    bool b_bump = false;
+    for(uint8_t i = 0; i < RecordingSink::keep; i++){
+        const RecordingSink::Play* q = sink.last(SoundLayer::FRONT, i);
+        if(q && !q->b_note && q->note.wave == Synth::Wave::NOISE && q->note.hertz == 900 && q->note.levelPercent < 60) b_bump = true;
+    }
+    TEST_ASSERT_TRUE(b_bump);
+    //the same at the bottom edge
+    game.place(100.0f, 27.6f, 0.0f, 20.0f);
+    run(game, none, 5);
+    TEST_ASSERT_EQUAL_UINT8(PlumeGame::maxHull, game.getHull());
+    TEST_ASSERT_TRUE(game.getSpeedY() < 0.0f);
+    TEST_ASSERT_TRUE(lroundf(game.getShipY()) <= 31 - PlumeGame::shipHeight);
+    //at rest next to an edge it drifts back towards the middle; in the middle nothing pushes
+    game.place(100.0f, 1.0f);
+    game.update(none);
+    TEST_ASSERT_TRUE(game.getSpeedY() > 0.0f);
+    game.place(100.0f, 28.0f);
+    game.update(none);
+    TEST_ASSERT_TRUE(game.getSpeedY() < 0.0f);
+    game.place(100.0f, 14.0f);
+    game.update(none);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, game.getSpeedY());
+    //hugging the wall costs effort: full stick across holds the canister on it, never a hit; half stick does not
+    //get there (the canister held up the shaft by hand, only its crossways motion free)
+    float y = 14.0f, vy = 0.0f;
+    for(int t = 0; t < 150; t++){
+        game.place(100.0f, y, 0.0f, vy);
+        game.update(stick(0.0f, -1.0f));
+        y = game.getShipY();
+        vy = game.getSpeedY();
+        TEST_ASSERT_EQUAL_UINT8(PlumeGame::maxHull, game.getHull());
+    }
+    TEST_ASSERT_EQUAL(1, lroundf(y));
+    y = 14.0f;
+    vy = 0.0f;
+    for(int t = 0; t < 250; t++){
+        game.place(100.0f, y, 0.0f, vy);
+        game.update(stick(0.0f, -0.5f));
+        y = game.getShipY();
+        vy = game.getSpeedY();
+    }
+    TEST_ASSERT_TRUE(y > 1.5f && y < 4.0f);
+    TEST_ASSERT_EQUAL_UINT8(PlumeGame::maxHull, game.getHull());
+}
+
+//ticks along both long edges, one a metre of altitude, a longer one every 10 m, from the start on (no rock needed to
+//see the climb); they scroll with the camera, read over rock (dark there) and keep clear of the HUD
+void test_edge_graduation_scrolls_with_the_climb(){
+    PlumeGame game;
+    game.reset(1);
+    GFXcanvas1 canvas(128, 32);
+    auto check = [&](){
+        canvas.fillScreen(0);
+        game.draw(canvas);
+        int32_t camera = int32_t(floorf(game.getCameraX()));
+        int ticks = 0, longs = 0;
+        for(int16_t x = 0; x < 128; x++){
+            int32_t metresPx = camera + x - int32_t(PlumeGame::startX);
+            bool b_tick = x <= PlumeGame::hudPointsX - 8 && metresPx % 10 == 0;
+            bool b_long = b_tick && metresPx % 100 == 0;
+            if(b_tick) ticks++;
+            if(b_long) longs++;
+            if(game.isRock(camera + x, 0) || game.isRock(camera + x, 31)) continue;
+            TEST_ASSERT_EQUAL(b_tick, canvas.getPixel(x, 0));
+            TEST_ASSERT_EQUAL(b_tick, canvas.getPixel(x, 31));
+            if(x <= PlumeGame::hudPointsX - 8 && !game.isRock(camera + x, 2) && !game.isRock(camera + x, 29) &&
+               game.itemPaint(camera + x, 2) < 0 && game.itemPaint(camera + x, 29) < 0){
+                TEST_ASSERT_EQUAL(b_long, canvas.getPixel(x, 2));
+                TEST_ASSERT_EQUAL(b_long, canvas.getPixel(x, 29));
+            }
+        }
+        TEST_ASSERT_TRUE(ticks >= 10);
+        return longs;
+    };
+    //at the start: the 0 m mark is long, at the canister's lower end
+    TEST_ASSERT_EQUAL(1, check());
+    TEST_ASSERT_TRUE(canvas.getPixel(int16_t(PlumeGame::startX), 2));
+    //higher up the ticks have moved with the camera
+    game.place(200.4f, 14.0f);
+    check();
+    TEST_ASSERT_FALSE(canvas.getPixel(int16_t(PlumeGame::startX), 0));
+    game.place(1243.0f, 14.0f);
+    check();
+    //over rock a tick is dark
+    int32_t camera = int32_t(floorf(game.getCameraX()));
+    int16_t tx = 0;
+    while((camera + tx - int32_t(PlumeGame::startX)) % 10) tx++;
+    game.setRock(camera + tx, 0, true);
+    game.setRock(camera + tx + 1, 0, true);
+    canvas.fillScreen(0);
+    game.draw(canvas);
+    TEST_ASSERT_FALSE(canvas.getPixel(tx, 0));
+    TEST_ASSERT_TRUE(canvas.getPixel(tx + 1, 0));
 }
 
 void test_camera_only_moves_up(){
@@ -523,7 +628,8 @@ void test_draws_canister_and_hull_pips(){
         TEST_ASSERT_FALSE(canvas.getPixel(125, py + 2));
     }
     for(int16_t py = 0; py < 32; py++) TEST_ASSERT_FALSE(canvas.getPixel(127, py));
-    for(int16_t px = 0; px < 128; px++) TEST_ASSERT_FALSE(canvas.getPixel(px, 0));
+    //along the top edge only the graduation's ticks, none under the HUD (1 px gap to its text)
+    for(int16_t px = 0; px < 128; px++) TEST_ASSERT_EQUAL(px <= PlumeGame::hudPointsX - 8 && px % 10 == 2, canvas.getPixel(px, 0));
     //the altitude (0M) and the points (0) in sideways text next to them, 1 px apart: the M's tops at column 123
     //and the 0's at 115, column 124 and 116 dark
     for(int16_t py = 0; py < 32; py++){
@@ -757,6 +863,79 @@ void test_collecting_a_gem_adds_25_points(){
     TEST_ASSERT_EQUAL_UINT32(uint32_t((float(higher) - PlumeGame::startX) / 10.0f) + 25, game.score());
 }
 
+//the collectibles catch the eye (owner, 2026-10-27): a gem twinkles every 0.5 s (two frames: a longer cross, then an
+//x), a heart beats (lub-dub, one px bigger), a freed one flashes (its square lit, its shape dark) three times
+void test_items_twinkle_beat_and_flash(){
+    PlumeGame game;
+    game.reset(1);
+    int32_t x = quietStretch(game, 300);
+    //on screen, clear of the HUD: the canister at x, the gem, the heart and the buried gem in front of it
+    clearAround(game, x + 40, 30);
+    int32_t gx = x + 18, hx = x + 33;
+    game.placeItem(PlumeGame::ItemKind::GEM, gx, 14);
+    game.placeItem(PlumeGame::ItemKind::HEART, hx, 12);
+    GFXcanvas1 canvas(128, 32);
+    int plain = 0, cross = 0, ex = 0, small = 0, big = 0;
+    for(int t = 0; t < 200; t++){
+        game.place(float(x), 14.0f);
+        game.update(GameInput());
+        canvas.fillScreen(0);
+        game.draw(canvas);
+        int16_t camera = int16_t(floorf(game.getCameraX()));
+        auto lit = [&](int32_t column, int16_t row){ return canvas.getPixel(int16_t(column - camera), row); };
+        int n = 0;
+        for(int16_t c = -2; c <= 4; c++) for(int16_t r = -2; r <= 4; r++) if(lit(gx + c, int16_t(14 + r))) n++;
+        if(n == 5 && lit(gx + 1, 14) && !lit(gx, 14)) plain++;
+        else if(n == 9 && lit(gx + 1, 13) && lit(gx + 3, 15)) cross++;
+        else if(n == 5 && lit(gx, 14) && lit(gx + 2, 16) && !lit(gx + 1, 14)) ex++;
+        else TEST_FAIL_MESSAGE("a gem frame that is none of the three");
+        n = 0;
+        for(int16_t c = -2; c <= 6; c++) for(int16_t r = -2; r <= 6; r++) if(lit(hx + c, int16_t(12 + r))) n++;
+        if(n == 16) small++;
+        else if(n > 16 && n <= 30) big++;
+        else TEST_FAIL_MESSAGE("a heart frame that is neither");
+    }
+    //per 25 ticks 3 + 3 sparkle frames (8 sparkles in 200 ticks); per 40 ticks two beats of 4 (5 heart beats)
+    TEST_ASSERT_EQUAL(8 * 3, cross);
+    TEST_ASSERT_EQUAL(8 * 3, ex);
+    TEST_ASSERT_EQUAL(200 - 48, plain);
+    TEST_ASSERT_EQUAL(5 * 8, big);
+    TEST_ASSERT_EQUAL(200 - 40, small);
+    //drawing only: the items are where they were, still the same shape for the plume and the canister
+    TEST_ASSERT_TRUE(game.isItemPixel(gx + 1, 14) && !game.isItemPixel(gx, 14) && !game.isItemPixel(gx + 1, 12));
+
+    //a gem in a rock box: buried, a dark cut-out; the box blasted away: free, it flashes, then twinkles as before
+    int32_t fx = x + 50;
+    for(int32_t c = fx - 2; c <= fx + 4; c++) for(int16_t r = 6; r <= 12; r++) game.setRock(c, r, true);
+    for(int16_t c = 0; c < 3; c++) for(int16_t r = 0; r < 3; r++) if(c == 1 || r == 1) game.setRock(fx + c, int16_t(8 + r), false);
+    game.placeItem(PlumeGame::ItemKind::GEM, fx, 8);
+    const PlumeGame::Item* freed = nullptr;
+    for(uint8_t i = 0; i < PlumeGame::maxItems; i++) if(game.item(i).x == fx && !game.item(i).b_taken) freed = &game.item(i);
+    TEST_ASSERT_NOT_NULL(freed);
+    TEST_ASSERT_TRUE(freed->b_buried);
+    for(int32_t c = fx - 2; c <= fx + 4; c++) for(int16_t r = 6; r <= 12; r++) game.setRock(c, r, false);
+    int negative = 0, normal = 0;
+    for(int t = 0; t < 30; t++){
+        game.place(float(x), 14.0f);
+        game.update(GameInput());
+        canvas.fillScreen(0);
+        game.draw(canvas);
+        int16_t sx = int16_t(fx - int32_t(floorf(game.getCameraX())));
+        bool b_centre = canvas.getPixel(sx + 1, 9), b_corner = canvas.getPixel(sx - 1, 7);
+        if(t < 18 && !b_centre && b_corner){
+            negative++;
+            //the whole square with its ring lit around the dark shape
+            TEST_ASSERT_TRUE(canvas.getPixel(sx + 3, 11) && canvas.getPixel(sx, 8) && !canvas.getPixel(sx + 1, 8));
+        }
+        else if(b_centre && !b_corner) normal++;
+        else TEST_FAIL_MESSAGE("a flash frame that is neither");
+    }
+    TEST_ASSERT_EQUAL(9, negative);     //three flashes of 60 ms
+    TEST_ASSERT_EQUAL(21, normal);
+    TEST_ASSERT_FALSE(freed->b_buried);
+    TEST_ASSERT_EQUAL_UINT8(0, freed->flash);
+}
+
 void test_a_heart_repairs_up_to_4(){
     PlumeGame game;
     RecordingSink sink;
@@ -852,7 +1031,8 @@ int main(int, char**){
     RUN_TEST(test_shaft_gets_harder_up_to_500_m);
     RUN_TEST(test_plume_erodes_rock_and_never_hurts_the_canister);
     RUN_TEST(test_hull_hit_bounces_and_grace_second);
-    RUN_TEST(test_long_edges_are_walls);
+    RUN_TEST(test_long_edges_bump_and_push_back_without_a_hit);
+    RUN_TEST(test_edge_graduation_scrolls_with_the_climb);
     RUN_TEST(test_camera_only_moves_up);
     RUN_TEST(test_game_over_by_falling_out);
     RUN_TEST(test_game_over_when_the_hull_is_gone);
@@ -865,6 +1045,7 @@ int main(int, char**){
     RUN_TEST(test_items_per_seed_none_in_the_calm_start_buried_ones_cut_out);
     RUN_TEST(test_the_plume_never_destroys_an_item_and_a_freed_one_clicks);
     RUN_TEST(test_collecting_a_gem_adds_25_points);
+    RUN_TEST(test_items_twinkle_beat_and_flash);
     RUN_TEST(test_a_heart_repairs_up_to_4);
     RUN_TEST(test_demo_collects_items_the_same_with_and_without_sound);
     RUN_TEST(test_sideways_text_reads_in_the_quarter_turn_grip);

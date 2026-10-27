@@ -14,8 +14,9 @@ away the rock it hits. Climb as high as you can. Relaxed: nothing chases you, an
 - The remote is held sideways. On the 128x32 OLED, **up in the game is screen right**, gravity points
   **screen left**. The shaft is 32 px wide and endless.
 - Scale: 10 px = 1 m. One screen covers 12.8 m of altitude.
-- During play the only overlay is the HUD in the top right corner: the hull (four pips), the altitude and the points
-  (see "Collectibles and the altitude/points display" below). Text uses the 5x7 font (remote OLED rules), drawn
+- During play the overlays are the HUD in the top right corner: the hull (four pips), the altitude and the points
+  (see "Collectibles and the altitude/points display" below), and the edge graduation along both long edges (see
+  "Edges, graduation and animated collectibles" below). Text uses the 5x7 font (remote OLED rules), drawn
   sideways to read in the sideways grip.
 
 ```
@@ -79,7 +80,10 @@ The canister keeps its inertia: letting go of the stick does not stop it.
   per frame.
 - A lost pip blinks twice before it disappears.
 - Repair: +1 point (up to 4) for every 50 m of new altitude climbed without a hit, and +1 for each heart collected.
-- The long screen edges (rows 0 and 31) are the shaft walls: touching them counts as a hit, like rock.
+- The long screen edges (rows 0 and 31) are the shaft walls, but they are not rock: touching them costs nothing (no
+  hull point, no grace second, no points); the canister bounces off with a soft bump and a gentle push sends it back
+  towards the middle (owner, 2026-10-27; see "Edges, graduation and animated collectibles" below). Until then they
+  cost a hull point like rock.
 
 ## Plume
 
@@ -138,6 +142,8 @@ so the game gets harder smoothly and stops getting harder at 500 m.
   ```
 
 - Plume particles: single pixels.
+- The edge graduation: a tick every metre on both long edges, a longer one every 10 m (see below).
+- Gems twinkle, hearts beat, a freed item flashes (see below).
 - Full frame redrawn each step: terrain columns from `cameraX`, then the free items, particles, ship (blinking
   while invulnerable), then the HUD (hull pips, altitude, points; XOR). 512 bytes over SPI at 7 MHz is about 0.6 ms per frame.
 
@@ -157,7 +163,8 @@ shaft, the items, the canister, the plume and the HUD (hull pips, altitude, poin
   `PTS 1450 412M` (the points and the altitude) through the arcade's `Game::overText`.
 - Falling out: the game ends once the whole canister has left the bottom of the screen. The hull at zero: the
   canister bursts into particles for half a second, then the game is over.
-- Hull contact with the long screen edges: a canister pixel in row 0 or row 31.
+- Contact with the long screen edges: a canister pixel in row 0 or row 31. Not a hit since 2026-10-27: a bounce
+  and a soft bump (see below).
 - The first plug comes at 50 m (not after the first 150 m), so digging is learnt early; later plugs follow the
   spacing of the difficulty table, with 15 % of random play.
 - The music tempo rises in steps of 5 % with the difficulty, to 125 % at 500 m.
@@ -170,8 +177,8 @@ shaft, the items, the canister, the plume and the HUD (hull pips, altitude, poin
   so the disc plays it, see docs/arcade/README.md section 3); soft high noise grains while thrusting,
   denser with more thrust; a tiny crackle when the plume blasts rock (at most every 80 ms); a clunk on a hull hit;
   two rising notes on a repair; a ping every 100 m; a long falling whistle when it falls out; a noise burst when the
-  hull is gone; a chime for a gem, an arpeggio for a heart, a click when a buried item is freed. All synth notes, no
-  timer squares.
+  hull is gone; a chime for a gem, an arpeggio for a heart, a click when a buried item is freed; a soft bump when it
+  touches a long edge. All synth notes, no timer squares.
 
 ## Collectibles and the altitude/points display (owner, 2026-10-27)
 
@@ -264,6 +271,46 @@ a callback that says which screen pixels are lit, since the display cannot be re
 `topX` and runs down from row `y` for `textWidth(text)` px. Blocks draws its score centred across the screen at the
 right edge (columns 121 to 127; `123K` from 100000 on, so it fits) and its level (`L3`) just right of the entry line
 (columns 88 to 94); the next piece between them is drawn as it will enter. Blocks shows no other text during play.
+
+## Edges, graduation and animated collectibles (owner, 2026-10-27)
+
+The owner played it on the device: "collectibles are easy to miss visually, maybe let's animate them or flash them?
+also bumping into the screen edges should not be a penalty, just a nuisance, maybe have them push the player back so
+we can't hug the walls? also during the start sequence there are zero obstacles or visual marks to see if we're
+moving, maybe an edge graduation would be fine?"
+
+### The long edges: a nuisance, not a penalty
+
+- Touching row 0 or row 31 costs nothing: no hull point, no grace second, no score change. The canister is pushed
+  off the edge and bounces like on rock (the speed into it reversed, times 0.4). If it came in faster than 8 px/s a
+  soft bump sounds (a 16 ms noise tick at 900 Hz, 52 %, at most every 200 ms); never the clunk. Contact with rock and
+  an edge at the same time is a rock hit.
+- Within 3 px of the first and last rows the canister may take (rows 1 and 28 for its top), a soft spring pushes it
+  back towards the middle: 60 px/s2 at the edge, falling linearly to 0 at 3 px. That is less than full thrust (88):
+  the player can still hold the canister on the wall, but it costs most of the thrust. Half stick across settles
+  about 1 px off the edge; letting go drifts it back towards the middle.
+
+### The edge graduation
+
+- A tick on both long edges at every metre of altitude, counted from the start (world column `startX + 10 k`):
+  1 px long (rows 0 and 31), and 3 px long (rows 0 to 2 and 29 to 31) every 10 m, the 0 m mark included. The ticks
+  scroll with the camera, so the climb shows from the first frame, in the empty calm start too.
+- Drawn over the rock inverted (a tick in rock is dark), before the items, plume and canister (which draw over it).
+- None under the HUD: no ticks from screen column 108 on, which keeps the 1 px gap to the points text (columns 109 to
+  115) whatever its length.
+
+### Animated collectibles (drawing only)
+
+The animation never changes the items' shape for the game: the plume, the collection and the tests use the plain
+shape. A buried item animates as its dark cut-out (the paint is dark in the rock).
+
+- **Gem twinkle**: every 25 ticks (0.5 s), two frames of 3 ticks (60 ms): first a longer cross (the diamond's arms
+  one px longer, 5 x 5), then an x (the centre and the four corners of the 3 x 3). The phase depends on the gem's
+  column, so gems do not twinkle together.
+- **Heart beat**: every 40 ticks (75 a minute), lub-dub: two frames of 4 ticks, 4 ticks apart, the heart one px
+  bigger all round (7 x 7 at most).
+- **Flash when freed**: when the plume clears the last rock touching a buried item (the click), it flashes three
+  times over 18 ticks: 3 ticks of its square with the 1 px ring lit and its shape dark, 3 ticks normal.
 
 ## Open items
 

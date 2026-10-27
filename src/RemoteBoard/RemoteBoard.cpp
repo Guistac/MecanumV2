@@ -313,12 +313,12 @@ void RemoteBoard::updateOperatorLogic(){
     if(menu.isOpen() && pages.getPage() != Page::SETTINGS) closeMenu();
 }
 
-//the stopwatch [D-160]: its controls only on the Status page showing a state (no alarm, no sticks to release), not in
+//the stopwatch [D-160]: its controls only on a main page (Status or Motion) showing a state (no alarm, no sticks to release), not in
 //the menu, the calibration or the games, and not before the sticks are zeroed. It keeps running everywhere else and
 //its time-up sounds wherever the remote is. Nothing of it is sent: the stick buttons go out as before
 void RemoteBoard::updateStopwatch(uint32_t now){
     StopwatchControl::Inputs in;
-    in.b_active = pages.getPage() == Page::STATUS && !menu.isOpen() && !arcade.isActive() && !b_arcadeLoading
+    in.b_active = isMainPage(pages.getPage()) && !menu.isOpen() && !arcade.isActive() && !b_arcadeLoading
                && !b_calibrating && !b_calibrationResult && b_joystickZeroCaptured
                && !Status::isAlarm(status.message) && stickGuard.releaseNeeded() == StickGuard::Release::NONE;
     in.b_leftHeld = leftJoystick.isPressed();
@@ -485,6 +485,7 @@ StatusView RemoteBoard::selectStatus(uint32_t now){
     in.battery = batteryMonitor.getState();
     in.release = stickGuard.releaseNeeded();
     in.reportedState = robotProxy.status;
+    in.vehicle = robotProxy.motion.vehicleState;
     in.sinceEstopReleaseMillis = b_estopWasReleased ? now - estopReleaseMillis : UINT32_MAX;
     in.b_thankYou = int32_t(thankYouUntilMillis - now) > 0;
     return Status::select(in);
@@ -514,6 +515,8 @@ void RemoteBoard::updateLinkPath(uint32_t now){
     //until both are let go (radio to USB also syncs the MAVLink edges, usbExchange)
     b_buttonsHeldThroughHandover = rightLedButton.isPressed() || leftLedButton.isPressed();
     radio.setQuiet(linkPath.isUsb());
+    //the motion comes from the other side now [D-161]: shown again once it sends it
+    robotProxy.motion.clear();
     bool b_usb = linkPath.isUsb();
     usbMavlink->b_sendControls = b_usb;
     if(b_usb){
@@ -529,8 +532,9 @@ void RemoteBoard::updateLinkPath(uint32_t now){
     radioSendEvent.setFrequency(cyclicSendFrequency);
 }
 
-//The receiver's half of an exchange, done locally: decode the remote frame, and answer with the receiver's 8 byte
-//status frame while Stacato's heartbeat arrives (no Stacato: no answer, the remote shows no link)
+//The receiver's half of an exchange, done locally: decode the remote frame, and answer with the receiver's 13 byte
+//reply [D-161, D-163] while Stacato's heartbeat arrives (no Stacato: no answer, the remote shows no link): the motion
+//and pose Stacato sends on this USB, its MAV_STATE and armed flag in byte 12, no receiver RSSI, no vehicle battery
 void RemoteBoard::usbExchange(uint8_t* outgoingFrame){
     if(b_simulatedDropout) return;
     if(!decodeRemoteFrame(outgoingFrame, 8, usbProxy)) return;
@@ -542,15 +546,16 @@ void RemoteBoard::usbExchange(uint8_t* outgoingFrame){
     }
 
     if(!usbMavlink->b_online) return;
-    uint16_t statusword = 0x7;
-    statusword |= (uint8_t(usbMavlink->stacatoState) & 0x7) << 3;
-    statusword |= (uint8_t(usbProxy.speedSelection) & 0x3) << 6;
-    statusword |= (usbProxy.txCounter & 0xF) << 12;
-    uint8_t reply[8] = {0};
-    reply[0] = statusword & 0xFF;
-    reply[1] = (statusword >> 8) & 0xFF;
-    reply[6] = 150;     //receiver RSSI: none
-    handleReply(reply, 8);
+    Reply::Status status;
+    status.state = uint8_t(usbMavlink->stacatoState) & 0x7;
+    status.speed = uint8_t(usbProxy.speedSelection) & 0x3;
+    status.txCounter = usbProxy.txCounter & 0xF;
+    status.page = usbReplyPager.next();
+    status.mavState = usbMavlink->vehicleMavState();
+    status.b_armed = usbMavlink->vehicleArmed();
+    uint8_t reply[Reply::length];
+    Reply::encode(status, usbMavlink->motionTelemetry(), 150, 0, reply);     //receiver RSSI: none (150)
+    handleReply(reply, Reply::length);
 }
 
 
@@ -604,37 +609,47 @@ void RemoteBoard::sendData(){
 void RemoteBoard::receiveData(){
     //radio listen; the USB remote ignores what it hears (another remote's receiver on the channel)
     uint8_t incomingFrame[128];
-    uint8_t length = 128;
-    if(radio.receive(incomingFrame, &length) && !linkPath.isUsb()) handleReply(incomingFrame, length);
+    uint8_t length = 0;
+    if(radio.receive(incomingFrame, sizeof(incomingFrame), &length) && !linkPath.isUsb()) handleReply(incomingFrame, length);
 
     if(millis() - robotProxy.lastReceiveTime > 500) {
         robotProxy.b_connected = false;
         radioSendEvent.setFrequency(pingSendFrequency);
+        //no link: no motion is shown as live [D-161]
+        robotProxy.motion.clear();
     }
+}
+
+RemoteSounds::Sound RemoteBoard::statusChangeSound(BigMessage from, BigMessage to){
+    Reply::VehicleState vehicleBefore = soundVehicleState;
+    soundVehicleState = robotProxy.motion.vehicleState;
+    if(from == to && soundVehicleState == vehicleBefore) return RemoteSounds::Sound::NONE;
+    return RemoteSounds::forStatusChange(from, to, vehicleBefore, soundVehicleState);
 }
 
 void RemoteBoard::handleReply(uint8_t* incomingFrame, uint8_t length){
     robotProxy.rxCounter++;
-    if(length != 8) return;
-
-    uint16_t statusword = incomingFrame[0] | incomingFrame[1] << 8;
-
-    uint8_t header = statusword & 0x7;
-    if(header != 0x7) return;
+    //the 13 byte reply [D-163]; any other length or header is not one
+    Reply::Decoded reply;
+    if(!Reply::decode(incomingFrame, length, reply)) return;
     robotProxy.b_connected = true;
     radioSendEvent.setFrequency(cyclicSendFrequency);
     robotProxy.lastReceiveTime = millis();
     link.onReply();
 
-    robotProxy.status = (statusword >> 3) & 0x7;
-    robotProxy.speedModeDisplay = (statusword >> 6) & 0x3;
-    robotProxy.directionModeDisplay = statusword & 0x100;
-    robotProxy.functionButtonPressed = statusword & 0x200;
-    //two bytes free 0b00001100 00000000
-    uint8_t mirroredTxCounter = (statusword >> 12) & 0xF;
+    robotProxy.status = reply.status.state;
+    robotProxy.speedModeDisplay = reply.status.speed;
+    robotProxy.directionModeDisplay = reply.status.b_direction;
+    robotProxy.functionButtonPressed = reply.status.b_function;
+    uint8_t mirroredTxCounter = reply.status.txCounter;
 
-    robotProxy.robotRxSignalStrength = incomingFrame[6] - 150;
-    robotProxy.batteryVoltage = map(float(incomingFrame[7]), 0.0, 255.0, 45.0, 70.0);
+    //in page 3 (2.5 Hz [D-163]), kept in between
+    if(reply.b_slowValues){
+        robotProxy.robotRxSignalStrength = reply.rssiByte - 150;
+        robotProxy.batteryVoltage = map(float(reply.batteryByte), 0.0, 255.0, 45.0, 70.0);
+    }
+    //the pose carried forward from the arrival times [D-163]
+    robotProxy.motion.apply(reply, millis());
 
     if((robotProxy.txCounter & 0xF) == mirroredTxCounter){
         uint32_t sendToReceiveTimeMicros = micros() - robotProxy.lastSendTimeMicros;

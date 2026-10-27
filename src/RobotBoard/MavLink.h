@@ -8,6 +8,7 @@
 #include "Utilities/RemoteProxy.h"
 #include <RobotStates.h>
 #include "Hardware/ioDevice.h"
+#include <ReplyFrame.h>
 
 class Mavlink{
     public:
@@ -34,6 +35,19 @@ class Mavlink{
     float r_acc_lim = 0.0;
 
     RobotState stacatoState = RobotState::DISABLED;
+    //[D-163] Stacato's HEARTBEAT as received, for the reply's byte 12: system_status (MAV_STATE) and
+    //MAV_MODE_FLAG_SAFETY_ARMED of base_mode
+    uint8_t stacatoMavState = Reply::noStacato;
+    bool b_stacatoArmed = false;
+    //the reply's byte 12 state nibble: 0xF while offline (no Stacato heartbeat for 500 ms)
+    uint8_t vehicleMavState(){ return b_online ? stacatoMavState : Reply::noStacato; }
+    bool vehicleArmed(){ return b_online && b_stacatoArmed; }
+
+    //the vehicle's motion and pose from Stacato (ODOMETRY and ACTUATOR_OUTPUT_STATUS, 20 Hz) for the 13 byte reply
+    //[D-161, D-163]
+    Reply::MotionSource motion;
+    //the loop (the receiver's; the USB remote's): what the reply sends now, invalid when stale or without Stacato
+    Reply::Telemetry motionTelemetry(){ return motion.current(millis(), b_online); }
 
     FrequencyTimer timer_HEARTBEAT = FrequencyTimer(5.0);
     FrequencyTimer timer_POSITION_TARGET_LOCAL_NED = FrequencyTimer(50.0);
@@ -123,6 +137,8 @@ class Mavlink{
                 handleMsg_HEARTBEAT(msg); break;
             case MAVLINK_MSG_ID_ODOMETRY:
                 handleMsg_ODOMETRY(msg); break;
+            case MAVLINK_MSG_ID_ACTUATOR_OUTPUT_STATUS:
+                handleMsg_ACTUATOR_OUTPUT_STATUS(msg); break;
             case MAVLINK_MSG_ID_SYS_STATUS:
                 handleMsg_SYS_STATUS(msg); break;
             case MAVLINK_MSG_ID_COMMAND_ACK:
@@ -142,6 +158,9 @@ class Mavlink{
         mavlink_heartbeat_t hb;
         mavlink_msg_heartbeat_decode(msg, &hb);
         heartbeatTimeout.start();
+        //[D-163] as received; a value that does not fit the nibble (none in MAVLink today) reads as unknown, never 0xF
+        stacatoMavState = hb.system_status < Reply::noStacato ? hb.system_status : Reply::noStacato - 1;
+        b_stacatoArmed = hb.base_mode & MAV_MODE_FLAG_SAFETY_ARMED;
 
         switch(hb.system_status){
             case MAV_STATE_POWEROFF:    stacatoState = RobotState::EMERGENCY_STOPPING; break;
@@ -157,9 +176,20 @@ class Mavlink{
 
         if(!b_online) onConnection();
     }
+    //[D-161] body FRD: vx forward, vy right (m/s), yawspeed clockwise (rad/s); turned into the radio's axes by
+    //Reply::MotionSource. [D-163] the pose: x stage right, y upstage (m, MAV_FRAME_LOCAL_ENU with Stacato's axes),
+    //q = {cos(t/2), 0, 0, sin(t/2)} with Stacato's heading t (counter-clockwise, 0 upstage; NaN from an old Stacato)
     void handleMsg_ODOMETRY(const mavlink_message_t* msg){
         mavlink_odometry_t odo;
         mavlink_msg_odometry_decode(msg, &odo);
+        motion.onOdometry(millis(), odo.vx, odo.vy, odo.yawspeed, odo.x, odo.y, odo.q[0], odo.q[3]);
+    }
+    //[D-161] active bits 0-15 the wheel flags, actuator[0..3] wheel velocity / drive limit, [4..7] torque / rated
+    //(FL, FR, RL, RR; unclamped, may be NaN)
+    void handleMsg_ACTUATOR_OUTPUT_STATUS(const mavlink_message_t* msg){
+        mavlink_actuator_output_status_t status;
+        mavlink_msg_actuator_output_status_decode(msg, &status);
+        motion.onActuators(millis(), status.active, status.actuator);
     }
     void handleMsg_SYS_STATUS(const mavlink_message_t* msg){
         mavlink_sys_status_t sys;
@@ -330,6 +360,7 @@ class Mavlink{
     }
     void onDisconnection(){
         b_online = false;
+        motion.clear();     //never sent as live after Stacato comes back, until it sends again
     }
 
 };

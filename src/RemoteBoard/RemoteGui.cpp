@@ -61,6 +61,19 @@ void RemoteBoard::fillScreenModel(ScreenModel& m){
     m.b_worldFrame = directionToggle.getSwitchState();
     m.stopwatch = stopwatch.view(now);
 
+    m.reportedState = robotProxy.status;
+    m.motion = robotProxy.motion;
+    m.motionAvailability = Reply::availability(robotProxy.b_connected, robotProxy.motion);
+    //the Motors page's rollers scroll with each wheel's velocity [D-163]; nothing scrolls without a link
+    static float wheelPhase[4] = {0, 0, 0, 0};
+    static uint32_t previousFrameMillis = now;
+    for(int i = 0; i < 4; i++){
+        float velocity = robotProxy.b_connected ? robotProxy.motion.wheelVelocity[i] : NAN;
+        wheelPhase[i] = RemoteUi::advanceWheelPhase(wheelPhase[i], velocity, now - previousFrameMillis);
+        m.wheelPhase[i] = wheelPhase[i];
+    }
+    previousFrameMillis = now;
+
     m.page = pages.getPage();
     m.pageCount = b_settingsAvailable ? uint8_t(Page::COUNT) : uint8_t(Page::SETTINGS);
 
@@ -123,7 +136,8 @@ void RemoteBoard::refreshGui(){
     BigMessage messageBefore = previousMessage;
     previousMessage = status.message;
     //status changes and warnings sound once [D-158]
-    RemoteSounds::Sound statusSound = b_newMessage ? RemoteSounds::forStatusChange(messageBefore, status.message) : RemoteSounds::Sound::NONE;
+    //every refresh: it also follows the vehicle state, which can change while the big message stays [D-163]
+    RemoteSounds::Sound statusSound = statusChangeSound(messageBefore, status.message);
     if(statusSound != RemoteSounds::Sound::NONE) playSound(statusSound);
     //the ramp's loop: a new alarm sound has replaced it already (playSound); a status without a sound, or the time
     //limit, ends it here
@@ -165,7 +179,7 @@ void RemoteBoard::refreshGui(){
     ScreenModel model;
     fillScreenModel(model);
 
-    //which view this is: a page (0..6), the menu (10), the calibration (11) or its result (12), the games (20)
+    //which view this is: a page (0..8), the menu (10), the calibration (11) or its result (12), the games (20)
     int view = int(model.page);
     if(model.b_menuOpen) view = 10;
     if(model.b_menuOpen && model.b_calibrating) view = 11;
@@ -192,7 +206,9 @@ void RemoteBoard::refreshGui(){
     uint32_t elapsed = now - transitionStartMillis;
     if(transition != Transition::NONE && elapsed >= duration) transition = Transition::NONE;
     float progress = RemoteTransitions::easeOut(float(elapsed) / float(duration));
-    bool b_pageToPage = transitionFromView > 0 && transitionFromView < 10 && view > 0 && view < 10;
+    //between two pages with page dots (not those that stay open, Status, Motion and Motors, which have none)
+    auto b_dotted = [](int v){ return v >= 0 && v < 10 && !staysOpen(Page(v)); };
+    bool b_pageToPage = b_dotted(transitionFromView) && b_dotted(view);
     if(transition == Transition::SLIDE && b_pageToPage){
         model.pageDotPosition = float(transitionFromView) + (float(view) - float(transitionFromView)) * progress;
     }

@@ -7,10 +7,11 @@
 //Either stick aims the plume (the one pushed further, never both added): the spray goes where the stick points,
 //the canister is pushed the other way, and the plume blasts away the rock it hits. Climb as high as you can: the score is a point per metre of the highest altitude
 //and 25 per gem. Gems and hearts (a hull point back) float in the shaft or sit buried in rock, cut out dark; the
-//plume never destroys them, the canister collects them by touching them. Rock and
-//the long screen edges cost a hull point (four, one second of grace after each, one back every 50 m climbed without
-//a hit); the game is over when the hull is gone or the canister falls out of the bottom of the screen. The Arcade
-//owns the title, pause and game over screens; Plume draws only play [D-157].
+//plume never destroys them, the canister collects them by touching them; gems twinkle, hearts beat and a freed one
+//flashes. Rock costs a hull point (four, one second of grace after each, one back every 50 m climbed without a hit);
+//the long screen edges cost nothing but push the canister back towards the middle. Ticks along both edges (one a
+//metre, a longer one every 10 m) show the climb. The game is over when the hull is gone or the canister falls out of
+//the bottom of the screen. The Arcade owns the title, pause and game over screens; Plume draws only play [D-157].
 class PlumeGame : public Game{
 public:
     PlumeGame();
@@ -60,6 +61,19 @@ public:
     static const uint16_t calmPx = 200;             //the first 20 m are empty
     static const uint16_t firstPlugPx = 500;        //the first plug at 50 m, to learn digging early
     static const uint8_t particleCount = 48;
+    //the long screen edges (owner, 2026-10-27): no hit, a soft push back towards the middle and a soft bump
+    static const int16_t edgeZone = 3;              //px from the edge rows where the push starts
+    static constexpr float edgePush = 60.0f;        //px/s2 at the edge row, less than full thrust: hugging costs effort
+    static constexpr float edgeBumpSpeed = 8.0f;    //px/s into the edge for the bump to sound
+    //the edge graduation: a tick every metre on both edges, a longer one every 10 m, scrolling with the climb
+    static const int16_t tickShort = 1;             //px, rows 0 and 31
+    static const int16_t tickLong = 3;              //px, rows 0 to 2 and 29 to 31
+    //the collectibles' animation (drawing only): gems twinkle, hearts beat, a freed one flashes
+    static const uint8_t twinkleTicks = 25;         //a gem's sparkle every 0.5 s,
+    static const uint8_t twinkleFrameTicks = 3;     //two frames of 60 ms
+    static const uint8_t beatTicks = 40;            //a heart beats 75 times a minute, lub-dub
+    static const uint8_t beatFrameTicks = 4;
+    static const uint8_t flashTicks = 18;           //a freed item flashes three times
     static const uint16_t ringSize = 256;           //terrain columns kept: the screen plus the generator's lead
     static const int16_t generateAhead = 128 + 64;
 
@@ -73,6 +87,7 @@ public:
         bool b_used;        //the slot holds an item
         bool b_taken;       //collected
         bool b_buried;      //rock still touches it: drawn as a dark cut-out in the rock
+        uint8_t flash;      //ticks left of the flash after it was freed (drawing only)
     };
     static const uint8_t maxItems = 6;
     static const uint8_t gemPoints = 25;
@@ -110,6 +125,11 @@ public:
     const Item& item(uint8_t index) const { return items[index]; }
     //an item pixel at a world column and row (an item not yet collected)
     bool isItemPixel(int32_t column, int16_t row) const;
+    //how an item is painted at a world column and row this frame (twinkle, beat, flash): 1 lit, 0 dark, -1 not
+    //painted (the rock or the dark shaft shows)
+    int8_t itemPaint(int32_t column, int16_t row) const;
+    //the edge graduation's tick at a screen column: its length in px (0: none), on both edges
+    int16_t edgeTick(int16_t screenX) const;
     //tests: an item placed by hand in columns already generated (in open space, its rock left as it is)
     void placeItem(ItemKind kind, int32_t x, int8_t y);
     //the thrust the input asks for: direction (x screen right, y screen down) and 0..1; the stick aims the plume,
@@ -138,7 +158,9 @@ private:
     void generateUpTo(int32_t column);
     void generateColumn(int32_t column);
     float noise(float x, float y) const;
-    bool shipTouches(int16_t ix, int16_t iy, float& normalX, float& normalY) const;
+    bool shipTouches(int16_t ix, int16_t iy, float& normalX, float& normalY, bool& b_rock) const;
+    void pushFromEdges();
+    int8_t paintOf(const Item& it, int16_t col, int16_t row) const;
     void newItem(int32_t column, ItemKind kind);
     void stampItems(int32_t column, uint32_t& bits) const;
     static int16_t itemSize(ItemKind kind){ return kind == ItemKind::GEM ? gemSize : heartSize; }
@@ -211,6 +233,8 @@ private:
     SoundKit::NoteList<4> gemNotes;
     SoundKit::NoteList<6> heartNotes;
     SoundKit::NoteList<2> clickNotes;
+    SoundKit::NoteList<2> bumpNotes;
+    uint8_t bumpWait = 0;       //ticks until the edge bump may sound again
     SoundKit::Grain hiss;
     uint8_t effectTicks = 0;    //the game's own one-shot effect still sounds: no grain cuts it
     uint32_t lastPingMetres = 0;

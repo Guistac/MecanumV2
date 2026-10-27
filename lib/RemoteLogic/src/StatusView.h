@@ -3,6 +3,7 @@
 #include "EstopContacts.h"
 #include "BatteryMonitor.h"
 #include "StickGuard.h"
+#include "ReplyFrame.h"
 
 //What the remote's main screen says on its big line and whether line 3 is replaced, highest priority first
 //[D-147 point 3]: own E-stop (or its wiring), radio fault, no link, critical battery, sticks to release, then the
@@ -23,6 +24,8 @@ struct StatusInputs{
     BatteryState battery = BatteryState::OK;
     StickGuard::Release release = StickGuard::Release::NONE;
     uint8_t reportedState = 0;              //RobotState from the receiver's reply
+    //[D-163] Stacato's finer state: a disable ramp also arrives as the 3 bit E-stopping, this tells it apart
+    Reply::VehicleState vehicle = Reply::VehicleState::UNKNOWN;
     uint32_t sinceEstopReleaseMillis = UINT32_MAX;  //since the own E-stop was last released
     bool b_thankYou = false;
 };

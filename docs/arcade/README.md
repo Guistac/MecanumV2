@@ -167,11 +167,11 @@ Lanes design the exact notes; the list below is the agreed content. Music is the
 | Game | Music | Effects |
 | :-- | :-- | :-- |
 | Pong | none (the classic) | paddle hit: a high blip whose pitch rises with ball speed; wall: a lower blip; point: a longer low tone; win and lose jingles at the end |
-| Parking | none | motor whine: grains whose pitch follows the vehicle's speed (quiet at rest); wall slide: scrape grains (softer than the remote's grind); impact (+2 s): a crunch of noise and a low buzz; parked in the bay: a chime; final stage done: a fanfare |
+| Parking | none | motor whine: grains whose pitch follows the vehicle's speed (quiet at rest); wall slide: scrape grains (softer than the remote's grind); impact (+2 s): a crunch of noise and a low buzz; parked in the bay: a chime; final stage done: a fanfare; wrecked (damage meter at 100 %, 22 stages since 2026-10-27): a long crash |
 | Cave | none | rotor chop: noise ticks whose rate follows thrust; a ping every 100 m; crash: a noise burst and a falling whistle |
 | Rocks | the tension pulse: two low alternating notes, faster as rocks thin out (`setTempo`) | shot: a short falling zap; rock destroyed: a noise burst, lower for bigger rocks; saucer: a warble while on screen (grains); mine: ticking (grains); power-up: a rising arpeggio; ship lost: a long falling noise; wave clear and boss intro: jingles |
 | Snake | an original bouncy loop with melody, bass and drums, faster each level | eat: a blip climbing a pentatonic scale as the snake grows; diamond appears: a twinkle; diamond eaten: an arpeggio; mouse eaten: a squeak; new level: a jingle; death: falling notes |
-| Blocks | **Korobeiniki** (melody + bass, the drums join from level 3), faster each level | move: a tiny tick; rotate: a blip; piece lands: a low thud; column cleared: a rising sweep, a bigger fanfare for four at once; level up: a jingle; game over: the music stops, a falling phrase |
+| Blocks | **Korobeiniki**, our own arrangement (2026-10-27): verse and refrain of the folk melody, an original bridge in C major, both again, a turnaround; bass under all of it, the drums join from level 3; 34 bars, 54 s at level 1, faster each level | move: a tiny tick; rotate: a blip; piece lands: a low thud; column cleared: a rising sweep, a bigger fanfare for four at once; level up: a jingle; game over: the music stops, a falling phrase |
 | Plume | a slow, sparse, quiet ambient arpeggio (sine or triangle) | plume hiss: soft high noise grains, denser with more thrust; rock blasted: a tiny crackle, rate-limited; hull hit: a clunk; repair: two rising notes; every 100 m: a ping; fell out: a long falling whistle |
 
 **Korobeiniki rights**: the melody is a 19th-century Russian folk song, public domain. The Game Boy "Type A"

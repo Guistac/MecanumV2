@@ -190,11 +190,14 @@ public:
     uint16_t getRecoveries(){ return recoveries; }
 
 
-    bool receive(uint8_t* buffer, uint8_t* length){
+    //a packet as one frame: the 4 RadioHead header bytes (to, from, id, flags), then the payload. capacity: the size of
+    //buffer; a packet that does not fit is dropped whole (never cut short: a cut 13 byte reply must never read as a shorter frame)
+    bool receive(uint8_t* buffer, uint8_t capacity, uint8_t* length){
         if(!b_initialized) return false;
         uint8_t internalBuffer[255];
         uint8_t internalLength = 255;
         if(radio->recv(internalBuffer, &internalLength)) {
+            if(capacity < 4 || internalLength > capacity - 4) return false;
             buffer[0] = radio->headerTo();
             buffer[1] = radio->headerFrom();
             buffer[2] = radio->headerId();

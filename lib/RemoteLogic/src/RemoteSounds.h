@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <Sound.h>
 #include "StatusView.h"
+#include "ReplyFrame.h"
 
 //The remote's own sounds [D-158], played through the shared sound engine (lib/RemoteAudio). Each plays once. The
 //Sound setting picks what plays: All (navigation, presses, status, warnings), Alarms only (status changes and
@@ -30,14 +31,14 @@ namespace RemoteSounds{
                         //two falling rough buzzes
         STATUS_ENABLING,        //status: a quick rising pair ("arming")
         STATUS_ENABLED,         //a bright B major arpeggio with an echo
-        STATUS_DISABLING,       //the vehicle ramping down (DISABLING, or STOPPING: Stacato reports a disable ramp
-                                //and an E-stop ramp alike): two short falling notes, looping (disablingLoopMillis)
+        STATUS_DISABLING,       //the vehicle ramping down after a disable (DISABLING, or STOPPING with the vehicle
+                                //state DISABLING [D-163]): two short falling notes, looping (disablingLoopMillis)
                                 //until the next state's sound cuts in; the board ends it on any other status and
                                 //after disablingLoopMaxMillis
         STATUS_DISABLED,        //three falling arpeggios, each lower and softer, to a fading low B; it starts on the
                                 //loop's notes, so it reads as the ramp settling
-        STATUS_ESTOP,           //an E-stop certain (own button, or the vehicle reporting itself E-stopped): noise,
-                                //then fast tritones stepping down, deliberately harsh
+        STATUS_ESTOP,           //an E-stop: own button, or the vehicle E-stopping or E-stopped (vehicle state
+                                //E_STOPPING or E_STOP [D-163]): noise, then fast tritones stepping down, harsh
         STATUS_ESTOP_RELEASED,  //a calm rise, an echo
         STATUS_LINK_FOUND,      //the receiver answers again: two pings rising, an echo
         WARNING,                //link lost, radio fault, E-stop wiring, battery: three rough two-leg beeps
@@ -69,6 +70,13 @@ namespace RemoteSounds{
     //the sound for a change of the main screen's big message, or NONE. Nothing from UNKNOWN (power on); link lost
     //only after a state the receiver reported (not while starting without one)
     Sound forStatusChange(BigMessage from, BigMessage to);
+
+    //[D-163] the same, told apart by the vehicle state from the reply's byte 12 (Stacato's MAV_STATE and armed flag),
+    //for a change of the big message or of the vehicle state. The 3 bit state still makes the big message; the
+    //vehicle state only picks the sound: the 3 bit STOPPING is a disable ramp (DISABLING: the disabling loop) or an
+    //E-stop ramp (E_STOPPING: the E-stop sound, once: not again when it ends in E_STOP), and an external E-stop that
+    //is an axis fault (EMERGENCY while armed) warns instead. Without byte 12 (NO_LINK, NO_STACATO, UNKNOWN) as above
+    Sound forStatusChange(BigMessage from, BigMessage to, Reply::VehicleState fromVehicle, Reply::VehicleState toVehicle);
 
     //enable cannot work while this shows
     bool refusesEnable(BigMessage message);

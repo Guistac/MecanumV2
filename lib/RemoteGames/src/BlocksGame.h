@@ -6,7 +6,8 @@
 //right and fall leftward; a full column clears. Left stick up/down moves the piece across, left stick left drops it
 //faster, left click drops it at once; right click or a right stick flick up rotates clockwise, a flick down rotates
 //back. Every 10 columns the level rises and the pieces fall faster; the game ends when a new piece cannot enter.
-//Sound [D-157]: Korobeiniki behind (the folk melody, our own bass, our own drums from level 3), faster each level;
+//Sound [D-157]: Korobeiniki behind (the folk melody's verse and refrain, our own bridge, bass, turnaround and drums
+//from level 3: a loop of 34 bars, 54 s at level 1), faster each level;
 //synth effects in front (move tick, rotate blip, landing thud, clear sweep or fanfare, level jingle), squares only
 //for the game over
 class BlocksGame : public Game{
@@ -40,10 +41,16 @@ public:
     static const uint16_t overHertz = 784;      //G5, the game over's first square
     static const uint8_t drumsFromLevel = 3;
     static const uint16_t tuneStepMillis = 200; //an eighth at tempo 100 (a quarter at 150 a minute)
-    static const uint16_t tuneSteps = 128;      //16 bars of 4/4 in eighths: part one twice, part two twice
+    static const uint16_t tuneSteps = 272;      //34 bars of 4/4 in eighths, 54.4 s at level 1 (form in BlocksGame.cpp)
+    //the voices' levels (percent): the melody loudest, the bass under it, the drums between
+    static const uint8_t melodyLevel = 74;
+    static const uint8_t bassLevel = 42;
+    static const uint8_t drumsLevel = 62;
     static uint16_t musicTempo(uint8_t level);
     //the tune (the tests, the WAV renderer): with or without its drums, built on first use
     const SoundCue& tuneCue(bool b_withDrums);
+    //room was left in both note lists (a full list has dropped notes)
+    bool tuneFits() const { return !tune.isFull() && !tuneDrums.isFull(); }
 
     //for the tests
     uint8_t pieceType() const { return piece.type; }
@@ -119,8 +126,8 @@ private:
     uint16_t demoTicks = 0;
 
     //the music, built at the first playMusic(): melody and bass, and the same with the drums
-    SoundKit::NoteList<144> tune;
-    SoundKit::NoteList<352> tuneDrums;         //330 notes: 138 of melody and bass, 192 of drums
+    SoundKit::NoteList<364> tune;              //357 notes: 165 of melody, 192 of bass
+    SoundKit::NoteList<708> tuneDrums;         //703 notes: the same and 346 of drums
     SoundCue music[2];
     bool b_tuneBuilt = false;
     //an effect made at run time (sweeps); the player reads it while it sounds

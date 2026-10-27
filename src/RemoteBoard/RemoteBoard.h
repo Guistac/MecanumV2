@@ -27,6 +27,7 @@
 #include <Stopwatch.h>
 
 #include <LinkPath.h>
+#include <ReplyFrame.h>
 #include "Utilities/RemoteProxy.h"
 class Mavlink;
 
@@ -88,9 +89,11 @@ private:
         uint8_t speedModeDisplay = 0;
         bool directionModeDisplay = false;
         bool functionButtonPressed = false;     //the receiver's remote finder button
-        //the reply's motor and velocity bytes are not read: always 0 on mavlink (no motion control on the receiver)
-        int8_t robotRxSignalStrength = 0;
-        float batteryVoltage = 0.0;
+        int8_t robotRxSignalStrength = 0;       //from the reply's page 3 (2.5 Hz) [D-163]
+        float batteryVoltage = 0.0;             //the same
+        //[D-161] the motion from the reply, the last value of each paged field; [D-163] the pose carried forward
+        //between its pages and the vehicle state from byte 12
+        Reply::MotionView motion;
     }robotProxy;
 
 public:
@@ -154,6 +157,7 @@ private:
     //pushbuttons together toggle a simulated radio dropout (not in the games)
     Mavlink* usbMavlink = nullptr;
     RemoteProxy usbProxy;
+    Reply::Pager usbReplyPager;     //the reply built here, as the receiver builds it [D-161, D-163]
     LinkPath linkPath;
     bool b_simulatedDropout = false;
     bool b_dropoutChordHeld = false;
@@ -196,6 +200,11 @@ private:
             disablingLoopStartMillis = millis();
         }
     }
+    //[D-163] the status sound for this refresh: a change of the big message or of the vehicle state (reply byte 12)
+    //picks it (RemoteSounds::forStatusChange with the vehicle states); call once per GUI refresh with the message
+    //before and now
+    RemoteSounds::Sound statusChangeSound(BigMessage from, BigMessage to);
+    Reply::VehicleState soundVehicleState = Reply::VehicleState::NO_LINK;
     //the ramp's loop (STATUS_DISABLING) runs until the next alarm sound cuts in; refreshGui ends it on a status
     //without a sound and after RemoteSounds::disablingLoopMaxMillis
     bool b_disablingLoop = false;
@@ -214,7 +223,7 @@ private:
     uint32_t previousSearchPhase = 0;
     void closeMenu();
     void updateLeds();
-    //the rehearsal stopwatch on the Status page [D-160]: display only, the stick buttons start / stop and reset it,
+    //the rehearsal stopwatch on the main pages, Status and Motion [D-160]: display only, the stick buttons start / stop and reset it,
     //the left one held at OFF edits the countdown (lib/RemoteLogic/src/Stopwatch.h, tested with pio test -e native)
     StopwatchControl stopwatch;
     void updateStopwatch(uint32_t now);

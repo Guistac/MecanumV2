@@ -139,9 +139,50 @@ namespace RemoteUi{
     static const uint8_t chipBitmap[] = { 0x54, 0xFE, 0x44, 0xC6, 0x44, 0xFE, 0x54 };
     static const uint8_t batteryBitmap[] = { 0x38, 0x7C, 0x44, 0x7C, 0x44, 0x7C, 0x7C };
     static const uint8_t infoBitmap[] = { 0x7C, 0xEE, 0xFE, 0xEE, 0xEE, 0xEE, 0x7C };
+    //four arrow heads round a cross: the Motion page [D-161]
+    static const uint8_t motionBitmap[] = { 0x10, 0x38, 0x92, 0xFE, 0x92, 0x38, 0x10 };
     //a stick's top, up and pressed (smaller): the About page's sign that the games can be opened
     static const uint8_t stickUpBitmap[] = { 0x38, 0x7C, 0xFE, 0xFE, 0xFE, 0x7C, 0x38 };
     static const uint8_t stickDownBitmap[] = { 0x00, 0x38, 0x7C, 0x7C, 0x7C, 0x38, 0x00 };
+
+    //——— the vehicle state as shown [D-163] ———
+
+    //the reply's byte 12 (Stacato's MAV_STATE and armed flag) in capitals, for the Motion title and the Status word
+    //where it says more than the 3 bit state; UNKNOWN: the 3 bit state's text; nullptr: none
+    static const char* reportedStateText(uint8_t reportedState){
+        switch(RobotState(reportedState)){
+            case RobotState::DISABLING: return "DISABLING";
+            case RobotState::DISABLED: return "DISABLED";
+            case RobotState::ENABLING: return "ENABLING";
+            case RobotState::ENABLED: return "ENABLED";
+            case RobotState::EMERGENCY_STOPPING: return "STOPPING";
+            case RobotState::EMERGENCY_STOPPED: return "E-STOP";
+            default: return nullptr;
+        }
+    }
+
+    const char* vehicleStateText(Reply::VehicleState state, uint8_t reportedState){
+        switch(state){
+            case Reply::VehicleState::NO_LINK: return "NO LINK";
+            case Reply::VehicleState::NO_STACATO: return "NO STACATO";
+            case Reply::VehicleState::BUS_START: return "BUS START";
+            case Reply::VehicleState::BUS_OFF: return "BUS OFF";
+            case Reply::VehicleState::VEHICLE_OFF: return "VEHICLE OFF";
+            case Reply::VehicleState::DISABLED: return "DISABLED";
+            case Reply::VehicleState::ENABLING: return "ENABLING";
+            case Reply::VehicleState::ENABLED: return "ENABLED";
+            case Reply::VehicleState::DISABLING: return "DISABLING";
+            case Reply::VehicleState::E_STOPPING: return "E-STOPPING";
+            case Reply::VehicleState::E_STOP: return "E-STOP";
+            case Reply::VehicleState::AXIS_FAULT: return "AXIS FAULT";
+            default: return reportedStateText(reportedState);
+        }
+    }
+
+    //the state as shown: NO_LINK whenever the link is down, whatever the view still holds
+    static Reply::VehicleState shownVehicleState(const ScreenModel& m){
+        return m.b_linkUp ? m.motion.vehicleState : Reply::VehicleState::NO_LINK;
+    }
 
     //——— the status screen ———
 
@@ -161,6 +202,39 @@ namespace RemoteUi{
         if(m.remoteBattery == BatteryState::OK || blink(m.now, 1000, 600)) batteryIcon(g, 114, 0, m.remotePercent);
     }
 
+    //[D-163] The message as shown: the 3 bit state's E-stop ramp is also Stacato's disabling ramp (CRITICAL with no
+    //E-stop latched): shown as Disabling, a state, not as the STOPPING alarm. Every decision keeps m.status
+    static BigMessage shownMessage(const ScreenModel& m){
+        if(m.status.message == BigMessage::STOPPING && shownVehicleState(m) == Reply::VehicleState::DISABLING) return BigMessage::DISABLING;
+        return m.status.message;
+    }
+
+    //the vehicle states that say more than the 3 bit state, in the state word's place [D-163]
+    static bool isFinerState(Reply::VehicleState state){
+        switch(state){
+            case Reply::VehicleState::NO_STACATO:
+            case Reply::VehicleState::BUS_START:
+            case Reply::VehicleState::BUS_OFF:
+            case Reply::VehicleState::VEHICLE_OFF:
+            case Reply::VehicleState::AXIS_FAULT:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    //in the big font in title case like the other state words (in capitals NO STACATO and VEHICLE OFF do not fit)
+    static const char* finerStateText(Reply::VehicleState state){
+        switch(state){
+            case Reply::VehicleState::NO_STACATO: return "No Stacato";
+            case Reply::VehicleState::BUS_START: return "Bus start";
+            case Reply::VehicleState::BUS_OFF: return "Bus off";
+            case Reply::VehicleState::VEHICLE_OFF: return "Vehicle off";
+            case Reply::VehicleState::AXIS_FAULT: return "Axis fault";
+            default: return "Unknown";
+        }
+    }
+
     static const char* stateText(BigMessage message){
         switch(message){
             case BigMessage::ENABLED: return "Enabled";
@@ -171,15 +245,29 @@ namespace RemoteUi{
         }
     }
 
-    static const char* alarmText(BigMessage message){
+    //a state from byte 12 when the 3 bit state is none of the four
+    static BigMessage messageFromVehicleState(Reply::VehicleState state){
+        switch(state){
+            case Reply::VehicleState::DISABLED: return BigMessage::DISABLED;
+            case Reply::VehicleState::ENABLING: return BigMessage::ENABLING;
+            case Reply::VehicleState::ENABLED: return BigMessage::ENABLED;
+            case Reply::VehicleState::DISABLING: return BigMessage::DISABLING;
+            default: return BigMessage::UNKNOWN;
+        }
+    }
+
+    static const char* alarmText(const ScreenModel& m, BigMessage message){
         switch(message){
-            case BigMessage::ESTOP:
-            case BigMessage::EXT_ESTOP: return "E-STOP";
+            case BigMessage::ESTOP: return "E-STOP";
+            case BigMessage::EXT_ESTOP:
+                //[D-163] Stacato's EMERGENCY with no E-stop latched: a drive fault, not an E-stop
+                return shownVehicleState(m) == Reply::VehicleState::AXIS_FAULT ? "AXIS FAULT" : "E-STOP";
             case BigMessage::ESTOP_WIRING: return "WIRING";
             case BigMessage::RADIO_FAULT: return "RADIO";
             case BigMessage::NO_LINK: return "NO LINK";
             case BigMessage::BATTERY_CRITICAL: return "BATTERY";
-            case BigMessage::STOPPING: return "STOPPING";
+            case BigMessage::STOPPING:
+                return shownVehicleState(m) == Reply::VehicleState::E_STOPPING ? "E-STOPPING" : "STOPPING";
             default: return "";
         }
     }
@@ -195,7 +283,8 @@ namespace RemoteUi{
         }
         switch(m.status.message){
             case BigMessage::ESTOP_WIRING: return "e-stop contact fault";
-            case BigMessage::EXT_ESTOP: return "not from this remote";
+            case BigMessage::EXT_ESTOP:
+                return shownVehicleState(m) == Reply::VehicleState::AXIS_FAULT ? "a drive is faulted" : "not from this remote";
             case BigMessage::BATTERY_CRITICAL: return "charge the remote";
             case BigMessage::STOPPING: return "e-stop ramp";
             case BigMessage::ESTOP: return "on this remote";
@@ -204,7 +293,7 @@ namespace RemoteUi{
     }
 
     static void drawMiddle(Adafruit_GFX& g, const ScreenModel& m){
-        BigMessage message = m.status.message;
+        BigMessage message = shownMessage(m);
 
         //sticks to release: the stick icon and a sentence
         if(message == BigMessage::RELEASE_LEFT || message == BigMessage::RELEASE_RIGHT || message == BigMessage::RELEASE_BOTH){
@@ -224,16 +313,30 @@ namespace RemoteUi{
             if(message == BigMessage::STOPPING) b_filled = blink(m.now, 300, 150);
             uint16_t ink = b_filled ? OFF : ON;
             if(b_filled) g.fillRoundRect(0, middleTop, 127, middleHeight, 3, ON);
-            bool b_estop = message == BigMessage::ESTOP || message == BigMessage::EXT_ESTOP
-                        || message == BigMessage::ESTOP_WIRING || message == BigMessage::STOPPING;
-            if(b_estop) estopIcon(g, 4, middleTop + 3, ink);
-            else g.drawBitmap(4, middleTop + 4, warningBitmap, 9, 8, ink);
-            textCentered(g, bigFont, 70, middleTop + 13, alarmText(message), ink);
+            const char* word = alarmText(m, message);
+            bool b_axisFault = message == BigMessage::EXT_ESTOP && shownVehicleState(m) == Reply::VehicleState::AXIS_FAULT;
+            bool b_estop = (message == BigMessage::ESTOP || message == BigMessage::EXT_ESTOP
+                        || message == BigMessage::ESTOP_WIRING || message == BigMessage::STOPPING) && !b_axisFault;
+            //the icon on the left and the word centred right of it (x 16..122); a word too wide for that (E-STOPPING)
+            //says what it is by itself: centred on the screen, without the icon
+            int16_t wordWidth = textWidth(g, bigFont, word);
+            if(wordWidth <= 107){
+                if(b_estop) estopIcon(g, 4, middleTop + 3, ink);
+                else g.drawBitmap(4, middleTop + 4, warningBitmap, 9, 8, ink);
+                int16_t x = 70 - wordWidth / 2;
+                if(x < 16) x = 16;
+                text(g, bigFont, x, middleTop + 13, word, ink);
+            }
+            else textCentered(g, bigFont, 63, middleTop + 13, word, ink);
             return;
         }
 
-        //a normal state: a dot (filled when enabled, pulsing while it changes) and the word
-        const char* word = stateText(message);
+        //a normal state: a dot (filled when enabled, pulsing while it changes) and the word; the vehicle's finer state
+        //in capitals where it says more [D-163]
+        Reply::VehicleState vehicle = shownVehicleState(m);
+        bool b_finer = isFinerState(vehicle);
+        if(message == BigMessage::UNKNOWN && !b_finer) message = messageFromVehicleState(vehicle);
+        const char* word = b_finer ? finerStateText(vehicle) : stateText(message);
         int16_t wordWidth = textWidth(g, bigFont, word);
         int16_t x = (127 - wordWidth - 10) / 2;
         //a descender (Enabling, Disabling) reaches the bottom row: keep it left of the frame indicator
@@ -245,7 +348,12 @@ namespace RemoteUi{
             if(x < 0) x = 0;
         }
         int16_t cy = middleTop + 7;
-        switch(message){
+        if(b_finer){
+            //the bus starting changes like enabling; the others hold
+            g.drawCircle(x + 3, cy, 3, ON);
+            if(vehicle == Reply::VehicleState::BUS_START && blink(m.now, 400, 200)) g.fillCircle(x + 3, cy, 1, ON);
+        }
+        else switch(message){
             case BigMessage::ENABLED: g.fillCircle(x + 3, cy, 3, ON); break;
             case BigMessage::DISABLED: g.drawCircle(x + 3, cy, 3, ON); break;
             case BigMessage::ENABLING:
@@ -333,8 +441,9 @@ namespace RemoteUi{
         //during an alarm the row explains it (no room for a gap between the banner and pills): the switches matter less
         //than why nothing moves
         char buffer[24];
-        const char* note = Status::isAlarm(m.status.message) ? alarmNote(m, buffer, sizeof(buffer)) : nullptr;
-        if(Status::isAlarm(m.status.message)){
+        bool b_alarm = Status::isAlarm(shownMessage(m));
+        const char* note = b_alarm ? alarmNote(m, buffer, sizeof(buffer)) : nullptr;
+        if(b_alarm){
             if(note){
                 if(m.status.line == StatusLine::RESTART_REMOTE && !blink(m.now, 1000, 700)) return;
                 textCentered(g, pixelFont, 63, 24, note);
@@ -408,7 +517,7 @@ namespace RemoteUi{
     static const int16_t countdownBarRow = 8;
 
     static bool countdownBarShown(const ScreenModel& m){
-        return m.stopwatch.b_countdown && !Status::isAlarm(m.status.message);
+        return m.stopwatch.b_countdown && !Status::isAlarm(shownMessage(m));
     }
 
     static void countdownBar(Adafruit_GFX& g, const ScreenModel& m, const GFXcanvas1* middle){
@@ -454,6 +563,8 @@ namespace RemoteUi{
     //the title line: icon and title, page dots on the right (plain: a filled bar would need 9 rows and leave 2 lines)
     const char* pageTitle(Page page){
         switch(page){
+            case Page::MOTION: return "Motion";
+            case Page::MOTORS: return "Motors";
             case Page::LINK: return "Link";
             case Page::RADIO: return "Radio";
             case Page::BATTERY: return "Battery";
@@ -464,9 +575,10 @@ namespace RemoteUi{
         }
     }
 
-    static void drawPageHeader(Adafruit_GFX& g, const ScreenModel& m, const uint8_t* icon){
+    //title: instead of the page's own (the Motion page shows the vehicle state there)
+    static void drawPageHeader(Adafruit_GFX& g, const ScreenModel& m, const uint8_t* icon, const char* title = nullptr){
         g.drawBitmap(0, 0, icon, 7, 7, ON);
-        text(g, pixelFont, 10, 0, m.titleOverride ? m.titleOverride : pageTitle(m.page));
+        text(g, pixelFont, 10, 0, m.titleOverride ? m.titleOverride : (title ? title : pageTitle(m.page)));
         int16_t x = 125 - m.pageCount * 4;
         float active = m.pageDotPosition >= 0.0f ? m.pageDotPosition : float(m.page);
         for(int i = 0; i < m.pageCount; i++) g.drawPixel(x + i * 4 + 1, 3, ON);
@@ -478,6 +590,269 @@ namespace RemoteUi{
         int16_t top = 8 + index * 8;
         text(g, pixelFont, 0, top, label);
         textRight(g, pixelFont, 125, top, value);
+    }
+
+    //——— the Motion page [D-161, D-163] ———
+
+    //A second main page next to Status: no return to Status after 10 s, the stopwatch's controls work here too, and it
+    //shows the same timer [D-160]. Two columns of three lines in rows 9..31: the body velocity on the left, the pose
+    //on the right. The wheels have their own page (Motors).
+    //  title line (rows 0..6, no page dots, as on Status): the motion icon, the vehicle state in capitals (small: a
+    //  descender would touch the bar's row), the alive dot after it, and the timer right-aligned in plain digits (m:ss.t,
+    //  mm:ss; blinking slowly when stopped; past zero the negative time, blinking with the bar, steady when stopped)
+    //  row 8: the countdown bar, drawn by the Status page's code (notches over the content's tops in row 9)
+    //  left column (x 0..61): the body velocity, radio axes: X+ right, Y+ forward in m/s with 3 decimals, W+ clockwise
+    //  in deg/s with 1; label left, unit right-aligned, the value right-aligned before it
+    //  right column (x 68..126): the pose in Stacato's world frame: x stage right, y upstage in m with 2 decimals, the
+    //  heading in deg with 1 (counter-clockwise, 0 upstage); its label is an arrow pointing upstage, drawn in rows
+    //  26..31 so it keeps clear of the descender of y (row 24); -- without a value
+    //  no motion data (no link, nothing fresh from Stacato): the page says so on the text lines, title and bar stay
+    //  editing the countdown: the SET pill in the middle of rows 9..31 instead of the content, the bar hidden
+    static const int16_t motionContentTop = 9;
+    static const int16_t velocityLabelX = 0;
+    static const int16_t velocityValueRight = 42;
+    static const int16_t velocityUnitRight = 61;
+    static const int16_t poseLabelX = 68;
+    static const int16_t poseValueRight = 119;
+    static const int16_t poseUnitRight = 126;
+
+    //the heading's label, 5 x 6 (rows 1..6 of a text line): an arrow pointing upstage
+    static const uint8_t headingBitmap[] = { 0x20, 0x70, 0xA8, 0x20, 0x20, 0x20 };
+
+    //the units: the font's degree sign is a 4 x 4 blob that reads as a dot, so deg is drawn as a 3 x 3 ring (its
+    //corners off) at the top of the line, deg/s that ring and "/s" 1 px after it
+    enum class Unit : uint8_t{ METRES_PER_SECOND, DEGREES_PER_SECOND, METRES, DEGREES };
+
+    static int16_t unitWidth(Adafruit_GFX& g, Unit unit){
+        switch(unit){
+            case Unit::METRES_PER_SECOND: return textWidth(g, pixelFont, "m/s");
+            case Unit::DEGREES_PER_SECOND: return 3 + 1 + textWidth(g, pixelFont, "/s");
+            case Unit::METRES: return textWidth(g, pixelFont, "m");
+            default: return 3;
+        }
+    }
+
+    static void degreeRing(Adafruit_GFX& g, int16_t x, int16_t top){
+        g.drawPixel(x + 1, top, ON);
+        g.drawPixel(x, top + 1, ON);
+        g.drawPixel(x + 2, top + 1, ON);
+        g.drawPixel(x + 1, top + 2, ON);
+    }
+
+    //right-aligned at rightX
+    static void unitRight(Adafruit_GFX& g, int16_t rightX, int16_t top, Unit unit){
+        int16_t x = rightX - unitWidth(g, unit) + 1;
+        switch(unit){
+            case Unit::METRES_PER_SECOND: text(g, pixelFont, x, top, "m/s"); break;
+            case Unit::DEGREES_PER_SECOND: degreeRing(g, x, top); text(g, pixelFont, x + 4, top, "/s"); break;
+            case Unit::METRES: text(g, pixelFont, x, top, "m"); break;
+            default: degreeRing(g, x, top); break;
+        }
+    }
+
+    //label left, value and unit right, on a content line
+    static void columnLine(Adafruit_GFX& g, int16_t labelX, int16_t valueRight, int16_t unitX, int index,
+                           const char* label, const char* value, Unit unit){
+        int16_t top = motionContentTop + index * 8;
+        if(label) text(g, pixelFont, labelX, top, label);
+        textRight(g, pixelFont, valueRight, top, value);
+        unitRight(g, unitX, top, unit);
+    }
+
+    //a value as printed, without a minus on zero
+    static void signedValue(char* buffer, size_t size, float value, int decimals){
+        float half = 0.5f * powf(10.0f, float(-decimals));
+        if(fabsf(value) < half) value = 0.0f;
+        snprintf(buffer, size, "%+.*f", decimals, value);
+    }
+
+    //the SET pill with its stick marks, as on Status (drawStopwatch), centred at x, top at y
+    static void editPill(Adafruit_GFX& g, const ScreenModel& m, int16_t centreX, int16_t y){
+        char digits[12];
+        char label[16];
+        Stopwatch::format(digits, sizeof(digits), m.stopwatch.setMillis, false);
+        snprintf(label, sizeof(label), "SET %s", digits);
+        int16_t tw = textWidth(g, pixelFont, label);
+        int16_t w = 2 + tw + 2 + stickMarkWidth + 2;
+        int16_t x = centreX - w / 2;
+        g.fillRoundRect(x, y, w, pillHeight, 2, ON);
+        text(g, pixelFont, x + 2, y + 1, label, OFF);
+        stickMarks(g, x + 2 + tw + 2, y + 1, OFF);
+    }
+
+    //the timer in the title line, plain, right-aligned at x 126 (past zero no pill: it would not fit above the bar)
+    static void titleTimer(Adafruit_GFX& g, const ScreenModel& m){
+        const StopwatchView& v = m.stopwatch;
+        if(v.b_editing) return;
+        char digits[12];
+        bool b_shown;
+        if(v.b_overtime){
+            Stopwatch::format(digits, sizeof(digits), v.shownMillis, true, true);
+            //the same phase as the bar (countdownBar)
+            b_shown = v.state == Stopwatch::State::STOPPED || blink(m.now, 1000, 500);
+        }
+        else{
+            Stopwatch::format(digits, sizeof(digits), v.shownMillis, true);
+            b_shown = v.state != Stopwatch::State::STOPPED || blink(m.now, 1200, 800);
+        }
+        if(b_shown) textRight(g, pixelFont, 126, 0, digits);
+    }
+
+    static void drawMotionContent(Adafruit_GFX& g, const ScreenModel& m){
+        if(m.stopwatch.b_editing){
+            editPill(g, m, 63, 16);
+            return;
+        }
+        const char* reason = nullptr;
+        switch(m.motionAvailability){
+            case Reply::MotionAvailability::NO_LINK: reason = "no link"; break;
+            case Reply::MotionAvailability::NO_DATA: reason = "none from Stacato"; break;
+            case Reply::MotionAvailability::LIVE: break;
+        }
+        if(reason){
+            textCentered(g, pixelFont, 63, motionContentTop, "no motion data");
+            textCentered(g, pixelFont, 63, motionContentTop + 8, reason);
+            return;
+        }
+        const Reply::MotionView& v = m.motion;
+        char value[12];
+        //the velocity: m/s with 3 decimals below 10 m/s, deg/s with one below 1000
+        signedValue(value, sizeof(value), v.vx, fabsf(v.vx) < 9.9995f ? 3 : 2);
+        columnLine(g, velocityLabelX, velocityValueRight, velocityUnitRight, 0, "X", value, Unit::METRES_PER_SECOND);
+        signedValue(value, sizeof(value), v.vy, fabsf(v.vy) < 9.9995f ? 3 : 2);
+        columnLine(g, velocityLabelX, velocityValueRight, velocityUnitRight, 1, "Y", value, Unit::METRES_PER_SECOND);
+        float degrees = v.vr * 57.29578f;
+        signedValue(value, sizeof(value), degrees, fabsf(degrees) < 999.95f ? 1 : 0);
+        columnLine(g, velocityLabelX, velocityValueRight, velocityUnitRight, 2, "W", value, Unit::DEGREES_PER_SECOND);
+        //the pose: m with 2 decimals below 100 m, the heading in deg with one
+        const float pose[3] = {v.poseX, v.poseY, v.heading};
+        const char* labels[3] = {"x", "y", nullptr};
+        const Unit units[3] = {Unit::METRES, Unit::METRES, Unit::DEGREES};
+        for(int i = 0; i < 3; i++){
+            if(isnan(pose[i])) snprintf(value, sizeof(value), "--");
+            else if(i < 2) signedValue(value, sizeof(value), pose[i], fabsf(pose[i]) < 99.995f ? 2 : 1);
+            else signedValue(value, sizeof(value), pose[i], 1);
+            columnLine(g, poseLabelX, poseValueRight, poseUnitRight, i, labels[i], value, units[i]);
+        }
+        g.drawBitmap(poseLabelX, motionContentTop + 16 + 1, headingBitmap, 5, 6, ON);
+    }
+
+    static void drawMotionPage(Adafruit_GFX& g, const ScreenModel& m){
+        //the title line: icon, the vehicle state, the alive dot (no page dots to carry it), the timer
+        g.drawBitmap(0, 0, motionBitmap, 7, 7, ON);
+        const char* state = vehicleStateText(shownVehicleState(m), m.reportedState);
+        const char* title = m.titleOverride ? m.titleOverride : (state ? state : pageTitle(Page::MOTION));
+        text(g, pixelFont, 10, 0, title);
+        activeDot(g, 10 + textWidth(g, pixelFont, title) + 3, 2, m, true);
+        titleTimer(g, m);
+        //the countdown bar as on Status: the content drawn aside first, the bar notched over its tops
+        if(countdownBarShown(m) && !m.stopwatch.b_editing){
+            GFXcanvas1 content(128, 32);
+            content.fillScreen(0);
+            drawMotionContent(content, m);
+            for(int16_t y = motionContentTop; y < 32; y++){
+                for(int16_t x = 0; x < 128; x++) if(content.getPixel(x, y)) g.drawPixel(x, y, ON);
+            }
+            countdownBar(g, m, &content);
+        }
+        else drawMotionContent(g, m);
+    }
+
+    //——— the Motors page [D-163] ———
+
+    //Permanent like the main pages (no return to Status), but the stopwatch's controls do not work here and it shows
+    //no timer, no title and no page dots: the four wheels seen from above, the vehicle's front up. Each wheel is a
+    //small mecanum wheel, 7 x 15 (a filled rounded body with dark diagonal rollers, FL and RR rising to the right, FR
+    //and RL falling, as on the vehicle) whose rollers scroll with the wheel velocity: up while it rolls forward, faster
+    //the faster it turns (wheelPhase). Beside each wheel two text lines: its state (ON enabled, RDY ready, OFF neither,
+    //-- not yet known; FLT and STO in plain text instead, taking turns every second when both) and the velocity in %
+    //of the drive's limit; under them trq and the torque in % of rated (-- without a value). The alive dot sits in the
+    //vehicle's centre.
+    static const int16_t wheelWidth = 7;
+    static const int16_t wheelHeight = 15;
+    static const int16_t wheelPeriod = 4;
+    //front rows 0..14 (text lines 0 and 8), rear rows 17..31 (text lines 17 and 25): the 2 rows between keep the front
+    //torque line's descender (trq) clear of the rear state line
+    static const int16_t wheelTop[4] = {0, 0, 17, 17};
+    static const bool wheelLeft[4] = {true, false, true, false};
+    //FL and RR rollers rise to the right (/), FR and RL fall (\), seen from above (Stacato's Mecanum README)
+    static const int8_t rollerSlant[4] = {1, -1, -1, 1};
+
+    static void wheelIcon(Adafruit_GFX& g, int16_t x, int16_t y, int8_t slant, float phase){
+        g.fillRoundRect(x, y, wheelWidth, wheelHeight, 2, ON);
+        //the rollers: dark diagonals inside the rim, moved up by the phase (pixels along the wheel)
+        int32_t shift = int32_t(floorf(phase));
+        for(int16_t dy = 1; dy < wheelHeight - 1; dy++){
+            for(int16_t dx = 1; dx < wheelWidth - 1; dx++){
+                int32_t index = dx * slant + dy + shift;
+                if(((index % wheelPeriod) + wheelPeriod) % wheelPeriod == 0) g.drawPixel(x + dx, y + dy, OFF);
+            }
+        }
+    }
+
+    float advanceWheelPhase(float phase, float velocity, uint32_t elapsedMillis){
+        if(isnan(velocity)) return phase;
+        if(elapsedMillis > 100) elapsedMillis = 100;
+        phase += velocity * wheelPixelsPerSecond * float(elapsedMillis) / 1000.0f;
+        //kept small: the pattern repeats every period
+        phase = fmodf(phase, float(wheelPeriod * 1000));
+        return phase;
+    }
+
+    static const char* wheelStateText(const ScreenModel& m, uint8_t wheel){
+        const Reply::MotionView& v = m.motion;
+        if(!m.b_linkUp || !v.b_flagsKnown) return "--";
+        bool b_fault = Reply::wheelFlag(v.wheelFlags, wheel, Reply::FAULT);
+        bool b_sto = Reply::wheelFlag(v.wheelFlags, wheel, Reply::STO);
+        if(b_fault && b_sto) return (m.now / 1000) % 2 == 0 ? "FLT" : "STO";
+        if(b_fault) return "FLT";
+        if(b_sto) return "STO";
+        if(Reply::wheelFlag(v.wheelFlags, wheel, Reply::ENABLED)) return "ON";
+        if(Reply::wheelFlag(v.wheelFlags, wheel, Reply::READY)) return "RDY";
+        return "OFF";
+    }
+
+    static void percentText(char* buffer, size_t size, float value, bool b_known){
+        if(!b_known || isnan(value)) snprintf(buffer, size, "--");
+        else{
+            int percent = int(lroundf(value * 100.0f));
+            if(percent > 100) percent = 100;
+            if(percent < -100) percent = -100;
+            if(percent == 0) snprintf(buffer, size, "0%%");
+            else snprintf(buffer, size, "%+d%%", percent);
+        }
+    }
+
+    static void drawMotorsPage(Adafruit_GFX& g, const ScreenModel& m){
+        const Reply::MotionView& v = m.motion;
+        bool b_live = m.b_linkUp;
+        for(uint8_t wheel = 0; wheel < 4; wheel++){
+            int16_t top = wheelTop[wheel];
+            bool b_left = wheelLeft[wheel];
+            char velocity[8];
+            char torque[8];
+            percentText(velocity, sizeof(velocity), v.wheelVelocity[wheel], b_live);
+            percentText(torque, sizeof(torque), v.wheelTorque[wheel], b_live && v.b_torqueKnown);
+            const char* state = wheelStateText(m, wheel);
+            //the wheels close together in the middle like the vehicle, the text outside: the state and trq beside the
+            //wheel, the values right-aligned on the outer side (the left ones at x 28, the right ones at the edge)
+            int16_t iconX = b_left ? 52 : 68;
+            wheelIcon(g, iconX, top, rollerSlant[wheel], m.wheelPhase[wheel]);
+            if(b_left){
+                textRight(g, pixelFont, 48, top, state);
+                textRight(g, pixelFont, 48, top + 8, "trq");
+                textRight(g, pixelFont, 28, top, velocity);
+                textRight(g, pixelFont, 28, top + 8, torque);
+            }
+            else{
+                text(g, pixelFont, 78, top, state);
+                text(g, pixelFont, 78, top + 8, "trq");
+                textRight(g, pixelFont, 126, top, velocity);
+                textRight(g, pixelFont, 126, top + 8, torque);
+            }
+        }
+        //the alive sign in the vehicle's centre, between the wheel rows
+        activeDot(g, 62, 14, m, true);
     }
 
     static void drawLinkPage(Adafruit_GFX& g, const ScreenModel& m){
@@ -635,6 +1010,8 @@ namespace RemoteUi{
 
     void drawPage(Adafruit_GFX& g, const ScreenModel& m){
         switch(m.page){
+            case Page::MOTION: drawMotionPage(g, m); break;
+            case Page::MOTORS: drawMotorsPage(g, m); break;
             case Page::LINK: drawLinkPage(g, m); break;
             case Page::RADIO: drawRadioPage(g, m); break;
             case Page::BATTERY: drawBatteryPage(g, m); break;

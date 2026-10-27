@@ -135,9 +135,11 @@ PlumeGame::PlumeGame(){
     heartNotes.synth(195, SoundKit::hertz(SoundKit::C6), 180, 92, 150, Synth::Wave::TRIANGLE);
     //a buried item freed: a soft click
     clickNotes.burst(0, 1500, 7, 66, 4);
+    //the long edge touched: a soft bump, no penalty
+    bumpNotes.burst(0, 900, 16, 52, 10);
     //sorted once (the cues are taken again when played)
     clunkNotes.sort(); repairNotes.sort(); pingNotes.sort(); whistleNotes.sort(); burstNotes.sort();
-    gemNotes.sort(); heartNotes.sort(); clickNotes.sort();
+    gemNotes.sort(); heartNotes.sort(); clickNotes.sort(); bumpNotes.sort();
 }
 
 void PlumeGame::reset(uint32_t seed){
@@ -172,6 +174,7 @@ void PlumeGame::reset(uint32_t seed){
     emitDebt = 0.0f;
     erodedThisTick = 0;
     crackleWait = 0;
+    bumpWait = 0;
 
     demoMode = DemoMode::CLIMB;
     demoDigTicks = 0;
@@ -399,6 +402,7 @@ void PlumeGame::collectItems(){
         if(it.x + size + it.depth >= generated || it.x + size < camera || it.x > camera + width) continue;
         if(it.b_buried && itemFree(it)){
             it.b_buried = false;
+            it.flash = flashTicks;
             effect(clickNotes.cue(), 2);
         }
         if(ix + shipWidth < it.x - 1 || ix > it.x + size || iy + shipHeight < it.y - 1 || iy > it.y + size) continue;
@@ -459,15 +463,19 @@ void PlumeGame::place(float x, float y, float vx, float vy){
     generateUpTo(cameraColumn() + generateAhead);
 }
 
-//the canister at (ix, iy) touches rock or a long edge of the screen; the normal points away from what it touches
-bool PlumeGame::shipTouches(int16_t ix, int16_t iy, float& normalX, float& normalY) const {
+//the canister at (ix, iy) touches rock or a long edge of the screen; the normal points away from what it touches,
+//b_rock says whether rock is part of it (only rock is a hit)
+bool PlumeGame::shipTouches(int16_t ix, int16_t iy, float& normalX, float& normalY, bool& b_rock) const {
     float sumX = 0.0f, sumY = 0.0f;
     bool b_touch = false;
+    b_rock = false;
     for(int16_t row = 0; row < shipHeight; row++){
         for(int16_t col = 0; col < shipWidth; col++){
             if(!(shipRows[row] & (0x10 >> col))) continue;
             int16_t y = int16_t(iy + row);
-            if(y <= 0 || y >= height - 1 || isRock(int32_t(ix) + col, y)){
+            bool b_edge = y <= 0 || y >= height - 1;
+            if(b_edge || isRock(int32_t(ix) + col, y)){
+                if(!b_edge) b_rock = true;
                 b_touch = true;
                 sumX += float(col) - 2.0f;
                 sumY += float(row) - 1.0f;
@@ -489,22 +497,40 @@ bool PlumeGame::shipTouches(int16_t ix, int16_t iy, float& normalX, float& norma
     return true;
 }
 
-//pushed out of the rock along the normal and bounced; a hit unless the grace second runs
+//pushed out of the rock or off the edge along the normal and bounced; rock is a hit unless the grace second runs,
+//a long edge alone only bumps (owner, 2026-10-27: a nuisance, not a penalty)
 void PlumeGame::collide(){
     float nx, ny;
-    if(!shipTouches(int16_t(lroundf(shipX)), int16_t(lroundf(shipY)), nx, ny)) return;
+    bool b_rock;
+    if(!shipTouches(int16_t(lroundf(shipX)), int16_t(lroundf(shipY)), nx, ny, b_rock)) return;
     for(uint8_t i = 0; i < 16; i++){
         shipX += nx * 0.5f;
         shipY += ny * 0.5f;
         float ignoredX, ignoredY;
-        if(!shipTouches(int16_t(lroundf(shipX)), int16_t(lroundf(shipY)), ignoredX, ignoredY)) break;
+        bool b_ignored;
+        if(!shipTouches(int16_t(lroundf(shipX)), int16_t(lroundf(shipY)), ignoredX, ignoredY, b_ignored)) break;
     }
     float into = speedX * nx + speedY * ny;
     if(into < 0.0f){
         speedX -= (1.0f + bounce) * into * nx;
         speedY -= (1.0f + bounce) * into * ny;
     }
-    if(graceLeft == 0) hullHit();
+    if(b_rock){
+        if(graceLeft == 0) hullHit();
+    }
+    else if(-into >= edgeBumpSpeed && bumpWait == 0){
+        bumpWait = 10;
+        effect(bumpNotes.cue(), 2);
+    }
+}
+
+//near a long edge a soft spring pushes the canister back towards the middle, strongest at the edge, weaker than full
+//thrust: it can still be held there, at the cost of the thrust spent on it
+void PlumeGame::pushFromEdges(){
+    float top = shipY - 1.0f;                                   //px from the first row it may take
+    float bottom = float(height - 1 - shipHeight) - shipY;      //px from the last
+    if(top < float(edgeZone)) speedY += edgePush * (1.0f - fmaxf(top, 0.0f) / float(edgeZone)) * tickSeconds;
+    if(bottom < float(edgeZone)) speedY -= edgePush * (1.0f - fmaxf(bottom, 0.0f) / float(edgeZone)) * tickSeconds;
 }
 
 void PlumeGame::hullHit(){
@@ -603,6 +629,8 @@ void PlumeGame::update(const GameInput& input){
     frameTicks++;
     erodedThisTick = 0;
     if(effectTicks) effectTicks--;
+    if(bumpWait) bumpWait--;
+    for(uint8_t i = 0; i < maxItems; i++) if(items[i].flash) items[i].flash--;
     if(b_fellOut) return;
     if(hull == 0){
         if(burstTicks < burstShowTicks) burstTicks++;
@@ -614,6 +642,7 @@ void PlumeGame::update(const GameInput& input){
     float thrust = thrustFrom(input, directionX, directionY);
     speedX += (directionX * fullThrust * thrust - gravity) * tickSeconds;
     speedY += directionY * fullThrust * thrust * tickSeconds;
+    pushFromEdges();
     speedX -= speedX * drag * tickSeconds;
     speedY -= speedY * drag * tickSeconds;
     float speed = sqrtf(speedX * speedX + speedY * speedY);
@@ -716,13 +745,65 @@ bool PlumeGame::shipPixel(int16_t screenX, int16_t y) const {
     return shipRows[row] & (0x10 >> col);
 }
 
-bool PlumeGame::litBeforePips(int16_t screenX, int16_t y) const {
-    int32_t camera = cameraColumn();
-    if(isRock(camera + screenX, y) || shipPixel(screenX, y)) return true;
+//an item's paint this frame at its own column and row (0, 0 its corner): it catches the eye (owner, 2026-10-27).
+//A gem twinkles every 0.5 s, two frames: a longer cross, then an x. A heart beats, lub-dub: one px bigger all round
+//for two short frames. Just freed, it flashes: its square with the ring, lit, its shape dark, three times. Lit when
+//free; a buried item's paint is dark, a cut-out in the rock that twinkles and beats too
+int8_t PlumeGame::paintOf(const Item& it, int16_t col, int16_t row) const {
+    int16_t size = itemSize(it.kind);
+    if(col < -2 || col > size + 1 || row < -2 || row > size + 1) return -1;
+    bool b_shape = itemShape(it.kind, col, row);
+    if(it.flash && ((flashTicks - it.flash) / 3) % 2 == 0 && col >= -1 && col <= size && row >= -1 && row <= size){
+        return b_shape ? 0 : 1;
+    }
+    bool b_paint = b_shape;
+    if(it.kind == ItemKind::GEM){
+        uint32_t phase = (frameTicks + uint32_t(it.x) * 7u) % twinkleTicks;
+        if(phase < twinkleFrameTicks){
+            b_paint = (col == 1 && row >= -1 && row <= 3) || (row == 1 && col >= -1 && col <= 3);
+        }
+        else if(phase < 2 * twinkleFrameTicks){
+            b_paint = col >= 0 && col <= 2 && row >= 0 && row <= 2 && (col == row || col + row == 2);
+        }
+    }
+    else{
+        uint32_t phase = (frameTicks + uint32_t(it.x) * 3u) % beatTicks;
+        if(phase < beatFrameTicks || (phase >= 2 * beatFrameTicks && phase < 3 * beatFrameTicks)){
+            b_paint = b_shape || itemShape(it.kind, int16_t(col - 1), row) || itemShape(it.kind, int16_t(col + 1), row) ||
+                      itemShape(it.kind, col, int16_t(row - 1)) || itemShape(it.kind, col, int16_t(row + 1));
+        }
+    }
+    if(!b_paint) return -1;
+    return it.b_buried ? 0 : 1;
+}
+
+int8_t PlumeGame::itemPaint(int32_t column, int16_t row) const {
     for(uint8_t i = 0; i < maxItems; i++){
         const Item& it = items[i];
-        if(it.b_used && !it.b_taken && !it.b_buried && itemShape(it.kind, int16_t(camera + screenX - it.x), int16_t(y - it.y))) return true;
+        if(!it.b_used || it.b_taken) continue;
+        int8_t paint = paintOf(it, int16_t(column - it.x), int16_t(row - it.y));
+        if(paint >= 0) return paint;
     }
+    return -1;
+}
+
+//a tick every metre of altitude (from the start), a longer one every 10 m; none under the HUD, so it keeps its gap
+int16_t PlumeGame::edgeTick(int16_t screenX) const {
+    if(screenX < 0 || screenX > hudPointsX - 8) return 0;
+    int32_t metresPx = cameraColumn() + screenX - int32_t(lroundf(startX));
+    int32_t perMetre = int32_t(pixelsPerMetre);
+    if(((metresPx % perMetre) + perMetre) % perMetre) return 0;
+    int32_t perTen = perMetre * 10;
+    return ((metresPx % perTen) + perTen) % perTen ? tickShort : tickLong;
+}
+
+bool PlumeGame::litBeforePips(int16_t screenX, int16_t y) const {
+    int32_t camera = cameraColumn();
+    if(shipPixel(screenX, y)) return true;
+    bool b_lit = isRock(camera + screenX, y);
+    int8_t paint = itemPaint(camera + screenX, y);
+    if(paint >= 0) b_lit = paint == 1;
+    if(b_lit) return true;
     for(uint8_t i = 0; i < particleCount; i++){
         const Particle& p = particles[i];
         if(p.life && int32_t(floorf(p.x)) - camera == screenX && int16_t(floorf(p.y)) == y) return true;
@@ -752,14 +833,28 @@ void PlumeGame::draw(Adafruit_GFX& out) const {
             out.drawFastVLine(x, start, row - start, GameDraw::ON);
         }
     }
-    //the items: lit once free; a buried one is its own shape left dark in the rock around it (the cut-out)
+    //the edge graduation along both long edges, inverted over rock so it always reads
+    for(int16_t x = 0; x < width; x++){
+        int16_t length = edgeTick(x);
+        for(int16_t r = 0; r < length; r++){
+            int16_t rows[2] = {r, int16_t(height - 1 - r)};
+            for(int16_t row : rows) out.drawPixel(x, row, isRock(camera + x, row) ? GameDraw::OFF : GameDraw::ON);
+        }
+    }
+    //the items: lit once free; a buried one is its own shape left dark in the rock around it (the cut-out); both
+    //animated (paintOf)
     for(uint8_t i = 0; i < maxItems; i++){
         const Item& it = items[i];
-        if(!it.b_used || it.b_taken || it.b_buried) continue;
+        if(!it.b_used || it.b_taken) continue;
         int16_t size = itemSize(it.kind);
-        for(int16_t col = 0; col < size; col++){
-            for(int16_t row = 0; row < size; row++){
-                if(itemShape(it.kind, col, row)) out.drawPixel(int16_t(it.x + col - camera), int16_t(it.y + row), GameDraw::ON);
+        for(int16_t col = -2; col <= size + 1; col++){
+            int32_t x = it.x + col - camera;
+            if(x < 0 || x >= width) continue;
+            for(int16_t row = -2; row <= size + 1; row++){
+                int16_t y = int16_t(it.y + row);
+                if(y < 0 || y >= height) continue;
+                int8_t paint = paintOf(it, col, row);
+                if(paint >= 0) out.drawPixel(int16_t(x), y, paint ? GameDraw::ON : GameDraw::OFF);
             }
         }
     }
