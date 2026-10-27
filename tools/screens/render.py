@@ -24,12 +24,13 @@ def build():
     sources = [
         "lib/Adafruit-GFX/Adafruit_GFX.cpp",
         "lib/RemoteLogic/src/StatusView.cpp",
+        "lib/RemoteLogic/src/RemoteSounds.cpp",
         "lib/RemoteUi/src/RemoteScreens.cpp",
         "lib/RemoteUi/src/RemoteTransitions.cpp",
         "lib/RemoteUi/src/RemoteSplash.cpp",
         "tools/screens/render_screens.cpp",
     ]
-    includes = ["tools/screens/host", "lib/Adafruit-GFX", "lib/RemoteLogic/src", "lib/RemoteUi/src"]
+    includes = ["tools/screens/host", "lib/Adafruit-GFX", "lib/RemoteLogic/src", "lib/RemoteUi/src", "lib/RemoteAudio/src"]
     command = ["clang++", "-std=c++17", "-O1", "-w", "-DARDUINO=100", "-o", str(binary)]
     command += [f"-I{ROOT / i}" for i in includes] + [str(ROOT / s) for s in sources]
     subprocess.run(command, check=True)

@@ -43,6 +43,7 @@ struct ScreenModel{
     StatusView status = {BigMessage::UNKNOWN, StatusLine::NORMAL};
     uint16_t radioFailures = 0;
     uint8_t speedState = 0;
+    bool b_sticksOffWarning = false;    //a stick pushed while the speed switch is at OFF (the grind sounds)
     bool b_worldFrame = false;
 
     //pages
@@ -75,6 +76,8 @@ struct ScreenModel{
     uint32_t uptimeSeconds = 0;
     ResetCause resetCause = ResetCause::POWER_ON;
     uint8_t resetCount = 0;
+    bool b_arcadeReady = false;         //the way into the games is open: the header shows the sticks to press
+    float arcadeLoading = 0.0f;         //both sticks held, 0..1: the loading screen instead of the page
 
     //settings
     RemoteSettings settings;

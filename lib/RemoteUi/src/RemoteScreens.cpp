@@ -137,6 +137,9 @@ namespace RemoteUi{
     static const uint8_t chipBitmap[] = { 0x54, 0xFE, 0x44, 0xC6, 0x44, 0xFE, 0x54 };
     static const uint8_t batteryBitmap[] = { 0x38, 0x7C, 0x44, 0x7C, 0x44, 0x7C, 0x7C };
     static const uint8_t infoBitmap[] = { 0x7C, 0xEE, 0xFE, 0xEE, 0xEE, 0xEE, 0x7C };
+    //a stick's top, up and pressed (smaller): the About page's sign that the games can be opened
+    static const uint8_t stickUpBitmap[] = { 0x38, 0x7C, 0xFE, 0xFE, 0xFE, 0x7C, 0x38 };
+    static const uint8_t stickDownBitmap[] = { 0x00, 0x38, 0x7C, 0x7C, 0x7C, 0x38, 0x00 };
 
     //——— the status screen ———
 
@@ -267,8 +270,9 @@ namespace RemoteUi{
                 return;
             }
             //no explanation needed (NO LINK): the switches as plain text, pills would touch the banner
+            //a stick pushed at OFF: the speed text blinks (no pill here, it would touch the banner)
             const char* speed = Status::speedText(m.speedState);
-            text(g, pixelFont, 2, 24, speed);
+            if(!m.b_sticksOffWarning || blink(m.now, 250, 125)) text(g, pixelFont, 2, 24, speed);
             textRight(g, pixelFont, 123, 24, m.b_worldFrame ? "WORLD" : "BODY");
             return;
         }
@@ -277,6 +281,8 @@ namespace RemoteUi{
         SpeedMode speed = SpeedMode(m.speedState);
         if(speed == SpeedMode::MEDIUM_SPEED) pill(g, 0, bottomTop, "SLOW");
         else if(speed == SpeedMode::HIGH_SPEED) pill(g, 0, bottomTop, "FAST");
+        //a stick pushed at OFF (the grind sounds): OFF blinks negative, in a pill
+        else if(m.b_sticksOffWarning && blink(m.now, 250, 125)) pill(g, 0, bottomTop, "OFF");
         else text(g, pixelFont, 2, bottomTop + 1, "OFF");
 
         //frame switch, above it on the right: BODY (the default) plain, WORLD in a pill
@@ -455,6 +461,35 @@ namespace RemoteUi{
         else if(m.resetCount > 0) snprintf(value, sizeof(value), "%s x%u", cause, m.resetCount);
         else snprintf(value, sizeof(value), "%s", cause);
         row(g, 2, "last boot", value);
+        //the games can be opened: both sticks, pressing every 0.8 s, in the header between the title and the dots
+        if(m.b_arcadeReady){
+            const uint8_t* stick = m.now % 800 < 300 ? stickDownBitmap : stickUpBitmap;
+            g.drawBitmap(46, 0, stick, 7, 7, ON);
+            g.drawBitmap(55, 0, stick, 7, 7, ON);
+            text(g, pixelFont, 65, 0, "PLAY");
+        }
+    }
+
+    //both sticks held on the About page: the games load, a block bar filling with the gesture [D-157]
+    static void drawArcadeLoading(Adafruit_GFX& g, const ScreenModel& m){
+        const char* title = "GAME CONSOLE";
+        int16_t width = textWidth(g, pixelFont, title) + 6;
+        g.fillRoundRect(64 - width / 2, 0, width, 9, 2, ON);
+        textCentered(g, pixelFont, 64, 1, title, OFF);
+        //14 blocks of 7 x 9 px with 1 px gaps; the ones still to come a dot on the track; the newest one blinks
+        const int blocks = 14;
+        float filled = m.arcadeLoading * blocks;
+        for(int i = 0; i < blocks; i++){
+            int16_t x = 8 + i * 8;
+            if(i + 1 <= int(filled)) g.fillRect(x, 11, 7, 9, ON);
+            else if(i == int(filled) && m.now % 160 < 80) g.fillRect(x, 11, 7, 9, ON);
+            else g.drawPixel(x + 3, 15, ON);
+        }
+        //the dots after the word walk
+        char loading[12];
+        uint8_t dots = uint8_t((m.now / 200) % 4);
+        snprintf(loading, sizeof(loading), "LOADING%.*s", dots, "...");
+        text(g, pixelFont, 64 - textWidth(g, pixelFont, "LOADING...") / 2, 24, loading);
     }
 
     static void drawSettingsPage(Adafruit_GFX& g, const ScreenModel& m){
@@ -474,7 +509,10 @@ namespace RemoteUi{
             case Page::RADIO: drawRadioPage(g, m); break;
             case Page::BATTERY: drawBatteryPage(g, m); break;
             case Page::INPUTS: drawInputsPage(g, m); break;
-            case Page::ABOUT: drawAboutPage(g, m); break;
+            case Page::ABOUT:
+                if(m.arcadeLoading > 0.0f) drawArcadeLoading(g, m);
+                else drawAboutPage(g, m);
+                break;
             case Page::SETTINGS: drawSettingsPage(g, m); break;
             default: drawStatus(g, m); break;
         }
@@ -524,6 +562,12 @@ namespace RemoteUi{
                 case SettingsMenu::Item::STICKS:
                     name = "Sticks";
                     snprintf(value, sizeof(value), "calibrate >");
+                    break;
+                case SettingsMenu::Item::SOUND:
+                    name = "Sound";
+                    snprintf(value, sizeof(value), "%s", RemoteSounds::levelLabel(m.pending.sound));
+                    b_editable = true;
+                    b_changed = m.pending.sound != m.settings.sound;
                     break;
                 case SettingsMenu::Item::SAVE:
                     name = m.pending != m.settings ? "Save" : "Save (none)";

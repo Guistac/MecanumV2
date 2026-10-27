@@ -79,6 +79,10 @@ int main(int argc, char** argv){
     { ScreenModel m = base(); m.page = Page::BATTERY; add("22_page_battery", m); }
     { ScreenModel m = base(); m.page = Page::INPUTS; m.sticks[0] = 0.5f; m.sticks[1] = -0.2f; m.b_enableButton = true; add("23_page_inputs", m); }
     { ScreenModel m = base(); m.page = Page::ABOUT; add("24_page_about", m); }
+    { ScreenModel m = base(); m.speedState = uint8_t(SpeedMode::LOW_SPEED); m.status.message = BigMessage::DISABLED; m.b_sticksOffWarning = true; m.now = 0; add("01z_status_sticks_off_blink", m); }
+    { ScreenModel m = base(); m.page = Page::ABOUT; m.b_arcadeReady = true; m.now = 0; add("24c_page_about_play_up", m); }
+    { ScreenModel m = base(); m.page = Page::ABOUT; m.b_arcadeReady = true; m.now = 100; add("24d_page_about_play_pressed", m); }
+    { ScreenModel m = base(); m.page = Page::ABOUT; m.arcadeLoading = 0.45f; m.now = 500; add("24e_arcade_loading", m); }
     { ScreenModel m = base(); m.page = Page::SETTINGS; m.pageCount = 7; m.speedState = 0; add("25_page_settings", m); }
     { ScreenModel m = base(); m.b_menuOpen = true; m.speedState = 0; m.pending.channel = 5; add("30_menu_channel", m); }
     { ScreenModel m = base(); m.b_menuOpen = true; m.speedState = 0; m.menuItem = SettingsMenu::Item::STICKS; add("31_menu_sticks", m); }

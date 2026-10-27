@@ -39,7 +39,8 @@ void RemoteBoard::loadSettings(){
     if(b_safeMode) settings = RemoteSettings::fromStored(storedChannel, 0xFF, 0xFF);
     else settings = RemoteSettings::fromStored(storedChannel,
                                                EEPROM.read(RemoteSettings::contrastAddress),
-                                               EEPROM.read(RemoteSettings::dimmingAddress));
+                                               EEPROM.read(RemoteSettings::dimmingAddress),
+                                               EEPROM.read(RemoteSettings::soundAddress));
 }
 
 //only changed bytes, once on confirm: a write can block for a flash erase (H12)
@@ -50,6 +51,7 @@ void RemoteBoard::saveSettings(const RemoteSettings& newSettings){
     }
     if(newSettings.contrast != settings.contrast) EEPROM.write(RemoteSettings::contrastAddress, newSettings.contrast);
     if(newSettings.dimming != settings.dimming) EEPROM.write(RemoteSettings::dimmingAddress, newSettings.dimming);
+    if(newSettings.sound != settings.sound) EEPROM.write(RemoteSettings::soundAddress, newSettings.sound);
     settings = newSettings;
 }
 
@@ -67,6 +69,7 @@ void RemoteBoard::updateCalibration(bool b_save, bool b_cancel, uint32_t now){
         b_calibrating = false;
         calibrationNote = "Cancelled";
         calibrationNoteUntilMillis = now + 1500;
+        playSound(RemoteSounds::Sound::DISCARDED);
         return;
     }
     uint16_t raw[StickCalibration::axisCount] = {
@@ -77,6 +80,7 @@ void RemoteBoard::updateCalibration(bool b_save, bool b_cancel, uint32_t now){
     if(!calibrator.isComplete()){
         b_keepCircling = true;
         calibrationNoteUntilMillis = now + 1500;
+        playSound(RemoteSounds::Sound::REFUSED);
         return;
     }
     stickCalibration = calibrator.getResult();
@@ -88,6 +92,7 @@ void RemoteBoard::updateCalibration(bool b_save, bool b_cancel, uint32_t now){
     b_calibrating = false;
     b_calibrationResult = true;
     calibrationResultUntilMillis = now + 10000;
+    playSound(RemoteSounds::Sound::SAVED);
 }
 
 void RemoteBoard::recordBoot(){
@@ -118,12 +123,12 @@ void RemoteBoard::initialize(){
     delay(150); //before this the display won't show anything
     Watchdog::feed();
 
-    //show a nice startup animation
+    //show a nice startup animation (the settings first: the Sound setting decides on its tune)
+    loadSettings();
     startupAnimation();
 
     //the radio: one attempt here, radio.update() retries every 2 s while the screen shows RADIO FAULT.
     //The channel is remembered until the chip runs.
-    loadSettings();
     loadStickCalibration();
     radio.setChannel(settings.channel);
     radio.initialize(1);
@@ -242,24 +247,98 @@ void RemoteBoard::updateOperatorLogic(){
     if((b_previous || b_next) && menu.isOpen()) closeMenu();
 
     bool b_menuActivity = updateMenu(now);
+    Page pageBefore = pages.getPage();
     pages.update(b_previous, b_next, b_settingsAvailable, b_menuActivity, now);
+    //each page its own note
+    if((b_previous || b_next) && pages.getPage() != pageBefore && RemoteSounds::isAllowed(RemoteSounds::Sound::CLICK, settings.sound)){
+        soundPlayer.play(RemoteSounds::pageCue(uint8_t(pages.getPage())));
+    }
+
+    //enable and disable: a tick on the press, a buzz when enable cannot work now; what the vehicle does follows as a
+    //status sound (refreshGui)
+    bool b_enable = rightLedButton.isPressed();
+    bool b_disable = leftLedButton.isPressed();
+    if(b_enable && !b_enableHeld){
+        playSound(RemoteSounds::refusesEnable(status.message) ? RemoteSounds::Sound::REFUSED : RemoteSounds::Sound::PRESS);
+    }
+    if(b_disable && !b_disableHeld) playSound(RemoteSounds::Sound::PRESS);
+    b_enableHeld = b_enable;
+    b_disableHeld = b_disable;
+
+    //the toggle switches: a sound over their mechanical click
+    uint8_t speedState = speedToggle.getState();
+    bool b_direction = directionToggle.getSwitchState();
+    if(!b_switchesSeen){
+        //the first loop: where the switches are at power on, no sound
+        previousSpeedState = speedState;
+        b_previousDirection = b_direction;
+        b_switchesSeen = true;
+    }
+    playSound(RemoteSounds::forSpeedChange(previousSpeedState, speedState));
+    previousSpeedState = speedState;
+    if(b_direction != b_previousDirection){
+        playSound(b_direction ? RemoteSounds::Sound::DIRECTION_SET : RemoteSounds::Sound::DIRECTION_CLEAR);
+    }
+    b_previousDirection = b_direction;
+
+    //a stick out of centre while the speed switch is at OFF does nothing: a grind for as long as it is out. Not where
+    //the sticks have a job (menu, Settings page, calibration, the games) or before they are zeroed
+    float deflection = 0.0f;
+    for(float v : {leftJoystick.getXValue(), leftJoystick.getYValue(), rightJoystick.getXValue(), rightJoystick.getYValue()}){
+        if(fabsf(v) > deflection) deflection = fabsf(v);
+    }
+    bool b_sticksHaveAJob = menu.isOpen() || b_calibrating || b_calibrationResult || pages.getPage() == Page::SETTINGS ||
+                            arcade.isActive() || b_arcadeLoading || !b_joystickZeroCaptured;
+    b_sticksOffWarning = deflection > 0.15f && isSpeedSwitchOff() && !b_sticksHaveAJob;
+    bool b_grind = b_sticksOffWarning && RemoteSounds::isAllowed(RemoteSounds::Sound::CLICK, settings.sound);
+    if(b_grind && now - grindMillis >= RemoteSounds::grindPeriodMillis){
+        soundPlayer.playNote(RemoteSounds::grindGrain((deflection - 0.15f) / 0.85f, grindSeed), SoundPriority::INTERFACE);
+        grindMillis = now;
+    }
+
+    //NO LINK: a searching ping with each LED period (setting All; Alarms only keeps the single warning). Not while the
+    //games load or run: an interface sound, it would cut their tunes every 2 s
+    uint32_t searchPhase = now % RemoteSounds::searchPeriodMillis;
+    bool b_games = arcade.isActive() || b_arcadeLoading;
+    if(status.message == BigMessage::NO_LINK && searchPhase < previousSearchPhase && !b_games) playSound(RemoteSounds::Sound::SEARCHING);
+    previousSearchPhase = searchPhase;
+
+    soundPlayer.update(now, sound);
+    sound.update();
     //back on Status after 10 s without input: unsaved changes are discarded
     if(menu.isOpen() && pages.getPage() != Page::SETTINGS) closeMenu();
 }
 
-//the games [D-148]: in with both stick buttons held 2 s on the About page with the speed switch at OFF (sticks
-//zeroed, own E-stop clear); out with the same gesture, after 2 minutes without input, when the speed switch leaves
-//OFF, the own E-stop is pressed or a new alarm shows (refreshGui). While they run, the pushbuttons are theirs and
+//the games [D-157]: in with both stick buttons held 2 s on the About page with the speed switch at OFF (sticks
+//zeroed; the own E-stop may be pressed, the safest state there is); out with the same gesture, after 2 minutes
+//without input, when the speed switch leaves OFF, the own E-stop is pressed or released (released: back on Status,
+//the vehicle's state in view before driving is possible again) or a new alarm shows (refreshGui). While they run, the pushbuttons are theirs and
 //nothing of the sticks is sent (sendData)
 void RemoteBoard::updateArcade(bool& b_previous, bool& b_next, uint32_t now){
-    bool b_allowed = b_settingsAvailable && b_joystickZeroCaptured && estop.isClear();
+    bool b_allowed = b_settingsAvailable && b_joystickZeroCaptured;
+    bool b_estopClear = estop.isClear();
+    bool b_estopChanged = b_estopClear != b_arcadeEstopClear;
+    b_arcadeEstopClear = b_estopClear;
     if(!arcade.isActive()){
         bool b_bothHeld = leftJoystick.isPressed() && rightJoystick.isPressed();
         bool b_gateOpen = b_allowed && pages.getPage() == Page::ABOUT && !menu.isOpen();
-        if(arcade.updateGate(b_gateOpen, b_bothHeld, now)) arcade.enter(now);
+        b_arcadeGateOpen = b_gateOpen;
+        bool b_entering = arcade.updateGate(b_gateOpen, b_bothHeld, now);
+        //the loading tune while both are held, stopped if they are let go early; a jingle as the games open
+        bool b_loading = arcade.gateProgress(now) > 0.0f;
+        bool b_sound = RemoteSounds::gamesAllowed(settings.sound);
+        if(b_loading && !b_arcadeLoading && b_sound) soundPlayer.play(RemoteSounds::arcadeLoadingCue());
+        if(!b_loading && b_arcadeLoading && !b_entering && soundPlayer.playingPriority(SoundLayer::FRONT) == SoundPriority::GAME){
+            soundPlayer.stop(SoundLayer::FRONT);
+        }
+        b_arcadeLoading = b_loading;
+        if(b_entering){
+            if(b_sound) soundPlayer.play(RemoteSounds::arcadeStartCue());
+            arcade.enter(now);
+        }
         else return;
     }
-    if(!b_allowed || arcade.exitRequested()){
+    if(!b_allowed || arcade.exitRequested() || b_estopChanged){
         leaveArcade();
         return;
     }
@@ -305,7 +384,19 @@ bool RemoteBoard::updateMenu(uint32_t now){
         int8_t itemStep = -itemAxis.update(itemValue, now);    //stick up: previous item
         int8_t valueStep = valueAxis.update(valueValue, now);
         uint32_t heldRight = valueAxis.heldPositiveMillis(now);
+        SettingsMenu::Item itemBefore = menu.getItem();
+        RemoteSettings pendingBefore = menu.getPending();
         SettingsMenu::Event event = menu.update(itemStep, valueStep, heldRight);
+        //a click for a new item, a higher one for a new value, a bump at the ends
+        bool b_valueItem = itemBefore == SettingsMenu::Item::CHANNEL || itemBefore == SettingsMenu::Item::CONTRAST ||
+                           itemBefore == SettingsMenu::Item::DIMMING || itemBefore == SettingsMenu::Item::SOUND;
+        if(itemStep != 0) playSound(menu.getItem() != itemBefore ? RemoteSounds::Sound::CLICK : RemoteSounds::Sound::BUMP);
+        else if(valueStep != 0 && b_valueItem){
+            playSound(menu.getPending() != pendingBefore ? RemoteSounds::Sound::VALUE : RemoteSounds::Sound::BUMP);
+        }
+        if(event == SettingsMenu::Event::SAVED) playSound(RemoteSounds::Sound::SAVED);
+        if(event == SettingsMenu::Event::CLOSED) playSound(RemoteSounds::Sound::DISCARDED);
+        if(event == SettingsMenu::Event::CALIBRATE) playSound(RemoteSounds::Sound::CLICK);
         if(event == SettingsMenu::Event::CALIBRATE){
             b_calibrating = true;
             b_keepCircling = false;
@@ -326,6 +417,7 @@ bool RemoteBoard::updateMenu(uint32_t now){
         itemAxis.update(itemValue, now);
         if(valueAxis.update(valueValue, now) > 0){
             menu.open(settings);
+            playSound(RemoteSounds::Sound::CLICK);
             itemAxis.blockUntilReleased();
             valueAxis.blockUntilReleased();
             return true;
@@ -361,9 +453,9 @@ void RemoteBoard::updateLeds(){
     in.b_linkUp = robotProxy.b_connected;
     in.reportedState = robotProxy.status;
     LedOutput out = Leds::pattern(in, millis());
-    //a pressed button lights itself
-    leftLedButton.set(out.b_left || leftLedButton.isPressed());
-    rightLedButton.set(out.b_right || rightLedButton.isPressed());
+    //a pressed button lights itself, fully
+    leftLedButton.setBrightness(leftLedButton.isPressed() ? 1.0f : (out.b_left ? out.leftLevel : 0.0f));
+    rightLedButton.setBrightness(rightLedButton.isPressed() ? 1.0f : (out.b_right ? out.rightLevel : 0.0f));
 }
 
 

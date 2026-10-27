@@ -8,6 +8,8 @@
 #include <BatteryMonitor.h>
 #include <RemoteSettings.h>
 #include <SettingsMenu.h>
+#include <SoundPlayer.h>
+#include <RemoteSounds.h>
 #include <PageNavigator.h>
 #include <StatusView.h>
 #include <Dimmer.h>
@@ -156,6 +158,12 @@ void test_menu_changes_are_pending_until_save_held(){
     TEST_ASSERT_EQUAL_UINT8(15, saved.channel);
     menu.update(1, 0, 0);
     menu.update(1, 0, 0);
+    TEST_ASSERT_TRUE(menu.getItem() == SettingsMenu::Item::SOUND);
+    TEST_ASSERT_EQUAL_UINT8(uint8_t(RemoteSounds::Level::ALARMS), menu.getPending().sound);    //the default
+    menu.update(0, 1, 0);
+    menu.update(0, 1, 0);
+    TEST_ASSERT_EQUAL_UINT8(uint8_t(RemoteSounds::Level::OFF), menu.getPending().sound);       //clamped
+    menu.update(1, 0, 0);
     TEST_ASSERT_TRUE(menu.getItem() == SettingsMenu::Item::STICKS);
     TEST_ASSERT_TRUE(menu.update(0, 1, 0) == SettingsMenu::Event::CALIBRATE);
     TEST_ASSERT_TRUE(menu.isOpen());
@@ -180,6 +188,211 @@ void test_menu_exit_and_item_bounds(){
     TEST_ASSERT_TRUE(menu.update(0, 1, 0) == SettingsMenu::Event::CLOSED);
     TEST_ASSERT_FALSE(menu.isOpen());
     TEST_ASSERT_TRUE(menu.update(0, 1, 5000) == SettingsMenu::Event::NONE);
+}
+
+//——— Synth and RemoteSounds ———
+
+void test_synth_rests_ramps_and_sounds(){
+    Synth synth;
+    TEST_ASSERT_TRUE(synth.isIdle());
+    TEST_ASSERT_EQUAL_UINT8(0, synth.nextSample());
+    synth.play(0, Synth::Wave::SINE, 1000.0f, 1.0f, 0.1f);
+    //the first 20 ms ramp to mid-scale, the note waiting
+    uint8_t last = 0;
+    for(uint32_t i = 0; i < Synth::sampleRate / 50; i++){
+        uint8_t duty = synth.nextSample();
+        TEST_ASSERT_TRUE(duty >= last);
+        last = duty;
+    }
+    TEST_ASSERT_UINT8_WITHIN(1, 128, last);
+    //then 100 ms of 1 kHz: about 100 rising crossings of mid-scale, the full swing
+    int crossings = 0;
+    uint8_t lowest = 255, highest = 0, previous = 128;
+    for(uint32_t i = 0; i < Synth::sampleRate / 10; i++){
+        uint8_t duty = synth.nextSample();
+        if(previous < 128 && duty >= 128) crossings++;
+        if(duty < lowest) lowest = duty;
+        if(duty > highest) highest = duty;
+        previous = duty;
+    }
+    TEST_ASSERT_INT_WITHIN(2, 100, crossings);
+    TEST_ASSERT_TRUE(lowest < 5 && highest > 250);
+    //released, held 0.3 s, back to rest
+    for(uint32_t i = 0; i < Synth::sampleRate / 2; i++) synth.nextSample();
+    TEST_ASSERT_TRUE(synth.isIdle());
+    TEST_ASSERT_EQUAL_UINT8(0, synth.nextSample());
+}
+
+void test_synth_legs_mirror_and_rest_together(){
+    Synth synth;
+    synth.play(0, Synth::Wave::SQUARE, 440.0f, 1.0f, 0.1f);
+    //the ramp rises on both legs alike: nothing across the disc
+    for(uint32_t i = 0; i < Synth::sampleRate / 50; i++){
+        Synth::Pair p = synth.nextPair();
+        TEST_ASSERT_EQUAL_UINT8(p.a, p.b);
+    }
+    //then mirrored around mid-scale; the smoothed square stays within the range
+    for(uint32_t i = 0; i < Synth::sampleRate / 20; i++){
+        Synth::Pair p = synth.nextPair();
+        TEST_ASSERT_INT_WITHIN(1, 255, int(p.a) + int(p.b));
+    }
+}
+
+void test_synth_plays_a_clip_and_ends(){
+    //a clip at half the synth's rate (each sample read twice), long enough for the 3 ms attack, then released
+    static int8_t clip[256];
+    for(int i = 0; i < 256; i++) clip[i] = (i / 8) % 2 ? 127 : -127;
+    Synth synth;
+    synth.playClip(0, clip, 256, Synth::sampleRate / 2, 1.0f);
+    for(uint32_t i = 0; i < Synth::sampleRate / 50; i++) synth.nextPair();     //the 20 ms ramp to mid-scale
+    uint8_t highest = 0;
+    for(int i = 0; i < 400; i++){
+        Synth::Pair p = synth.nextPair();
+        if(p.a > highest) highest = p.a;
+    }
+    TEST_ASSERT_TRUE(highest > 240);        //the full swing came through
+    for(uint32_t i = 0; i < Synth::sampleRate / 2; i++) synth.nextPair();
+    TEST_ASSERT_TRUE(synth.isIdle());
+}
+
+void test_synth_note_waits_swells_and_decays(){
+    //a note 50 ms late with a 100 ms swell: silent (at rest) while it waits, rising through the swell, then falling
+    Synth synth;
+    synth.play(0, Synth::Wave::SQUARE, 1000.0f, 1.0f, 0.5f, 0.1f, 0.1f, 0.05f);
+    auto swing = [&](float seconds){
+        uint8_t lowest = 255, highest = 0;
+        for(uint32_t i = 0; i < uint32_t(seconds * Synth::sampleRate); i++){
+            Synth::Pair p = synth.nextPair();
+            if(p.a < lowest) lowest = p.a;
+            if(p.a > highest) highest = p.a;
+        }
+        return int(highest) - int(lowest);
+    };
+    //the 20 ms rest level ramp comes first (the delay counts after it)
+    TEST_ASSERT_TRUE(swing(0.02f) < 140);       //the ramp only (both legs alike, no tone)
+    TEST_ASSERT_TRUE(swing(0.045f) < 3);        //still waiting
+    int early = swing(0.03f);                   //the swell under way (a quarter at most)
+    int peak = swing(0.1f);                     //reaching the top
+    int later = swing(0.1f);                    //a time constant of decay
+    TEST_ASSERT_TRUE(early < peak);
+    TEST_ASSERT_TRUE(peak > 240);
+    TEST_ASSERT_TRUE(later < peak);
+}
+
+struct RecordedSound : public SoundOutput{
+    int tones = 0, squaresOff = 0, plays = 0, releases = 0;
+    uint16_t lastHertz = 0;
+    uint8_t lastVoice = 255;
+    uint16_t frontHertz = 0;        //the last note on the front layer's voices
+    void tone(uint16_t hertz) override { tones++; lastHertz = hertz; }
+    void duet(uint16_t hertz, uint16_t) override { tones++; lastHertz = hertz; }
+    void quietSquares() override { squaresOff++; }
+    void play(uint8_t voice, Synth::Wave, float hertz, float, float, float) override {
+        plays++;
+        lastHertz = uint16_t(hertz);
+        lastVoice = voice;
+        if(voice >= 2) frontHertz = uint16_t(hertz);
+    }
+    void release(uint8_t) override { releases++; }
+    void playClip(uint8_t, const SoundClip&, float) override { plays++; }
+    void playScore(const SynthScoreNote*, uint8_t count) override { plays += count; }
+};
+
+void test_sounds_follow_the_setting(){
+    using namespace RemoteSounds;
+    const uint8_t all = uint8_t(Level::ALL), alarms = uint8_t(Level::ALARMS), off = uint8_t(Level::OFF);
+    TEST_ASSERT_TRUE(isAllowed(Sound::CLICK, all));
+    TEST_ASSERT_FALSE(isAllowed(Sound::CLICK, alarms));
+    TEST_ASSERT_TRUE(isAllowed(Sound::WARNING, alarms));
+    TEST_ASSERT_TRUE(isAllowed(Sound::STATUS_ENABLED, alarms));
+    TEST_ASSERT_TRUE(isAllowed(Sound::STATUS_ESTOP, alarms));
+    TEST_ASSERT_FALSE(isAllowed(Sound::SEARCHING, alarms));
+    TEST_ASSERT_FALSE(isAllowed(Sound::WARNING, off));
+    TEST_ASSERT_TRUE(gamesAllowed(alarms));
+    TEST_ASSERT_FALSE(gamesAllowed(off));
+    for(uint8_t i = 1; i < uint8_t(Sound::COUNT); i++){
+        SoundCue c = cue(Sound(i));
+        TEST_ASSERT_NOT_NULL(c.notes);
+        TEST_ASSERT_TRUE(c.noteCount > 0);
+        TEST_ASSERT_EQUAL_UINT8(isAlarm(Sound(i)) ? SoundPriority::ALARM : SoundPriority::INTERFACE, c.priority);
+    }
+    TEST_ASSERT_EQUAL_UINT8(alarms, RemoteSettings::fromStored(0, 0, 0).sound);
+    TEST_ASSERT_EQUAL_UINT8(alarms, RemoteSettings::fromStored(0, 0, 0, 7).sound);
+    TEST_ASSERT_EQUAL_UINT8(off, RemoteSettings::fromStored(0, 0, 0, off).sound);
+}
+
+void test_status_changes_sound_once_and_not_at_power_on(){
+    using namespace RemoteSounds;
+    using M = BigMessage;
+    TEST_ASSERT_TRUE(forStatusChange(M::UNKNOWN, M::ESTOP) == Sound::NONE);
+    TEST_ASSERT_TRUE(forStatusChange(M::NO_LINK, M::DISABLED) == Sound::STATUS_LINK_FOUND);
+    TEST_ASSERT_TRUE(forStatusChange(M::RELEASE_BOTH, M::DISABLED) == Sound::NONE);
+    TEST_ASSERT_TRUE(forStatusChange(M::DISABLED, M::ENABLING) == Sound::STATUS_ENABLING);
+    TEST_ASSERT_TRUE(forStatusChange(M::ENABLING, M::ENABLED) == Sound::STATUS_ENABLED);
+    TEST_ASSERT_TRUE(forStatusChange(M::ENABLED, M::DISABLING) == Sound::STATUS_DISABLING);
+    TEST_ASSERT_TRUE(forStatusChange(M::DISABLING, M::DISABLED) == Sound::STATUS_DISABLED);
+    TEST_ASSERT_TRUE(forStatusChange(M::ENABLED, M::ESTOP) == Sound::STATUS_ESTOP);
+    TEST_ASSERT_TRUE(forStatusChange(M::ENABLED, M::STOPPING) == Sound::STATUS_ESTOP);
+    TEST_ASSERT_TRUE(forStatusChange(M::STOPPING, M::EXT_ESTOP) == Sound::NONE);
+    TEST_ASSERT_TRUE(forStatusChange(M::ESTOP, M::EXT_ESTOP) == Sound::NONE);        //still E-stopped for a moment
+    TEST_ASSERT_TRUE(forStatusChange(M::EXT_ESTOP, M::DISABLED) == Sound::STATUS_ESTOP_RELEASED);
+    TEST_ASSERT_TRUE(forStatusChange(M::DISABLED, M::NO_LINK) == Sound::WARNING);
+    TEST_ASSERT_TRUE(forStatusChange(M::NO_LINK, M::RADIO_FAULT) == Sound::WARNING);
+    TEST_ASSERT_TRUE(forSpeedChange(uint8_t(SpeedMode::LOW_SPEED), uint8_t(SpeedMode::NO_SPEED)) == Sound::NONE);
+    TEST_ASSERT_TRUE(forSpeedChange(uint8_t(SpeedMode::NO_SPEED), uint8_t(SpeedMode::MEDIUM_SPEED)) == Sound::SPEED_SLOW);
+    TEST_ASSERT_TRUE(forSpeedChange(uint8_t(SpeedMode::MEDIUM_SPEED), uint8_t(SpeedMode::HIGH_SPEED)) == Sound::SPEED_FAST);
+    TEST_ASSERT_TRUE(forSpeedChange(uint8_t(SpeedMode::HIGH_SPEED), uint8_t(SpeedMode::LOW_SPEED)) == Sound::SPEED_OFF);
+    TEST_ASSERT_TRUE(refusesEnable(M::ESTOP));
+    TEST_ASSERT_FALSE(refusesEnable(M::DISABLED));
+}
+
+void test_player_alarms_are_not_cut_by_lower_priority(){
+    SoundPlayer player;
+    RecordedSound out;
+    player.update(0, out);
+    TEST_ASSERT_TRUE(player.play(RemoteSounds::cue(RemoteSounds::Sound::WARNING)));
+    for(uint32_t t = 0; t < 2000; t += 5){
+        if(t == 100) TEST_ASSERT_FALSE(player.play(RemoteSounds::cue(RemoteSounds::Sound::CLICK)));
+        player.update(t, out);
+    }
+    TEST_ASSERT_EQUAL_INT(3, out.tones);        //three beeps, once
+    TEST_ASSERT_EQUAL_INT(0, out.plays);
+    TEST_ASSERT_FALSE(player.isPlaying(SoundLayer::FRONT));
+    TEST_ASSERT_TRUE(player.play(RemoteSounds::cue(RemoteSounds::Sound::SAVED)));
+    for(uint32_t t = 2000; t < 3000; t += 5) player.update(t, out);
+    TEST_ASSERT_EQUAL_INT(5, out.tones);        //two rising squares
+    TEST_ASSERT_EQUAL_UINT16(2093, out.lastHertz);
+    TEST_ASSERT_TRUE(player.play(RemoteSounds::cue(RemoteSounds::Sound::REFUSED)));
+    for(uint32_t t = 3000; t < 3500; t += 5) player.update(t, out);
+    TEST_ASSERT_EQUAL_INT(2, out.plays);        //the buzz: two synth voices
+    TEST_ASSERT_TRUE(out.lastVoice >= 2);       //the front layer's voices
+}
+
+void test_player_layers_loop_and_notes_made_at_run_time(){
+    static const SoundNote tune[] = {
+        {0, SoundNote::Kind::SYNTH, 0, Synth::Wave::TRIANGLE, 262, 100, 50, 0},
+        {200, SoundNote::Kind::SYNTH, 1, Synth::Wave::TRIANGLE, 330, 100, 50, 0},
+    };
+    SoundPlayer player;
+    RecordedSound out;
+    player.update(0, out);
+    TEST_ASSERT_TRUE(player.play(soundCue(tune, SoundPriority::GAME, 400), SoundLayer::BACK));
+    for(uint32_t t = 0; t < 1000; t += 5) player.update(t, out);
+    TEST_ASSERT_EQUAL_INT(5, out.plays);        //0, 200, 400, 600, 800: it loops
+    TEST_ASSERT_TRUE(player.isPlaying(SoundLayer::BACK));
+    TEST_ASSERT_TRUE(out.lastVoice < 2);        //the back layer's voices
+    //an effect in front, its pitch from the game, while the music goes on
+    SoundNote hit = {0, SoundNote::Kind::SYNTH, 0, Synth::Wave::NOISE, 4000, 60, 80, 20};
+    TEST_ASSERT_TRUE(player.playNote(hit, SoundPriority::GAME));
+    player.update(1000, out);
+    TEST_ASSERT_EQUAL_UINT16(4000, out.frontHertz);
+    TEST_ASSERT_TRUE(player.isPlaying(SoundLayer::BACK));
+    //an alarm in front is not cut by the game's effects
+    TEST_ASSERT_TRUE(player.play(RemoteSounds::cue(RemoteSounds::Sound::WARNING)));
+    TEST_ASSERT_FALSE(player.playNote(hit, SoundPriority::GAME));
+    player.stop(SoundLayer::BACK);
+    player.update(1005, out);
+    TEST_ASSERT_FALSE(player.isPlaying(SoundLayer::BACK));
 }
 
 //——— PageNavigator ———
@@ -412,6 +625,27 @@ void test_led_patterns(){
     TEST_ASSERT_TRUE(out.b_left && out.b_right);
 }
 
+void test_led_no_link_flashes_and_echoes(){
+    LedInputs in;
+    in.b_linkUp = false;
+    LedOutput out = Leds::pattern(in, 4050);                //a flash: left, full
+    TEST_ASSERT_TRUE(out.b_left && !out.b_right);
+    TEST_ASSERT_EQUAL_FLOAT(1.0f, out.leftLevel);
+    out = Leds::pattern(in, 4150);                          //then right
+    TEST_ASSERT_TRUE(!out.b_left && out.b_right);
+    out = Leds::pattern(in, 4320);                          //first echo, fainter
+    TEST_ASSERT_TRUE(out.b_left && out.leftLevel < 1.0f);
+    out = Leds::pattern(in, 4420);
+    TEST_ASSERT_TRUE(out.b_right && out.rightLevel < 1.0f);
+    float second = Leds::pattern(in, 4620).leftLevel;
+    float third = Leds::pattern(in, 4920).leftLevel;
+    TEST_ASSERT_TRUE(third < second && second < 0.2f);
+    out = Leds::pattern(in, 4380);                          //dark between the pulses
+    TEST_ASSERT_FALSE(out.b_left || out.b_right);
+    out = Leds::pattern(in, 5500);                          //and for the rest of the 2 s
+    TEST_ASSERT_FALSE(out.b_left || out.b_right);
+}
+
 //——— Stick calibration [H15] ———
 
 //the former Joystick2Axis::readingToValue, fixed range 0..1023
@@ -536,6 +770,14 @@ int main(){
     RUN_TEST(test_settings_validated_on_load);
     RUN_TEST(test_menu_changes_are_pending_until_save_held);
     RUN_TEST(test_menu_exit_and_item_bounds);
+    RUN_TEST(test_synth_rests_ramps_and_sounds);
+    RUN_TEST(test_synth_legs_mirror_and_rest_together);
+    RUN_TEST(test_synth_plays_a_clip_and_ends);
+    RUN_TEST(test_synth_note_waits_swells_and_decays);
+    RUN_TEST(test_sounds_follow_the_setting);
+    RUN_TEST(test_status_changes_sound_once_and_not_at_power_on);
+    RUN_TEST(test_player_alarms_are_not_cut_by_lower_priority);
+    RUN_TEST(test_player_layers_loop_and_notes_made_at_run_time);
     RUN_TEST(test_pages_cycle_and_settings_only_at_off);
     RUN_TEST(test_pages_return_to_status_after_10s);
     RUN_TEST(test_status_priority);
@@ -548,6 +790,7 @@ int main(){
     RUN_TEST(test_uplink_frame_layout_and_guards);
     RUN_TEST(test_link_loss_and_bar);
     RUN_TEST(test_led_patterns);
+    RUN_TEST(test_led_no_link_flashes_and_echoes);
     RUN_TEST(test_uncalibrated_output_identical_to_before);
     RUN_TEST(test_calibrated_range_and_deadband);
     RUN_TEST(test_calibration_validity_and_bytes);

@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include "RemoteSounds.h"
 
 //Remote settings kept in EEPROM [D-147 point 2, H12]. Every value is range checked when loaded and falls back to its
 //default; only changed bytes are written, once, when the operator confirms
@@ -9,6 +10,7 @@ struct RemoteSettings{
     static constexpr uint8_t channelAddress = 0;
     static constexpr uint8_t contrastAddress = 1;
     static constexpr uint8_t dimmingAddress = 2;
+    static constexpr uint8_t soundAddress = 3;      //[D-158]
 
     static constexpr uint8_t channelCount = 16;
     static constexpr uint8_t contrastLevels = 4;
@@ -24,17 +26,20 @@ struct RemoteSettings{
     uint8_t channel = defaultChannel;
     uint8_t contrast = defaultContrast;
     uint8_t dimming = defaultDimming;
+    uint8_t sound = RemoteSounds::defaultLevel;
 
-    static RemoteSettings fromStored(uint8_t storedChannel, uint8_t storedContrast, uint8_t storedDimming){
+    static RemoteSettings fromStored(uint8_t storedChannel, uint8_t storedContrast, uint8_t storedDimming,
+                                     uint8_t storedSound = 0xFF){
         RemoteSettings settings;
         if(storedChannel < channelCount) settings.channel = storedChannel;
         if(storedContrast < contrastLevels) settings.contrast = storedContrast;
         if(storedDimming < dimmingOptions) settings.dimming = storedDimming;
+        if(storedSound < RemoteSounds::levelCount) settings.sound = storedSound;
         return settings;
     }
 
     bool operator==(const RemoteSettings& other) const {
-        return channel == other.channel && contrast == other.contrast && dimming == other.dimming;
+        return channel == other.channel && contrast == other.contrast && dimming == other.dimming && sound == other.sound;
     }
     bool operator!=(const RemoteSettings& other) const { return !(*this == other); }
 

@@ -20,6 +20,9 @@
 #include <StickCalibration.h>
 #include <RemoteScreens.h>
 #include <Arcade.h>
+#include "RemoteSound.h"
+#include <SoundPlayer.h>
+#include <RemoteSounds.h>
 
 #ifdef REMOTE_DIRECT
 #include "Utilities/RemoteProxy.h"
@@ -52,6 +55,8 @@ class Mavlink;
 #define REMOTE_JOYSTICKRIGHT_Y_PIN A13
 #define REMOTE_JOYSTICKRIGHT_BUTTON_PIN 28
 #define REMOTE_BATTERYREADING_PIN A1
+#define REMOTE_BUZZER_PIN 19
+#define REMOTE_BUZZER_B_PIN 18        //the disc's other leg (220 ohm in series)
 
 class RemoteBoard{
 private:
@@ -174,6 +179,24 @@ private:
     uint8_t appliedContrast = 0;
     void updateOperatorLogic();
     bool updateMenu(uint32_t now);
+    //sounds [D-158]: the player picks the notes, sound drives the disc
+    RemoteSound sound{REMOTE_BUZZER_PIN, REMOTE_BUZZER_B_PIN};
+    SoundPlayer soundPlayer;     //any part plays into it (a SoundSink): the interface here, the games later
+    void playSound(RemoteSounds::Sound s){
+        if(RemoteSounds::isAllowed(s, settings.sound)) soundPlayer.play(RemoteSounds::cue(s));
+    }
+    bool b_enableHeld = false;
+    bool b_disableHeld = false;
+    bool b_arcadeGateOpen = false;      //the About page offers the games (the header shows it)
+    bool b_arcadeLoading = false;       //both sticks held towards them
+    bool b_arcadeEstopClear = true;     //the own E-stop at the last loop: a change leaves the games
+    bool b_sticksOffWarning = false;    //a stick out of centre at speed OFF: the grind, and OFF blinks on Status
+    uint32_t grindMillis = 0;           //the sticks-off grind's last grain
+    uint32_t grindSeed = 2463534242u;
+    bool b_switchesSeen = false;        //the switches' states at power on are taken without a sound
+    uint8_t previousSpeedState = 0;
+    bool b_previousDirection = false;
+    uint32_t previousSearchPhase = 0;
     void closeMenu();
     void updateLeds();
 

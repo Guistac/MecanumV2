@@ -221,6 +221,35 @@ game with its rules, drawing and a built-in demo player; the `Arcade` runs them)
   leaving, the sticks are sent again only once both have been released. The radio, the watchdog, enable, disable and
   the E-stop are untouched; a game never sees them or the speed switch.
 
+### Sound (D-158)
+
+A 12 mm piezo disc between pins 19 and 18, 220 ohm in series, pressed against the case over a hole. Audible from
+100 to 5000 Hz.
+
+- **Engine** (`lib/RemoteAudio`): `Sound.h` (notes, cues, priorities, the `SoundSink` a part plays into, the
+  `SoundOutput` the board implements; notes are timer squares, synth voices or two-leg duets), `SoundPlayer.h` (two
+  layers: front for interface sounds, alarms and game effects, back for a game's music; a cue never cuts off a higher
+  priority one), `Synth.h` (eight voices: square and pulse with smoothed edges, sine, triangle, noise, recorded
+  clips; level, attack, decay, start delay). The board's end is `src/RemoteBoard/RemoteSound.h`: timer square waves
+  on both legs in opposite phase (loudest), or the synth as a PWM DAC (62.5 kHz carrier, 31.25 kHz samples, both
+  legs mirrored).
+- **The remote's sounds** (`lib/RemoteLogic/src/RemoteSounds.*`): the table of cues and when they play. Two families
+  that cannot be confused: interface sounds are one short square on the C pentatonic (page changes, a note per page;
+  menu item and value, a bump at the ends; Save and discard; enable and disable ticks; the speed and direction
+  switches; a buzz when enable cannot work); status sounds are several notes off that scale with an echo, or rough
+  two-leg buzzes (enabling, enabled, disabling, disabled, E-stop engaged (harsh), E-stop released, link found; one
+  warning for link lost, radio fault, E-stop wiring, battery). Status sounds follow the state the receiver reports.
+  NO LINK: a falling pair every 2 s with three fading echoes, the LEDs flashing and echoing with it. A stick pushed
+  at speed OFF: a continuous grind, and OFF blinks on the Status screen.
+- **Startup** (`lib/RemoteUi/src/StartupScore.h`): the owner's recording (`tools/sounds/startup.m4a`) taken apart by
+  `tools/sounds/partials.py` into a chord and a bell, played one note at a time as synth squares: an arpeggio with
+  the letters, the bell with the shine. Played as samples (`tools/sounds/clip.py`) it was faint and noisy on the
+  disc.
+- **Sound setting**: All, Alarms only (default), Off (no startup sound either); the games and their way in (the About
+  page's loading tune) play unless Off.
+- **Games** (next): a game gets a `SoundSink` and plays cues (`soundCue(notes, SoundPriority::GAME)`) or notes made
+  at run time (`playNote`), music on the back layer with a loop length.
+
 ### Checked on the bench (to do)
 
 Directions to confirm on the hardware: stick up = previous menu item (`getYValue()` positive), which speed switch

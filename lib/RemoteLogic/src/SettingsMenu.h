@@ -8,7 +8,7 @@
 class SettingsMenu{
 public:
 
-    enum class Item : uint8_t{ CHANNEL, CONTRAST, DIMMING, STICKS, SAVE, EXIT, COUNT };
+    enum class Item : uint8_t{ CHANNEL, CONTRAST, DIMMING, SOUND, STICKS, SAVE, EXIT, COUNT };
     enum class Event{ NONE, SAVED, CLOSED, CALIBRATE };
 
     static constexpr uint32_t saveHoldMillis = 1000;
@@ -43,6 +43,9 @@ public:
             case Item::DIMMING:
                 pending.dimming = stepClamped(pending.dimming, valueStep, RemoteSettings::dimmingOptions);
                 break;
+            case Item::SOUND:
+                pending.sound = stepClamped(pending.sound, valueStep, RemoteSounds::levelCount);
+                break;
             case Item::STICKS:
                 if(valueStep > 0) return Event::CALIBRATE;
                 break;
@@ -65,6 +68,7 @@ public:
 
     Item getItem() const { return item; }
     const RemoteSettings& getPending() const { return pending; }
+
 
     //0..1 while Save is held
     float saveProgress(uint32_t heldRightMillis) const {

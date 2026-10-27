@@ -8,10 +8,11 @@
 #include "BlocksGame.h"
 
 //The remote's games [D-148]. In: both stick buttons held 2 s on the About page with the speed switch at OFF (the
-//firmware checks the rest: sticks zeroed, own E-stop clear). Then a picker: the pushbuttons choose a game, which
+//firmware checks the rest: sticks zeroed; the own E-stop may be pressed). Then a picker: the pushbuttons choose a game, which
 //plays itself behind its name; a stick click starts it. Playing: the left pushbutton goes back to the picker, the
 //right one pauses. Game over: a click plays again, a pushbutton goes back to the picker. Out: both stick buttons held
-//2 s again, 2 minutes without input, or the firmware leaves (speed switch off OFF, own E-stop, a new alarm).
+//2 s again, 2 minutes without input, or the firmware leaves (speed switch off OFF, own E-stop pressed or released,
+//a new alarm).
 class Arcade{
 public:
 

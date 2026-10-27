@@ -23,8 +23,11 @@ namespace RemoteSplash{
     static constexpr float landingSpacing = 0.7f;       //landing distance from the word's centre, of the final one
     static constexpr float hopSeconds[2] = {0.27f, 0.18f};
     static constexpr float hopHeight[2] = {0.34f, 0.1f};
-    //as the last letter's first hop ends
-    static constexpr float shineStart = firstLetterStart + (BerupoLogo::letterCount - 1) * letterStagger + flightSeconds + slideSeconds + 0.27f;
+    //after the last letter has appeared (and the startup sound's last arpeggio note, arpeggioDelaySeconds later), a
+    //pause, then the shine and with it the sound's bell (StartupScore.h): the pause from that note is 1.65 x what it
+    //was when the shine came as the last letter's first hop ended (0.93 s; 1.5 x, then 10 % more, 2026-10-27)
+    static constexpr float lastLetterStart = firstLetterStart + (BerupoLogo::letterCount - 1) * letterStagger;
+    static constexpr float shineBegins = lastLetterStart + arpeggioDelaySeconds + 1.65f * (flightSeconds + slideSeconds + 0.27f);
     static constexpr float shineSeconds = 0.35f;
     static constexpr float shineWidth = 10.0f;          //px, a band leaning right (x + y / 2) that draws the letters half-tone
 
@@ -110,8 +113,8 @@ namespace RemoteSplash{
 
         //the band runs from left of the word to past its right end
         float shine = -100.0f;
-        if(seconds >= shineStart && seconds < shineStart + shineSeconds){
-            shine = 0.0f + easeInOutCubic((seconds - shineStart) / shineSeconds) * (128.0f + 16.0f + shineWidth) - 16.0f - shineWidth;
+        if(seconds >= shineBegins && seconds < shineBegins + shineSeconds){
+            shine = 0.0f + easeInOutCubic((seconds - shineBegins) / shineSeconds) * (128.0f + 16.0f + shineWidth) - 16.0f - shineWidth;
         }
 
         const float s = float(BerupoLogo::supersample);
@@ -158,4 +161,25 @@ namespace RemoteSplash{
             drawLetter(out, letter, cx, cy, scale, scale, shine, age < faintSeconds);
         }
     }
+
+    float letterStart(uint8_t letter){ return firstLetterStart + letter * letterStagger; }
+    float shineStart(){ return shineBegins; }
+
+    //Becker Poels: a rising arpeggio across the fill (BERUPO plays the startup clip instead, RemoteGui)
+    static const Note beckerPoelsTune[] = {
+        {0.0f, 262, 90},
+        {0.12f, 330, 90},
+        {0.24f, 392, 90},
+        {0.36f, 523, 250},
+    };
+
+    const Note* tune(Style style, uint8_t& count){
+        if(style == Style::BECKER_POELS){
+            count = sizeof(beckerPoelsTune) / sizeof(Note);
+            return beckerPoelsTune;
+        }
+        count = 0;
+        return nullptr;
+    }
+
 };

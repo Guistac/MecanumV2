@@ -4,6 +4,7 @@
 #include "Hardware/Watchdog.h"
 #include <RemoteTransitions.h>
 #include <RemoteSplash.h>
+#include <StartupScore.h>
 
 #ifndef FW_VERSION
 #define FW_VERSION "unknown"
@@ -57,6 +58,7 @@ void RemoteBoard::fillScreenModel(ScreenModel& m){
     m.status = status;
     m.radioFailures = radio.getInitFailures();
     m.speedState = speedToggle.getState();
+    m.b_sticksOffWarning = b_sticksOffWarning;
     m.b_worldFrame = directionToggle.getSwitchState();
 
     m.page = pages.getPage();
@@ -90,6 +92,8 @@ void RemoteBoard::fillScreenModel(ScreenModel& m){
     m.settings = settings;
     m.b_menuOpen = menu.isOpen();
     m.menuItem = menu.getItem();
+    m.b_arcadeReady = b_arcadeGateOpen && !b_arcadeLoading;
+    m.arcadeLoading = b_arcadeGateOpen ? arcade.gateProgress(millis()) : 0.0f;
     m.pending = menu.getPending();
     m.saveProgress = menu.saveProgress(valueAxis.heldPositiveMillis(now));
     bool b_noteShowing = calibrationNote && int32_t(calibrationNoteUntilMillis - now) > 0;
@@ -118,6 +122,8 @@ void RemoteBoard::refreshGui(){
     bool b_newMessage = status.message != previousMessage;
     BigMessage messageBefore = previousMessage;
     previousMessage = status.message;
+    //status changes and warnings sound once [D-158]
+    if(b_newMessage) playSound(RemoteSounds::forStatusChange(messageBefore, status.message));
     if(b_newMessage && b_alarm){
         if(arcade.isActive()) leaveArcade();
         if(menu.isOpen()) closeMenu();
@@ -132,6 +138,10 @@ void RemoteBoard::refreshGui(){
     if(radio.isInitialized() && radio.getTemperatureCelsius() > hotTemperatureCelsius) warnings |= 0x2;
     if(batteryMonitor.getState() != BatteryState::OK) warnings |= 0x4;
     bool b_newWarning = (warnings & ~previousWarnings) != 0;
+    //radio hot, battery low: one warning each per power on (a temperature near its limit would toggle)
+    static uint8_t warnedOnce = 0;
+    if(warnings & ~warnedOnce & 0x6) playSound(RemoteSounds::Sound::WARNING);
+    warnedOnce |= warnings & 0x6;
     previousWarnings = warnings;
 
     //in the menu the contrast being chosen shows at once, and the display stays awake
@@ -227,10 +237,27 @@ void RemoteBoard::startupAnimation(){
 
     //the letters on the white fill (RemoteSplash); the pushbutton LEDs blink across while the screen fills and
     //again while it clears, as before
+    //the sound: BERUPO hands its score to the synth (StartupScore.h, in time with the letters and the shine; the
+    //synth's interrupt plays it); Becker Poels its tune, each note started when the animation reaches it
+    bool b_sound = settings.sound != uint8_t(RemoteSounds::Level::OFF);
+    if(b_sound && style == RemoteSplash::Style::BERUPO){
+        SynthScoreNote score[StartupScore::noteCount];
+        StartupScore::build(score);
+        sound.playScore(score, StartupScore::noteCount);
+    }
+    uint8_t noteCount = 0;
+    const RemoteSplash::Note* notes = RemoteSplash::tune(style, noteCount);
+    uint8_t nextNote = 0;
+
     LengthTimer splashTimer(duration);
     while(!splashTimer.hasExpired()){
         Watchdog::feed();
         float seconds = splashTimer.getProgress() * duration;
+        sound.update();
+        if(b_sound && nextNote < noteCount && seconds >= notes[nextNote].start){
+            sound.tone(notes[nextNote].hertz, notes[nextNote].millis);
+            nextNote++;
+        }
         float ll = 0.0;
         float rl = 0.0;
         if(seconds < RemoteSplash::fillInSeconds){
@@ -260,6 +287,7 @@ void RemoteBoard::startupAnimation(){
     //the last frame drawn in the loop is a little before the end, the wipe one column short: show the cleared screen
     display.clearDisplay();
     display.display();
+    if(style == RemoteSplash::Style::BECKER_POELS) sound.quiet();     //BERUPO's score plays on
     leftLedButton.setBrightness(0.0);
     rightLedButton.setBrightness(0.0);
     display.setTextColor(WHITE);
