@@ -3,7 +3,7 @@
 
 //Remote screens [D-146]: 128 x 32, three rows. Top (y 0..7): link and batteries. Middle (y 8..22): the one thing that
 //matters now. Bottom (y 23..31): the speed switch on the left and the frame switch on the right, each above its switch,
-//page dots between them. x = 127 is kept for the firmware alive dot.
+//page dots between them. The active page dot is also the alive sign: a gap travels round it with every few frames.
 
 namespace RemoteUi{
 
@@ -71,23 +71,44 @@ namespace RemoteUi{
 
     //——— icons ———
 
+    //a 16 px wedge rising from 1 to 7 px, filled column by column with the signal (16 steps); the rest a dotted
+    //baseline. No link: a blinking cross. One pixel right of it flips with every reply received.
+    static const int16_t signalWidth = 16;
+
     static void signalIcon(Adafruit_GFX& g, int16_t x, int16_t y, const ScreenModel& m){
-        static const int8_t heights[4] = {2, 3, 5, 7};
-        int bars = 0;
-        if(m.b_linkUp) bars = m.signal <= 0.0f ? 1 : int(m.signal * 4.0f + 0.99f);
-        if(bars > 4) bars = 4;
-        for(int i = 0; i < 4; i++){
-            int16_t bx = x + i * 3;
-            if(i < bars) g.fillRect(bx, y + 7 - heights[i], 2, heights[i], ON);
-            else g.drawPixel(bx, y + 6, ON);
+        int filled = 0;
+        if(m.b_linkUp){
+            filled = int(m.signal * signalWidth + 0.5f);
+            if(filled < 1) filled = 1;
+            if(filled > signalWidth) filled = signalWidth;
         }
-        //no link: a small cross over the bars, blinking
+        for(int i = 0; i < signalWidth; i++){
+            int16_t height = 1 + (i * 6 + 7) / 15;
+            if(i < filled) g.drawFastVLine(x + i, y + 7 - height, height, ON);
+            else if(i % 2 == 0) g.drawPixel(x + i, y + 6, ON);
+        }
         if(!m.b_linkUp && blink(m.now, 1000, 600)){
             g.drawLine(x + 6, y, x + 10, y + 4, ON);
             g.drawLine(x + 10, y, x + 6, y + 4, ON);
         }
-        //one pixel that flips with every reply received
-        if(m.b_linkUp && (m.rxCounter & 1)) g.drawPixel(x + 12, y, ON);
+        if(m.b_linkUp && (m.rxCounter & 1)) g.drawPixel(x + signalWidth + 1, y, ON);
+    }
+
+    //the alive sign: a one pixel gap travelling round a dot's edge every few frames (the screen is still being drawn).
+    //One per screen: the state dot on the main screen, the active page dot on the pages.
+    static int aliveStep(const ScreenModel& m){ return (m.frame / 3) % 8; }
+
+    //the active page dot, 3 x 3, with or without the travelling gap
+    static void activeDot(Adafruit_GFX& g, int16_t x, int16_t y, const ScreenModel& m, bool b_alive){
+        static const int8_t ring[8][2] = {{0, 0}, {1, 0}, {2, 0}, {2, 1}, {2, 2}, {1, 2}, {0, 2}, {0, 1}};
+        g.fillRect(x, y, 3, 3, ON);
+        if(b_alive) g.drawPixel(x + ring[aliveStep(m)][0], y + ring[aliveStep(m)][1], OFF);
+    }
+
+    //the gap on the rim of a radius 3 circle (the state dot)
+    static void circleGap(Adafruit_GFX& g, int16_t cx, int16_t cy, const ScreenModel& m){
+        static const int8_t rim[8][2] = {{0, -3}, {2, -2}, {3, 0}, {2, 2}, {0, 3}, {-2, 2}, {-3, 0}, {-2, -2}};
+        g.drawPixel(cx + rim[aliveStep(m)][0], cy + rim[aliveStep(m)][1], OFF);
     }
 
     static void batteryIcon(Adafruit_GFX& g, int16_t x, int16_t y, uint8_t percent){
@@ -124,7 +145,7 @@ namespace RemoteUi{
         char channel[8];
         if(m.b_direct) snprintf(channel, sizeof(channel), m.b_dropout ? "DROP" : "USB");
         else snprintf(channel, sizeof(channel), "CH%X", m.channel);
-        text(g, pixelFont, 16, 0, channel);
+        text(g, pixelFont, signalWidth + 4, 0, channel);
 
         //the vehicle's pack, then the remote's own battery (blinking when low)
         char voltage[8];
@@ -161,7 +182,7 @@ namespace RemoteUi{
     static const char* alarmNote(const ScreenModel& m, char* buffer, size_t size){
         switch(m.status.line){
             case StatusLine::NOT_CONNECTED: return "e-stop not sent";
-            case StatusLine::ESTOP_NOT_CONNECTED: return "e-stop not connected";
+            case StatusLine::ESTOP_NOT_CONNECTED: return nullptr;   //owner: NO LINK says it all
             case StatusLine::RADIO_RETRY: snprintf(buffer, size, "radio fault, retry %u", m.radioFailures); return buffer;
             case StatusLine::RESTART_REMOTE: return "restart the remote";
             default: break;
@@ -226,8 +247,11 @@ namespace RemoteUi{
                 g.drawCircle(x + 3, cy, 3, ON);
                 if(blink(m.now, 400, 200)) g.fillCircle(x + 3, cy, 1, ON);
                 break;
-            default: break;
+            default:
+                g.drawCircle(x + 3, cy, 3, ON);
+                break;
         }
+        circleGap(g, x + 3, cy, m);
         text(g, bigFont, x + 10, middleTop + 13, word);
     }
 
@@ -237,8 +261,15 @@ namespace RemoteUi{
         char buffer[24];
         const char* note = Status::isAlarm(m.status.message) ? alarmNote(m, buffer, sizeof(buffer)) : nullptr;
         if(Status::isAlarm(m.status.message)){
-            if(!note || (m.status.line == StatusLine::RESTART_REMOTE && !blink(m.now, 1000, 700))) return;
-            textCentered(g, pixelFont, 63, 24, note);
+            if(note){
+                if(m.status.line == StatusLine::RESTART_REMOTE && !blink(m.now, 1000, 700)) return;
+                textCentered(g, pixelFont, 63, 24, note);
+                return;
+            }
+            //no explanation needed (NO LINK): the switches as plain text, pills would touch the banner
+            const char* speed = Status::speedText(m.speedState);
+            text(g, pixelFont, 2, 24, speed);
+            textRight(g, pixelFont, 123, 24, m.b_worldFrame ? "WORLD" : "BODY");
             return;
         }
 
@@ -267,7 +298,10 @@ namespace RemoteUi{
         else{
             int16_t x = 63 - (m.pageCount * 4) / 2;
             for(int i = 0; i < m.pageCount; i++){
-                if(i == int(m.page)) g.fillRect(x + i * 4, bottomTop + 3, 3, 3, ON);
+                //the state dot above carries the alive sign, except while sticks are to be released (no state dot)
+                bool b_stateDot = m.status.message != BigMessage::RELEASE_LEFT && m.status.message != BigMessage::RELEASE_RIGHT
+                               && m.status.message != BigMessage::RELEASE_BOTH;
+                if(i == int(m.page)) activeDot(g, x + i * 4, bottomTop + 3, m, !b_stateDot);
                 else g.drawPixel(x + i * 4 + 1, bottomTop + 4, ON);
             }
         }
@@ -282,14 +316,25 @@ namespace RemoteUi{
     //——— info pages ———
 
     //the title line: icon and title, page dots on the right (plain: a filled bar would need 9 rows and leave 2 lines)
-    static void drawPageHeader(Adafruit_GFX& g, const ScreenModel& m, const uint8_t* icon, const char* title){
-        g.drawBitmap(0, 0, icon, 7, 7, ON);
-        text(g, pixelFont, 10, 0, title);
-        int16_t x = 125 - m.pageCount * 4;
-        for(int i = 0; i < m.pageCount; i++){
-            if(i == int(m.page)) g.fillRect(x + i * 4, 2, 3, 3, ON);
-            else g.drawPixel(x + i * 4 + 1, 3, ON);
+    const char* pageTitle(Page page){
+        switch(page){
+            case Page::LINK: return "Link";
+            case Page::RADIO: return "Radio";
+            case Page::BATTERY: return "Battery";
+            case Page::INPUTS: return "Inputs";
+            case Page::ABOUT: return "About";
+            case Page::SETTINGS: return "Settings";
+            default: return "";
         }
+    }
+
+    static void drawPageHeader(Adafruit_GFX& g, const ScreenModel& m, const uint8_t* icon){
+        g.drawBitmap(0, 0, icon, 7, 7, ON);
+        text(g, pixelFont, 10, 0, m.titleOverride ? m.titleOverride : pageTitle(m.page));
+        int16_t x = 125 - m.pageCount * 4;
+        float active = m.pageDotPosition >= 0.0f ? m.pageDotPosition : float(m.page);
+        for(int i = 0; i < m.pageCount; i++) g.drawPixel(x + i * 4 + 1, 3, ON);
+        activeDot(g, x + int16_t(active * 4.0f + 0.5f), 2, m, true);
     }
 
     //lines 1..3 under the title: label left, value right
@@ -300,20 +345,25 @@ namespace RemoteUi{
     }
 
     static void drawLinkPage(Adafruit_GFX& g, const ScreenModel& m){
-        drawPageHeader(g, m, antennaBitmap, "Link");
+        drawPageHeader(g, m, antennaBitmap);
         char value[24];
-        snprintf(value, sizeof(value), "%d dBm", m.downDbm);
-        row(g, 0, "to remote", value);
-        if(m.b_linkUp) snprintf(value, sizeof(value), "%d dBm", m.upDbm);
+        //how strongly each side hears the other (the radio keeps its last reading: only meaningful while replies arrive)
+        if(m.b_linkUp) snprintf(value, sizeof(value), "%ddBm", m.downDbm);
         else snprintf(value, sizeof(value), "--");
-        row(g, 1, "to receiver", value);
-        if(m.b_linkUp) snprintf(value, sizeof(value), "%u%% %.0fms", m.loss, m.rttMs);
-        else snprintf(value, sizeof(value), "no link");
-        row(g, 2, "loss, rtt", value);
+        row(g, 0, "remote hears", value);
+        if(m.b_linkUp) snprintf(value, sizeof(value), "%ddBm", m.upDbm);
+        else snprintf(value, sizeof(value), "--");
+        row(g, 1, "receiver hears", value);
+        //frames without a reply in the last second, and how long a reply takes
+        if(m.b_linkUp){
+            snprintf(value, sizeof(value), "lost %u%%  delay %.0fms", m.loss, m.rttMs);
+            text(g, pixelFont, 0, 24, value);
+        }
+        else row(g, 2, "lost", "--");
     }
 
     static void drawRadioPage(Adafruit_GFX& g, const ScreenModel& m){
-        drawPageHeader(g, m, chipBitmap, "Radio");
+        drawPageHeader(g, m, chipBitmap);
         char value[24];
         if(m.b_radioUp) snprintf(value, sizeof(value), "%d C", m.temperature);
         else snprintf(value, sizeof(value), "fault #%u", m.radioFailures);
@@ -325,13 +375,14 @@ namespace RemoteUi{
     }
 
     static void drawBatteryPage(Adafruit_GFX& g, const ScreenModel& m){
-        drawPageHeader(g, m, batteryBitmap, "Battery");
+        drawPageHeader(g, m, batteryBitmap);
         char value[24];
-        snprintf(value, sizeof(value), "%.2fV %u%%", m.remoteRestingVoltage, m.remotePercent);
-        row(g, 0, "remote", value);
+        //the charge (from the resting voltage, which rides through transmit sag) and its state, then the cell right now
         const char* state = m.remoteBattery == BatteryState::OK ? "ok" : (m.remoteBattery == BatteryState::LOW_CHARGE ? "low" : "empty");
-        snprintf(value, sizeof(value), "%.2fV %s", m.remoteVoltage, state);
-        row(g, 1, "  now", value);
+        snprintf(value, sizeof(value), "%u%% %s", m.remotePercent, state);
+        row(g, 0, "remote", value);
+        snprintf(value, sizeof(value), "%.2fV", m.remoteVoltage);
+        row(g, 1, "  cell", value);
         if(m.b_linkUp) snprintf(value, sizeof(value), "%.1fV", m.robotVoltage);
         else snprintf(value, sizeof(value), "--");
         row(g, 2, "vehicle", value);
@@ -370,7 +421,7 @@ namespace RemoteUi{
     }
 
     static void drawInputsPage(Adafruit_GFX& g, const ScreenModel& m){
-        drawPageHeader(g, m, stickBitmap, "Inputs");
+        drawPageHeader(g, m, stickBitmap);
         inputPixels(g, m, 52, 0, ON);
         char value[24];
         snprintf(value, sizeof(value), "%+.2f %+.2f", m.sticks[0], m.sticks[1]);
@@ -384,25 +435,30 @@ namespace RemoteUi{
         if(m.b_enableButton) strcat(held, "EN ");
         if(m.b_pushbutton[1]) strcat(held, "> ");
         text(g, pixelFont, 0, 24, held[0] ? held : "-");
-        const char* estop = m.estop == EstopState::CLEAR ? "estop ok" : (m.estop == EstopState::WIRING ? "WIRING" : "E-STOP");
+        //the E-stop's state and its two raw contacts (1 = high)
+        char estop[24];
+        const char* state = m.estop == EstopState::CLEAR ? "ok" : (m.estop == EstopState::WIRING ? "WIRING" : "E-STOP");
+        snprintf(estop, sizeof(estop), "%s NO%d NC%d", state, m.b_estopNoHigh ? 1 : 0, m.b_estopNcHigh ? 1 : 0);
         textRight(g, pixelFont, 125, 24, estop);
     }
 
     static void drawAboutPage(Adafruit_GFX& g, const ScreenModel& m){
-        drawPageHeader(g, m, infoBitmap, "About");
+        drawPageHeader(g, m, infoBitmap);
         char value[24];
         row(g, 0, "firmware", m.version);
         uint32_t s = m.uptimeSeconds;
         snprintf(value, sizeof(value), "%lu:%02lu:%02lu", (unsigned long)(s / 3600), (unsigned long)((s / 60) % 60), (unsigned long)(s % 60));
         row(g, 1, "uptime", value);
+        //why it last started, and how many watchdog or crash resets since it was switched on (only if any)
         const char* cause = m.resetCause == ResetCause::WATCHDOG ? "watchdog" : (m.resetCause == ResetCause::CRASH ? "crash" : "power on");
-        if(m.b_safeMode) snprintf(value, sizeof(value), "SAFE MODE x%u", m.resetCount);
-        else snprintf(value, sizeof(value), "%s x%u", cause, m.resetCount);
-        row(g, 2, "reset", value);
+        if(m.b_safeMode) snprintf(value, sizeof(value), "SAFE x%u", m.resetCount);
+        else if(m.resetCount > 0) snprintf(value, sizeof(value), "%s x%u", cause, m.resetCount);
+        else snprintf(value, sizeof(value), "%s", cause);
+        row(g, 2, "last boot", value);
     }
 
     static void drawSettingsPage(Adafruit_GFX& g, const ScreenModel& m){
-        drawPageHeader(g, m, gearBitmap, "Settings");
+        drawPageHeader(g, m, gearBitmap);
         char value[24];
         snprintf(value, sizeof(value), "%X", m.settings.channel);
         row(g, 0, "channel", value);

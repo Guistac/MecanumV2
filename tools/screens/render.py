@@ -25,6 +25,7 @@ def build():
         "lib/Adafruit-GFX/Adafruit_GFX.cpp",
         "lib/RemoteLogic/src/StatusView.cpp",
         "lib/RemoteUi/src/RemoteScreens.cpp",
+        "lib/RemoteUi/src/RemoteTransitions.cpp",
         "tools/screens/render_screens.cpp",
     ]
     includes = ["tools/screens/host", "lib/Adafruit-GFX", "lib/RemoteLogic/src", "lib/RemoteUi/src"]
@@ -105,15 +106,60 @@ def to_png(pbm):
     return image
 
 
+def transitions_sheet(strips):
+    """Per transition idea an animated GIF at real speed (a frame per 20 ms, pauses between), and one sheet with the
+    forward frames of every idea, one row each."""
+    if not strips:
+        return
+    scale = 3
+    width, height, gap, label = 128 * scale, 32 * scale, 8, 18
+    for idea, pictures in strips.items():
+        forward = [p for key, p in sorted(pictures) if key[0] == "f"]
+        back = [p for key, p in sorted(pictures) if key[0] == "b"]
+        sequence = forward + back
+        durations = [700] + [20] * (len(forward) - 2) + [700] + [700] + [20] * (len(back) - 2) + [700]
+        sequence[0].save(OUT / f"transition_{idea}.gif", save_all=True, append_images=sequence[1:],
+                         duration=durations, loop=0)
+    frames = max(len([k for k, _ in p if k[0] == "f"]) for p in strips.values())
+    sheet = Image.new("RGB", (frames * (width + gap) + gap, len(strips) * (height + label + gap) + gap), (40, 40, 40))
+    draw = ImageDraw.Draw(sheet)
+    font = ImageFont.load_default()
+    for row, (idea, pictures) in enumerate(sorted(strips.items())):
+        y = gap + row * (height + label + gap)
+        draw.text((gap, y), idea.replace("_", " "), fill=(220, 220, 220), font=font)
+        for column, picture in enumerate(p for key, p in sorted(pictures) if key[0] == "f"):
+            x = gap + column * (width + gap)
+            sheet.paste(picture.resize((width, height), Image.NEAREST), (x, y + label))
+    sheet.save(OUT / "transitions.png")
+    for png in OUT.glob("t_*.png"):
+        png.unlink()
+
+
 def main():
     build()
     pictures = []
     failures = 0
+    strips = {}
+    animations = {}
     for pbm in sorted(OUT.glob("*.pbm")):
+        if pbm.stem.startswith("g_"):
+            name, frame = pbm.stem[2:].rsplit("_", 1)
+            animations.setdefault(name, []).append((int(frame), to_png(pbm)))
+            continue
+        if pbm.stem.startswith("t_"):
+            idea, frame = pbm.stem[2:].rsplit("_", 1)
+            strips.setdefault(idea, []).append(((frame[0], int(frame[1:])), to_png(pbm)))
+            continue
         for problem in check_gaps(pbm.stem, read_rows(pbm)):
             print(f"GAP {pbm.stem}: {problem}")
             failures += 1
         pictures.append((pbm.stem, to_png(pbm)))
+    transitions_sheet(strips)
+    for name, frames in animations.items():
+        gif_frames = [p for _, p in sorted(frames)]
+        gif_frames[0].save(OUT / f"{name}.gif", save_all=True, append_images=gif_frames[1:], duration=20, loop=0)
+        for png in OUT.glob(f"g_{name}_*.png"):
+            png.unlink()
     # one sheet, two columns, with names
     width = 128 * SCALE
     height = 32 * SCALE

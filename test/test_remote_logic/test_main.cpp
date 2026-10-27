@@ -87,22 +87,23 @@ void test_axisstepper_block_until_released(){
 
 void test_estop_clear_pressed_and_wiring(){
     EstopContacts estop;
+    //released: NO open (high), NC closed (low)
     TEST_ASSERT_TRUE(estop.update(true, false, 0) == EstopState::CLEAR);
-    TEST_ASSERT_TRUE(estop.update(false, true, 10) == EstopState::PRESSED);
+    //pressed on the remotes (only NC connected): NO1 NC1, held as long as it likes, never a wiring fault
+    TEST_ASSERT_TRUE(estop.update(true, true, 10) == EstopState::PRESSED);
+    TEST_ASSERT_TRUE(estop.update(true, true, 5000) == EstopState::PRESSED);
     TEST_ASSERT_FALSE(estop.isClear());
-    //contacts disagree: pressed at once, wiring after 100 ms
-    TEST_ASSERT_TRUE(estop.update(true, true, 20) == EstopState::PRESSED);
-    TEST_ASSERT_TRUE(estop.update(true, true, 120) == EstopState::PRESSED);
-    TEST_ASSERT_TRUE(estop.update(true, true, 121) == EstopState::WIRING);
+    //pressed with a working NO contact: NO0 NC1
+    TEST_ASSERT_TRUE(estop.update(false, true, 5010) == EstopState::PRESSED);
+    //both closed: impossible for the switch, pressed at once, a wiring fault after 100 ms
+    TEST_ASSERT_TRUE(estop.update(false, false, 6000) == EstopState::PRESSED);
+    TEST_ASSERT_TRUE(estop.update(false, false, 6100) == EstopState::PRESSED);
+    TEST_ASSERT_TRUE(estop.update(false, false, 6101) == EstopState::WIRING);
     TEST_ASSERT_FALSE(estop.isClear());
-    //still disagreeing (both low now): still a wiring fault
-    TEST_ASSERT_TRUE(estop.update(false, false, 200) == EstopState::WIRING);
-    //a short disagreement while switching is no wiring fault
-    TEST_ASSERT_TRUE(estop.update(true, false, 210) == EstopState::CLEAR);
-    TEST_ASSERT_TRUE(estop.update(false, false, 220) == EstopState::PRESSED);
-    TEST_ASSERT_TRUE(estop.update(true, false, 250) == EstopState::CLEAR);
-    TEST_ASSERT_TRUE(estop.update(false, false, 260) == EstopState::PRESSED);
-    TEST_ASSERT_TRUE(estop.update(true, false, 300) == EstopState::CLEAR);
+    //a short glitch through both-closed is no wiring fault
+    TEST_ASSERT_TRUE(estop.update(true, false, 6200) == EstopState::CLEAR);
+    TEST_ASSERT_TRUE(estop.update(false, false, 6210) == EstopState::PRESSED);
+    TEST_ASSERT_TRUE(estop.update(true, false, 6250) == EstopState::CLEAR);
 }
 
 //——— BatteryMonitor ———
@@ -285,10 +286,12 @@ void test_dimmer(){
     TEST_ASSERT_EQUAL_HEX8(0x2F, dimmer.update(1, 1, false, false, 30000));
     TEST_ASSERT_EQUAL_HEX8(Dimmer::dimmedValue, dimmer.update(1, 1, false, false, 30001));
     TEST_ASSERT_TRUE(dimmer.isDimmed());
-    //an alarm is full brightness, whatever the setting, and counts as activity
-    TEST_ASSERT_EQUAL_HEX8(Dimmer::alarmValue, dimmer.update(0, 1, false, true, 40000));
-    TEST_ASSERT_EQUAL_HEX8(0x10, dimmer.update(0, 1, false, false, 40001));
-    TEST_ASSERT_EQUAL_HEX8(0x10, dimmer.update(0, 1, true, false, 69000));
+    //an alarm wakes the display at the set contrast and keeps it from dimming
+    TEST_ASSERT_EQUAL_HEX8(0x10, dimmer.update(0, 1, false, true, 40000));
+    TEST_ASSERT_FALSE(dimmer.isDimmed());
+    TEST_ASSERT_EQUAL_HEX8(0x10, dimmer.update(0, 1, false, true, 200000));
+    TEST_ASSERT_EQUAL_HEX8(0x10, dimmer.update(0, 1, false, false, 200001));
+    TEST_ASSERT_EQUAL_HEX8(0x10, dimmer.update(0, 1, true, false, 229000));
     //dimming off never dims
     TEST_ASSERT_EQUAL_HEX8(0x10, dimmer.update(0, 0, false, false, 10000000));
 }

@@ -206,12 +206,14 @@ private:
     void startupAnimation();
     void fillScreenModel(ScreenModel& model);
     GFXcanvas1 frame = GFXcanvas1(128, 32);
-    GFXcanvas1 previousFrame = GFXcanvas1(128, 32);
-    enum class Transition{ NONE, SLIDE_LEFT, SLIDE_RIGHT, WIPE };
+    GFXcanvas1 previousFrame = GFXcanvas1(128, 32);     //the last whole frame shown: where a transition starts
+    GFXcanvas1 blended = GFXcanvas1(128, 32);
+    enum class Transition{ NONE, SLIDE, WIPE };
     Transition transition = Transition::NONE;
     uint32_t transitionStartMillis = 0;
+    int transitionFromView = -1;
+    bool b_transitionForward = true;
     int previousView = -1;
-    void showFrame(uint32_t now);
 
     //hardware
     bool isLeftStickCentred();

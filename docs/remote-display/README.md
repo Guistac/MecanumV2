@@ -124,6 +124,13 @@ the loop. Reset cause from the core's crash report (CRC checked) and `SRC_SRSR`.
 crash resets within 60 s (RTC seconds, history in EEPROM from byte 4) start in safe mode: default display settings
 (the channel and the stick calibration are kept: the E-stop needs the link), Status page only, the `SAFE` marker.
 
+E-stop contacts (found on the remote, 2026-10-27, Inputs page): released reads NO1 NC0, pressed NO1 NC1. The NC
+contact works; the NO input never changes, so the E-stop's NO contact is not fitted or not connected (pin 0 to ground
+when pressed). The firmware reads NO1 NC1 and NO0 NC1 as pressed and only both closed (NO0 NC0, impossible for the
+switch) as a wiring fault; clear is still only NO1 NC0. With the NC contact alone a broken NC wire reads as pressed
+(safe), but a short of the NC wire to ground would read as released while pressed: fitting and wiring the NO contact
+block is recommended (hardware), then that short shows as `WIRING` on a press.
+
 Radio: one init attempt at boot, then `Radio::update()` retries every 2 s while `RADIO FAULT` shows (both boards); the
 channel set before the chip runs is applied when it comes up.
 
@@ -145,8 +152,9 @@ EEPROM: byte 0 channel (as before; blank reads as 15, as before), 1 contrast, 2 
 | `scripts/fw_version.py` | `FW_VERSION` from `git describe` |
 
 Before flashing: `pio test -e native`, `python3 tools/screens/render.py` (no gap problems), then `pio run -e remote` and
-`pio run -e teensy41`. When the screens change, copy the new `sheet.png` to `docs/remote-display/screens.png` in the
-same commit.
+`pio run -e teensy41`. When the screens change, copy the new `sheet.png` to `docs/remote-display/screens.png` (and the
+GIFs named in Screen design) in the same commit. `render.py` also writes `transitions.png` and one GIF per transition
+idea, used to choose the transitions.
 
 ### Screen design (owner's rules, 2026-10-26/27)
 
@@ -165,11 +173,20 @@ The display is 128 x 32 pixels, read at arm's length. Rules, from the review of 
   `OFF` as plain text, `SLOW` / `FAST` in a pill; bottom right above the frame switch: `BODY` plain, `WORLD` in a pill;
   between them the page dots, a marker pill or "thank you". During an alarm (a full-width banner leaves no gap above
   9 px pills) the bottom row is the alarm's explanation in plain text.
-- x = 127 is the firmware alive dot.
+- The alive sign: a one pixel gap travelling round a dot's edge every few frames (the screen is still being drawn),
+  one per screen: the state dot on the main screen (the page dots stay still there), the active page dot on the pages
+  ([alive_enabled.gif](alive_enabled.gif), [alive_page.gif](alive_page.gif)). A hung loop no longer freezes the screen
+  for long anyway: the watchdog reboots the remote within a second.
+- Signal: a 16 px wedge filled column by column (16 steps) with the weaker of the two RSSIs, the rest a dotted
+  baseline; a blinking cross without link; one pixel beside it flips with every reply.
 
-Transitions: pages slide in the pushbutton's direction and the menu slides in and out (160 ms, easing out); a new
-alarm wipes in from the left (100 ms). They are applied when the off-screen frame is copied to the display, so the
-loop and the controls never wait for them.
+Transitions (owner's choice of the ideas rendered as GIFs, "A and E"): between two pages the header rolls vertically
+(the old title up and out, the new one up from below) while the active page dot glides to its new place and the
+content slides sideways in the pushbutton's direction; from the main screen its top line rolls into the page header
+(160 ms, easing out) ([transition_pages.gif](transition_pages.gif), [transition_from_main.gif](transition_from_main.gif)).
+The menu and the calibration slide as a whole; a new alarm wipes in from the left (100 ms). The blending
+(`lib/RemoteUi/src/RemoteTransitions`) is applied when the off-screen frame is copied to the display, so the loop and
+the controls never wait for it; the Mac renderer uses the same code.
 
 The gap check in `render.py` fails when one connected shape reaches across a layout's gap rows.
 

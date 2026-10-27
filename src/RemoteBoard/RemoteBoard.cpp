@@ -148,13 +148,19 @@ void RemoteBoard::initialize(){
 void RemoteBoard::update(){
     Watchdog::feed();
 
-    //update all input devices, any change keeps the display bright
+    //update all input devices; any button or switch change keeps the display bright, the sticks only when deflected
+    //(their small jitter around the rest position would keep it awake forever)
     uint32_t previousInputChange = 0;
-    for(auto ioDevice : ioDevices) previousInputChange = max(previousInputChange, ioDevice->lastInputChange_millis);
+    for(auto ioDevice : ioDevices){
+        if(ioDevice == &leftJoystick || ioDevice == &rightJoystick) continue;
+        previousInputChange = max(previousInputChange, ioDevice->lastInputChange_millis);
+    }
     for(auto ioDevice : ioDevices) ioDevice->updateInputs();
     for(auto ioDevice : ioDevices){
+        if(ioDevice == &leftJoystick || ioDevice == &rightJoystick) continue;
         if(ioDevice->lastInputChange_millis > previousInputChange) b_inputActivity = true;
     }
+    if(!leftJoystick.isBelowThreshold(0.1) || !rightJoystick.isBelowThreshold(0.1)) b_inputActivity = true;
 
     updateOperatorLogic();
     updateLeds();

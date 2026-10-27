@@ -12,6 +12,7 @@
 //same code draws on the OLED and, on the Mac, into a canvas saved as a picture (tools/screens)
 struct ScreenModel{
     uint32_t now = 0;
+    uint8_t frame = 0;                  //counts the frames drawn: the alive spinner in the active page dot
 
     //link
     bool b_direct = false;              //env:remote_direct: USB instead of a channel
@@ -47,6 +48,10 @@ struct ScreenModel{
     //pages
     Page page = Page::STATUS;
     uint8_t pageCount = 6;
+    //transitions that animate the header itself: a title shown instead of the page's own, and the active page dot
+    //between two positions (-1: on the page's own dot)
+    const char* titleOverride = nullptr;
+    float pageDotPosition = -1.0f;
 
     //radio page
     bool b_radioUp = false;
@@ -62,6 +67,8 @@ struct ScreenModel{
     bool b_disableButton = false;
     bool b_enableButton = false;
     EstopState estop = EstopState::CLEAR;
+    bool b_estopNoHigh = true;          //raw contacts (pull-ups): released reads NO high, NC low
+    bool b_estopNcHigh = false;
 
     //about page
     const char* version = "";
@@ -92,6 +99,8 @@ struct ScreenModel{
 namespace RemoteUi{
 
     void draw(Adafruit_GFX& g, const ScreenModel& m);
+
+    const char* pageTitle(Page page);
 
     //parts, also used by RemoteBoard
     void drawStatus(Adafruit_GFX& g, const ScreenModel& m);

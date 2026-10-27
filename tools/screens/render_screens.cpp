@@ -2,6 +2,7 @@
 //Built and run by tools/screens/render.py on the Mac; the firmware draws the same code on the OLED.
 #include <Adafruit_GFX.h>
 #include <RemoteScreens.h>
+#include <RemoteTransitions.h>
 #include <stdio.h>
 #include <string>
 #include <vector>
@@ -109,10 +110,93 @@ int main(int argc, char** argv){
         GFXcanvas1 canvas(128, 32);
         canvas.fillScreen(0);
         RemoteUi::draw(canvas, example.model);
-        //the firmware alive dot
-        canvas.drawPixel(127, 10, 1);
         writePbm(canvas, outDir + "/" + example.name + ".pbm");
     }
+    //transitions: one frame per 20 ms (the display's 50 Hz) over the 160 ms of a page change, forward then back
+    //(t_<idea>_<f|b><frame>.pbm)
+    struct Idea{
+        const char* name;
+        RemoteTransitions::Header header;
+        RemoteTransitions::Content content;
+        int headerDrawing;      //0: none, 1: split-flap title, 2: title swaps halfway and the dot glides, 3: only the dot glides
+        bool b_fromStatus;
+    };
+    const Idea ideas[] = {
+        {"0_now_all_slides", RemoteTransitions::Header::SLIDE, RemoteTransitions::Content::SLIDE, 0, false},
+        {"A_header_rolls", RemoteTransitions::Header::ROLL, RemoteTransitions::Content::SLIDE, 0, false},
+        {"A2_header_rolls_from_main", RemoteTransitions::Header::ROLL, RemoteTransitions::Content::SLIDE, 0, true},
+        {"B_header_slides_content_dissolves", RemoteTransitions::Header::SLIDE, RemoteTransitions::Content::DISSOLVE, 0, false},
+        {"C_header_lags", RemoteTransitions::Header::LAG, RemoteTransitions::Content::SLIDE, 0, false},
+        {"D_split_flap_title", RemoteTransitions::Header::DRAWN, RemoteTransitions::Content::SLIDE, 1, false},
+        {"E_header_still_dot_glides", RemoteTransitions::Header::DRAWN, RemoteTransitions::Content::SLIDE, 2, false},
+        {"AE_header_rolls_dot_glides", RemoteTransitions::Header::ROLL, RemoteTransitions::Content::SLIDE, 3, false},
+        {"AE2_from_main", RemoteTransitions::Header::ROLL, RemoteTransitions::Content::SLIDE, 3, true},
+    };
+    const int frames = 9;
+    for(const Idea& idea : ideas) for(int direction = 0; direction < 2; direction++){
+        bool b_forward = direction == 0;
+        ScreenModel first = base();
+        first.page = idea.b_fromStatus ? Page::STATUS : Page::LINK;
+        ScreenModel second = base();
+        second.page = idea.b_fromStatus ? Page::LINK : Page::RADIO;
+        ScreenModel fromModel = b_forward ? first : second;
+        ScreenModel toModel = b_forward ? second : first;
+        GFXcanvas1 from(128, 32), to(128, 32), header(128, 32), out(128, 32);
+        from.fillScreen(0);
+        RemoteUi::draw(from, fromModel);
+        for(int frame = 0; frame < frames; frame++){
+            float progress = RemoteTransitions::easeOut(frame / float(frames - 1));
+            to.fillScreen(0);
+            RemoteUi::draw(to, toModel);
+            if(idea.headerDrawing){
+                //the header drawn for this frame, over the new frame's top rows
+                ScreenModel headerModel = toModel;
+                char title[16];
+                if(idea.headerDrawing == 1){
+                    RemoteTransitions::splitFlap(title, sizeof(title), RemoteUi::pageTitle(fromModel.page), RemoteUi::pageTitle(toModel.page), progress);
+                    headerModel.titleOverride = title;
+                }
+                else{
+                    if(idea.headerDrawing == 2 && progress < 0.5f) headerModel.page = fromModel.page;
+                    if(fromModel.page != Page::STATUS)
+                        headerModel.pageDotPosition = float(fromModel.page) + (float(toModel.page) - float(fromModel.page)) * progress;
+                }
+                header.fillScreen(0);
+                RemoteUi::draw(header, headerModel);
+                for(int y = 0; y < RemoteTransitions::headerRows; y++){
+                    for(int x = 0; x < 128; x++) to.drawPixel(x, y, header.getPixel(x, y));
+                }
+            }
+            //A + E: the dots glide in the drawn frame while the rest of the header rolls (from the main screen, which has
+            //no dots, everything rolls)
+            int16_t drawnFromX = 128;
+            if(idea.headerDrawing == 3 && fromModel.page != Page::STATUS && toModel.page != Page::STATUS)
+                drawnFromX = RemoteTransitions::pageDotsLeft(toModel.pageCount);
+            RemoteTransitions::blend(out, from, to, idea.header, idea.content, progress, b_forward, drawnFromX);
+            char name[64];
+            snprintf(name, sizeof(name), "/t_%s_%c%d.pbm", idea.name, b_forward ? 'f' : 'b', frame);
+            writePbm(out, outDir + name);
+        }
+    }
+
+    //the alive sign: 24 frames each of the main screen (state dot) and a page (page dot), a GIF at 50 Hz each
+    //(g_<name>_<frame>.pbm)
+    for(int frame = 0; frame < 24; frame++){
+        for(int page = 0; page < 3; page++){
+            ScreenModel m = base();
+            m.frame = frame;
+            m.rxCounter = frame / 2;
+            if(page == 1) m.status.message = BigMessage::DISABLED;
+            if(page == 2) m.page = Page::BATTERY;
+            GFXcanvas1 canvas(128, 32);
+            canvas.fillScreen(0);
+            RemoteUi::draw(canvas, m);
+            char name[64];
+            snprintf(name, sizeof(name), "/g_alive_%s_%d.pbm", page == 0 ? "enabled" : (page == 1 ? "disabled" : "page"), frame);
+            writePbm(canvas, outDir + name);
+        }
+    }
+
     printf("%zu screens\n", examples.size());
     return 0;
 }

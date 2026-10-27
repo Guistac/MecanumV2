@@ -2,6 +2,7 @@
 #include <RobotStates.h>
 #include <LiIonBattery.h>
 #include "Hardware/Watchdog.h"
+#include <RemoteTransitions.h>
 
 #ifndef FW_VERSION
 #define FW_VERSION "unknown"
@@ -9,7 +10,7 @@
 
 //the radio chip's temperature above which the HOT marker shows, a hint only [D-146 point 4]
 static const int hotTemperatureCelsius = 70;
-//transitions: pages and the menu slide, a new alarm wipes in
+//transitions: pages slide with a rolling header and a gliding page dot, the menu slides, a new alarm wipes in
 static const uint32_t slideMillis = 160;
 static const uint32_t wipeMillis = 100;
 
@@ -17,18 +18,14 @@ static float easeInOutCubic(float in){
     return in < 0.5 ? (4 * pow(in,3)) : (1 - pow(-2 * in + 2, 3) / 2);
 };
 
-static float easeOutCubic(float in){
-    float t = 1.0 - in;
-    return 1.0 - t * t * t;
-}
-
-static uint8_t frameCounter = 0;
 
 
 //everything the screens show, read once per frame
 void RemoteBoard::fillScreenModel(ScreenModel& m){
     uint32_t now = millis();
     m.now = now;
+    static uint8_t frameCounter = 0;
+    m.frame = frameCounter++;
 
 #ifdef REMOTE_DIRECT
     m.b_direct = true;
@@ -81,6 +78,8 @@ void RemoteBoard::fillScreenModel(ScreenModel& m){
     m.b_disableButton = leftLedButton.isPressed();
     m.b_enableButton = rightLedButton.isPressed();
     m.estop = estop.getState();
+    m.b_estopNoHigh = estopButton.isNoHigh();
+    m.b_estopNcHigh = estopButton.isNcHigh();
 
     m.version = FW_VERSION;
     m.uptimeSeconds = now / 1000;
@@ -133,48 +132,73 @@ void RemoteBoard::refreshGui(){
     bool b_newWarning = (warnings & ~previousWarnings) != 0;
     previousWarnings = warnings;
 
+    //in the menu the contrast being chosen shows at once, and the display stays awake
     uint8_t contrastLevel = menu.isOpen() ? menu.getPending().contrast : settings.contrast;
-    uint8_t contrast = dimmer.update(contrastLevel, settings.dimming, b_inputActivity || b_newMessage || b_newWarning, b_alarm, now);
+    bool b_activity = b_inputActivity || b_newMessage || b_newWarning || menu.isOpen();
+    uint8_t contrast = dimmer.update(contrastLevel, settings.dimming, b_activity, b_alarm, now);
     b_inputActivity = false;
     if(contrast != appliedContrast){
         display.setContrast(contrast);
         appliedContrast = contrast;
     }
 
-    //draw the new frame off screen
     ScreenModel model;
     fillScreenModel(model);
-    frame.fillScreen(0);
-    RemoteUi::draw(frame, model);
 
     //which view this is: a page (0..6), the menu (10), the calibration (11) or its result (12)
     int view = int(model.page);
     if(model.b_menuOpen) view = 10;
     if(model.b_menuOpen && model.b_calibrating) view = 11;
     if(model.b_calibrationResult) view = 12;
-    Transition newTransition = Transition::NONE;
     if(previousView >= 0 && view != previousView){
+        transition = Transition::SLIDE;
+        transitionFromView = previousView;
+        transitionStartMillis = now;
         if(view < 10 && previousView < 10){
             //pages: the next one comes in from the right, the previous one from the left (wrapping)
-            int count = model.pageCount;
-            bool b_forward = (previousView + 1) % count == view;
-            newTransition = b_forward ? Transition::SLIDE_LEFT : Transition::SLIDE_RIGHT;
+            b_transitionForward = (previousView + 1) % model.pageCount == view;
         }
-        else newTransition = view > previousView ? Transition::SLIDE_LEFT : Transition::SLIDE_RIGHT;
+        else b_transitionForward = view > previousView;
     }
-    else if(view == int(Page::STATUS) && b_newMessage && b_alarm && !Status::isAlarm(messageBefore)) newTransition = Transition::WIPE;
-    previousView = view;
-    if(newTransition != Transition::NONE){
-        transition = newTransition;
+    else if(view == int(Page::STATUS) && b_newMessage && b_alarm && !Status::isAlarm(messageBefore)){
+        transition = Transition::WIPE;
         transitionStartMillis = now;
     }
+    previousView = view;
 
-    showFrame(now);
+    //between two pages the header rolls while its page dot glides (drawn in this frame) and the content slides
+    uint32_t duration = transition == Transition::WIPE ? wipeMillis : slideMillis;
+    uint32_t elapsed = now - transitionStartMillis;
+    if(transition != Transition::NONE && elapsed >= duration) transition = Transition::NONE;
+    float progress = RemoteTransitions::easeOut(float(elapsed) / float(duration));
+    bool b_pageToPage = transitionFromView > 0 && transitionFromView < 10 && view > 0 && view < 10;
+    if(transition == Transition::SLIDE && b_pageToPage){
+        model.pageDotPosition = float(transitionFromView) + (float(view) - float(transitionFromView)) * progress;
+    }
 
-    //firmware alive: a dot running up and down the right edge with every frame (H4b)
-    frameCounter++;
-    if(frameCounter == 64) frameCounter = 0;
-    display.drawPixel(127, frameCounter < 32 ? frameCounter : 63 - frameCounter, WHITE);
+    frame.fillScreen(0);
+    RemoteUi::draw(frame, model);
+
+    if(transition == Transition::NONE){
+        display.drawBitmap(0, 0, frame.getBuffer(), 128, 32, WHITE, BLACK);
+        memcpy(previousFrame.getBuffer(), frame.getBuffer(), 128 * 32 / 8);
+    }
+    else if(transition == Transition::SLIDE){
+        bool b_pages = transitionFromView < 10 && view < 10;
+        RemoteTransitions::Header header = b_pages ? RemoteTransitions::Header::ROLL : RemoteTransitions::Header::SLIDE;
+        int16_t drawnFromX = b_pageToPage ? RemoteTransitions::pageDotsLeft(model.pageCount) : 128;
+        RemoteTransitions::blend(blended, previousFrame, frame, header, RemoteTransitions::Content::SLIDE,
+                                 progress, b_transitionForward, drawnFromX);
+        display.drawBitmap(0, 0, blended.getBuffer(), 128, 32, WHITE, BLACK);
+    }
+    else{
+        //a new alarm wipes in from the left
+        int16_t shift = int16_t(progress * 128.0);
+        display.drawBitmap(0, 0, previousFrame.getBuffer(), 128, 32, WHITE, BLACK);
+        for(int16_t x = 0; x < shift; x++){
+            for(int16_t y = 0; y < 32; y++) display.drawPixel(x, y, frame.getPixel(x, y) ? WHITE : BLACK);
+        }
+    }
 
     if(!displayRevealTimer.hasExpired()){
         int w = 128;
@@ -184,40 +208,6 @@ void RemoteBoard::refreshGui(){
 
     display.display();
 }
-
-//the new frame onto the display, blended with the one before while a transition runs; the last whole frame is kept
-//as the start of the next transition
-void RemoteBoard::showFrame(uint32_t now){
-    uint32_t duration = transition == Transition::WIPE ? wipeMillis : slideMillis;
-    uint32_t elapsed = now - transitionStartMillis;
-    if(transition == Transition::NONE || elapsed >= duration){
-        transition = Transition::NONE;
-        display.drawBitmap(0, 0, frame.getBuffer(), 128, 32, WHITE, BLACK);
-        memcpy(previousFrame.getBuffer(), frame.getBuffer(), 128 * 32 / 8);
-        return;
-    }
-    float progress = easeOutCubic(float(elapsed) / float(duration));
-    int16_t shift = int16_t(progress * 128.0);
-    switch(transition){
-        case Transition::SLIDE_LEFT:
-            display.drawBitmap(-shift, 0, previousFrame.getBuffer(), 128, 32, WHITE, BLACK);
-            display.drawBitmap(128 - shift, 0, frame.getBuffer(), 128, 32, WHITE, BLACK);
-            break;
-        case Transition::SLIDE_RIGHT:
-            display.drawBitmap(shift, 0, previousFrame.getBuffer(), 128, 32, WHITE, BLACK);
-            display.drawBitmap(shift - 128, 0, frame.getBuffer(), 128, 32, WHITE, BLACK);
-            break;
-        case Transition::WIPE:
-            display.drawBitmap(0, 0, previousFrame.getBuffer(), 128, 32, WHITE, BLACK);
-            for(int16_t x = 0; x < shift; x++){
-                for(int16_t y = 0; y < 32; y++) display.drawPixel(x, y, frame.getPixel(x, y) ? WHITE : BLACK);
-            }
-            break;
-        default: break;
-    }
-}
-
-
 
 void RemoteBoard::startupAnimation(){
 
