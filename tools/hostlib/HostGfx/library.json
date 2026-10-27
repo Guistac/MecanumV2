@@ -1,0 +1,7 @@
+{
+  "name": "HostGfx",
+  "version": "1.0.0",
+  "description": "Host tests only: Adafruit_GFX built on the Mac with the Arduino stand-ins of tools/screens/host",
+  "build": { "flags": ["-DARDUINO=100", "-I../../screens/host", "-I../../../lib/Adafruit-GFX"] },
+  "platforms": "native"
+}

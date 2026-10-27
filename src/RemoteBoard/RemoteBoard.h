@@ -19,6 +19,7 @@
 #include <LinkMonitor.h>
 #include <StickCalibration.h>
 #include <RemoteScreens.h>
+#include <Arcade.h>
 
 #ifdef REMOTE_DIRECT
 #include "Utilities/RemoteProxy.h"
@@ -175,6 +176,11 @@ private:
     bool updateMenu(uint32_t now);
     void closeMenu();
     void updateLeds();
+
+    //the games [D-148] (lib/RemoteGames, tested with pio test -e native)
+    Arcade arcade;
+    void updateArcade(bool& b_previous, bool& b_next, uint32_t now);
+    void leaveArcade();
     StatusView selectStatus(uint32_t now);
     void loadSettings();
     void saveSettings(const RemoteSettings& newSettings);

@@ -119,6 +119,7 @@ void RemoteBoard::refreshGui(){
     BigMessage messageBefore = previousMessage;
     previousMessage = status.message;
     if(b_newMessage && b_alarm){
+        if(arcade.isActive()) leaveArcade();
         if(menu.isOpen()) closeMenu();
         b_calibrationResult = false;
         pages.showStatus();
@@ -135,7 +136,7 @@ void RemoteBoard::refreshGui(){
 
     //in the menu the contrast being chosen shows at once, and the display stays awake
     uint8_t contrastLevel = menu.isOpen() ? menu.getPending().contrast : settings.contrast;
-    bool b_activity = b_inputActivity || b_newMessage || b_newWarning || menu.isOpen();
+    bool b_activity = b_inputActivity || b_newMessage || b_newWarning || menu.isOpen() || arcade.isActive();
     uint8_t contrast = dimmer.update(contrastLevel, settings.dimming, b_activity, b_alarm, now);
     b_inputActivity = false;
     if(contrast != appliedContrast){
@@ -146,11 +147,12 @@ void RemoteBoard::refreshGui(){
     ScreenModel model;
     fillScreenModel(model);
 
-    //which view this is: a page (0..6), the menu (10), the calibration (11) or its result (12)
+    //which view this is: a page (0..6), the menu (10), the calibration (11) or its result (12), the games (20)
     int view = int(model.page);
     if(model.b_menuOpen) view = 10;
     if(model.b_menuOpen && model.b_calibrating) view = 11;
     if(model.b_calibrationResult) view = 12;
+    if(arcade.isActive()) view = 20;
     if(previousView >= 0 && view != previousView){
         transition = Transition::SLIDE;
         transitionFromView = previousView;
@@ -178,7 +180,8 @@ void RemoteBoard::refreshGui(){
     }
 
     frame.fillScreen(0);
-    RemoteUi::draw(frame, model);
+    if(arcade.isActive()) arcade.draw(frame);
+    else RemoteUi::draw(frame, model);
 
     if(transition == Transition::NONE){
         display.drawBitmap(0, 0, frame.getBuffer(), 128, 32, WHITE, BLACK);

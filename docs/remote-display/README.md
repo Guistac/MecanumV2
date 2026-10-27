@@ -201,6 +201,26 @@ screen reveals itself as before ([startup.gif](startup.gif)). `tools/screens/log
 `lib/RemoteUi/src/BerupoLogo.h` (each letter at 4x, 24 px tall, gloss marks filled in); `RemoteSplash` draws it.
 Both stick buttons held at power on: the former "Becker Poels" startup instead (0.75 s, unchanged).
 
+### Games (easter egg, D-148 pending)
+
+Six games on the sticks: Pong, Parking (the Mecanum vehicle, driven as in body frame), Cave, Rocks (twin-stick
+shooter), Snake and Blocks (Tetris turned sideways, the floor on the left). Code in `lib/RemoteGames` (one class per
+game with its rules, drawing and a built-in demo player; the `Arcade` runs them), host tests in `test/test_arcade` and
+`test/test_game_<name>` (every game passes `GameContract`: deterministic, the demo ends within 3 minutes, a tick under
+2 ms on the Mac). `python3 tools/screens/render_games.py [name|all|arcade]` records them playing themselves as GIFs.
+
+- In: both stick buttons held 2 s on the About page, with the speed switch at OFF, the sticks zeroed and the own
+  E-stop clear. A button already held when the page opens has to be released first.
+- Picker: the pushbuttons choose a game, which plays itself behind its name; a stick click starts it. Playing: the
+  left pushbutton goes back to the picker, the right one pauses. Game over: a click plays again, a pushbutton goes
+  back to the picker. The best result of each game is kept until the remote is switched off (RAM only: the EEPROM is
+  written only on SAVE).
+- Out: both stick buttons held 2 s again, 2 minutes without input, the speed switch leaving OFF, the own E-stop or a
+  new alarm (the status screen then shows at once).
+- Safety: while a game runs nothing of the sticks is sent (held neutral like in the menu, their buttons masked); after
+  leaving, the sticks are sent again only once both have been released. The radio, the watchdog, enable, disable and
+  the E-stop are untouched; a game never sees them or the speed switch.
+
 ### Checked on the bench (to do)
 
 Directions to confirm on the hardware: stick up = previous menu item (`getYValue()` positive), which speed switch

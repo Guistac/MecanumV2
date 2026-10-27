@@ -202,7 +202,8 @@ void RemoteBoard::updateOperatorLogic(){
     batteryMonitor.update(batteryLevel.getRestingVoltage());
     b_settingsAvailable = !b_safeMode && isSpeedSwitchOff();
 
-    stickGuard.update(menu.isOpen(), isLeftStickCentred(), isRightStickCentred());
+    //the games hold the sticks like the menu does, and afterwards both must be released first
+    stickGuard.update(menu.isOpen() || arcade.isActive(), isLeftStickCentred(), isRightStickCentred());
     if(stickGuard.wasReleased() && !b_joystickZeroCaptured){
         leftJoystick.captureZero();
         rightJoystick.captureZero();
@@ -223,6 +224,7 @@ void RemoteBoard::updateOperatorLogic(){
         b_previous = false;
         b_next = false;
     }
+    updateArcade(b_previous, b_next, now);
     //the calibration result: any pushbutton (or 10 s) goes back to the menu
     if(b_calibrationResult){
         if(b_previous || b_next || int32_t(now - calibrationResultUntilMillis) > 0 || !menu.isOpen()) b_calibrationResult = false;
@@ -243,6 +245,41 @@ void RemoteBoard::updateOperatorLogic(){
     pages.update(b_previous, b_next, b_settingsAvailable, b_menuActivity, now);
     //back on Status after 10 s without input: unsaved changes are discarded
     if(menu.isOpen() && pages.getPage() != Page::SETTINGS) closeMenu();
+}
+
+//the games [D-148]: in with both stick buttons held 2 s on the About page with the speed switch at OFF (sticks
+//zeroed, own E-stop clear); out with the same gesture, after 2 minutes without input, when the speed switch leaves
+//OFF, the own E-stop is pressed or a new alarm shows (refreshGui). While they run, the pushbuttons are theirs and
+//nothing of the sticks is sent (sendData)
+void RemoteBoard::updateArcade(bool& b_previous, bool& b_next, uint32_t now){
+    bool b_allowed = b_settingsAvailable && b_joystickZeroCaptured && estop.isClear();
+    if(!arcade.isActive()){
+        bool b_bothHeld = leftJoystick.isPressed() && rightJoystick.isPressed();
+        bool b_gateOpen = b_allowed && pages.getPage() == Page::ABOUT && !menu.isOpen();
+        if(arcade.updateGate(b_gateOpen, b_bothHeld, now)) arcade.enter(now);
+        else return;
+    }
+    if(!b_allowed || arcade.exitRequested()){
+        leaveArcade();
+        return;
+    }
+    GameInput sticks;
+    sticks.stick[0] = leftJoystick.getXValue();
+    sticks.stick[1] = leftJoystick.getYValue();
+    sticks.stick[2] = rightJoystick.getXValue();
+    sticks.stick[3] = rightJoystick.getYValue();
+    sticks.held[0] = leftJoystick.isPressed();
+    sticks.held[1] = rightJoystick.isPressed();
+    arcade.update(sticks, b_previous, b_next, now);
+    b_previous = false;
+    b_next = false;
+}
+
+void RemoteBoard::leaveArcade(){
+    arcade.leave();
+    pages.showStatus();
+    itemAxis.blockUntilReleased();
+    valueAxis.blockUntilReleased();
 }
 
 void RemoteBoard::closeMenu(){
@@ -371,8 +408,14 @@ void RemoteBoard::sendData(){
     controls.leftY = leftJoystick.getYValue();
     controls.rightX = rightJoystick.getXValue();
     controls.rightY = rightJoystick.getYValue();
-    //the guard catches up with the menu on the next loop: the menu itself counts too
-    bool b_neutralSticks = stickGuard.holdNeutral() || menu.isOpen() || millis() - zeroCaptureMillis < zeroSettleMillis;
+    //the guard catches up with the menu on the next loop: the menu itself counts too, and the games [D-148], which
+    //send neither the sticks nor their buttons
+    bool b_neutralSticks = stickGuard.holdNeutral() || menu.isOpen() || arcade.isActive()
+                        || millis() - zeroCaptureMillis < zeroSettleMillis;
+    if(arcade.isActive()){
+        controls.b_leftStickPressed = false;
+        controls.b_rightStickPressed = false;
+    }
 
     robotProxy.txCounter++;
     uint16_t safetyNumber = estop.isClear() ? Safety::generateClearNumber() : Safety::generateSafeNumber();
