@@ -17,7 +17,7 @@ public:
     enum class Wave : uint8_t{ SQUARE, PULSE25, PULSE12, SINE, TRIANGLE, NOISE, SAMPLE };
 
     static constexpr uint32_t sampleRate = 31250;
-    //eight voices: the sound engine's layers use 0 to 3, a score (the startup sound) all eight
+    //eight voices: the sound engine's layers use 0 to 4 (front 2 and 3, back 0, 1 and 4), a score (the startup sound) all eight
     static const uint8_t voiceCount = 8;
     static constexpr float defaultAttackSeconds = 0.003f;
 

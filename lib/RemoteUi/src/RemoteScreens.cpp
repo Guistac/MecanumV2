@@ -3,7 +3,8 @@
 
 //Remote screens [D-147]: 128 x 32, three rows. Top (y 0..7): link and batteries. Middle (y 8..22): the one thing that
 //matters now. Bottom (y 23..31): the speed switch on the left and the frame switch on the right, each above its switch,
-//page dots between them. The active page dot is also the alive sign: a gap travels round it with every few frames.
+//the stopwatch between them [D-160]. The alive sign is a gap travelling round the state dot (main screen) or the active
+//page dot (pages) every few frames.
 
 namespace RemoteUi{
 
@@ -95,10 +96,11 @@ namespace RemoteUi{
     }
 
     //the alive sign: a one pixel gap travelling round a dot's edge every few frames (the screen is still being drawn).
-    //One per screen: the state dot on the main screen, the active page dot on the pages.
+    //One per screen: the state dot on the main screen (a single dot in the bottom row while sticks are to be released,
+    //there is no state dot then), the active page dot on the pages.
     static int aliveStep(const ScreenModel& m){ return (m.frame / 3) % 8; }
 
-    //the active page dot, 3 x 3, with or without the travelling gap
+    //the active page dot (also the main screen's alive dot), 3 x 3, with or without the travelling gap
     static void activeDot(Adafruit_GFX& g, int16_t x, int16_t y, const ScreenModel& m, bool b_alive){
         static const int8_t ring[8][2] = {{0, 0}, {1, 0}, {2, 0}, {2, 1}, {2, 2}, {1, 2}, {0, 2}, {0, 1}};
         g.fillRect(x, y, 3, 3, ON);
@@ -147,6 +149,7 @@ namespace RemoteUi{
         signalIcon(g, 0, 0, m);
         char channel[8];
         if(m.b_direct) snprintf(channel, sizeof(channel), m.b_dropout ? "DROP" : "USB");
+        else if(m.b_usbWaiting && blink(m.now, 1000, 500)) snprintf(channel, sizeof(channel), "USB");
         else snprintf(channel, sizeof(channel), "CH%X", m.channel);
         text(g, pixelFont, signalWidth + 4, 0, channel);
 
@@ -258,6 +261,74 @@ namespace RemoteUi{
         text(g, bigFont, x + 10, middleTop + 13, word);
     }
 
+    //——— the stopwatch [D-160] ———
+
+    //where an element w px wide goes: centred under the screen's middle, kept inside left..right
+    static int16_t placeCentred(int16_t w, int16_t left, int16_t right){
+        int16_t x = 63 - w / 2;
+        if(x + w - 1 > right) x = right - w + 1;
+        if(x < left) x = left;
+        return x;
+    }
+
+    //the edit mode's stick mark, 5 px wide in a 7 px text line (top at y): up and down triangles (seconds) and a
+    //dot each side (minutes)
+    static const int16_t stickMarkWidth = 5;
+    static void stickMarks(Adafruit_GFX& g, int16_t x, int16_t y, uint16_t color){
+        g.drawPixel(x + 2, y, color);
+        g.drawFastHLine(x + 1, y + 1, 3, color);
+        g.drawPixel(x, y + 3, color);
+        g.drawPixel(x + 4, y + 3, color);
+        g.drawFastHLine(x + 1, y + 5, 3, color);
+        g.drawPixel(x + 2, y + 6, color);
+    }
+
+    //Bottom centre, between the speed and frame labels (left..right, already 1 px clear of them):
+    //  editing: a pill "SET m:ss" with the stick mark (up / down seconds, left / right minutes), steady
+    //  counting up or idle: plain digits, m:ss.t below 10 minutes, mm:ss from 10 (0:00.0, 2:13.4, 12:05)
+    //  countdown: plain digits too, the time left (the bar across the screen shows how much, countdownBar)
+    //  overtime (run past zero, it keeps running): negative time, -0:05, -1:12.3, the full pill and plain text taking
+    //    turns every 0.5 s; stopped in overtime: the full pill, steady, the time frozen
+    //  stopped otherwise: the digits blink slowly (0.8 s on, 0.4 s off)
+    static void drawStopwatch(Adafruit_GFX& g, const ScreenModel& m, int16_t left, int16_t right){
+        const StopwatchView& v = m.stopwatch;
+        char digits[12];
+        if(v.b_editing){
+            char label[16];
+            Stopwatch::format(digits, sizeof(digits), v.setMillis, false);
+            snprintf(label, sizeof(label), "SET %s", digits);
+            int16_t tw = textWidth(g, pixelFont, label);
+            int16_t w = 2 + tw + 2 + stickMarkWidth + 2;
+            int16_t x = placeCentred(w, left, right);
+            g.fillRoundRect(x, bottomTop, w, pillHeight, 2, ON);
+            text(g, pixelFont, x + 2, bottomTop + 1, label, OFF);
+            stickMarks(g, x + 2 + tw + 2, bottomTop + 1, OFF);
+            return;
+        }
+        bool b_digits = v.state != Stopwatch::State::STOPPED || blink(m.now, 1200, 800);
+        if(!v.b_overtime){
+            //counting up, or down (the bar across the screen shows the countdown, drawStatus)
+            Stopwatch::format(digits, sizeof(digits), v.shownMillis, true);
+            int16_t x = placeCentred(textWidth(g, pixelFont, digits), left, right);
+            if(b_digits) text(g, pixelFont, x, bottomTop + 1, digits);
+            return;
+        }
+        //past zero: negative time in a pill, blinking while it runs, steady when stopped
+        Stopwatch::format(digits, sizeof(digits), v.shownMillis, true, true);
+        int16_t tw = textWidth(g, pixelFont, digits);
+        //a fixed width (the widest -m:ss.t) so the pill does not jump as the digits change; shrunk to fit
+        int16_t w = textWidth(g, pixelFont, "-0:00.0") + 4;
+        if(w < tw + 4) w = tw + 4;
+        if(w > right - left + 1) w = right - left + 1;
+        int16_t x = placeCentred(w, left, right);
+        int16_t tx = x + (w - tw) / 2;
+        if(v.state == Stopwatch::State::STOPPED || blink(m.now, 1000, 500)){
+            g.fillRoundRect(x, bottomTop, w, pillHeight, 2, ON);
+            text(g, pixelFont, tx, bottomTop + 1, digits, OFF);
+        }
+        else text(g, pixelFont, tx, bottomTop + 1, digits);
+    }
+
     static void drawBottomRow(Adafruit_GFX& g, const ScreenModel& m){
         //during an alarm the row explains it (no room for a gap between the banner and pills): the switches matter less
         //than why nothing moves
@@ -289,33 +360,92 @@ namespace RemoteUi{
         if(m.b_worldFrame) pillRight(g, 125, bottomTop, "WORLD");
         else textRight(g, pixelFont, 123, bottomTop + 1, "BODY");
 
-        //between them: thank you, a marker (one at a time, taking turns every second), or which page this is
+        //the free span between them, 1 px clear of each
+        int16_t speedRight = speed == SpeedMode::MEDIUM_SPEED || speed == SpeedMode::HIGH_SPEED ? pillWidth(g, "SLOW") - 1
+                           : (m.b_sticksOffWarning ? pillWidth(g, "OFF") - 1 : 2 + textWidth(g, pixelFont, "OFF") - 1);
+        int16_t frameLeft = m.b_worldFrame ? 125 - pillWidth(g, "WORLD") + 1 : 123 - textWidth(g, pixelFont, "BODY") + 1;
+        int16_t left = speedRight + 2;
+        int16_t right = frameLeft - 2;
+
+        //between them: thank you or a marker (one at a time, taking turns every second) while they last, otherwise
+        //the stopwatch [D-160] (the Status page has no page dots)
         const char* markers[4];
         int count = 0;
         if(m.b_rebooted) markers[count++] = "REBOOT";
         if(m.b_recovery) markers[count++] = "RST";
         if(m.b_hot) markers[count++] = "HOT";
         if(m.b_safeMode) markers[count++] = "SAFE";
-        if(m.status.line == StatusLine::THANK_YOU) textCentered(g, pixelFont, 63, bottomTop + 1, "thank you");
-        else if(count > 0){
+        //thank you between hearts (character 3 of the built-in font, as the first firmware drew them): spaced when it
+        //fits between the switch labels, tight when a pill leaves less room
+        if(m.status.line == StatusLine::THANK_YOU){
+            static const char* thanks[4] = {"\x03 thank you \x03", "\x03thank you\x03", "\x03 thanks \x03", "\x03thanks\x03"};
+            const char* label = thanks[3];
+            for(int i = 0; i < 4; i++){
+                if(textWidth(g, pixelFont, thanks[i]) <= right - left + 1){
+                    label = thanks[i];
+                    break;
+                }
+            }
+            textCentered(g, pixelFont, (left + right) / 2, bottomTop + 1, label);
+            return;
+        }
+        if(count > 0){
             const char* marker = markers[(m.now / 1000) % count];
             pill(g, 63 - pillWidth(g, marker) / 2, bottomTop, marker);
         }
+        else drawStopwatch(g, m, left, right);
+        //the state dot carries the alive sign; while sticks are to be released there is none: a single dot at the
+        //right end of the span carries it
+        bool b_stateDot = m.status.message != BigMessage::RELEASE_LEFT && m.status.message != BigMessage::RELEASE_RIGHT
+                       && m.status.message != BigMessage::RELEASE_BOTH;
+        if(!b_stateDot) activeDot(g, right - 3, bottomTop + 3, m, true);
+    }
+
+    //The countdown's bar [D-160]: row 8, the full width, lit from the left for the time left (remaining / set), so
+    //it shrinks from right to left; full and blinking past zero (steady when stopped there). Row 7 keeps it clear of
+    //the top row; the state word starts at row 9, so the bar leaves a notch over each letter top (the letter's
+    //columns and one either side): nothing touches and nothing else moves. Hidden during an alarm, like the digits
+    static const int16_t countdownBarRow = 8;
+
+    static bool countdownBarShown(const ScreenModel& m){
+        return m.stopwatch.b_countdown && !Status::isAlarm(m.status.message);
+    }
+
+    static void countdownBar(Adafruit_GFX& g, const ScreenModel& m, const GFXcanvas1* middle){
+        const StopwatchView& v = m.stopwatch;
+        int16_t length = 128;
+        if(v.b_overtime){
+            if(v.state != Stopwatch::State::STOPPED && !blink(m.now, 1000, 500)) return;
+        }
         else{
-            int16_t x = 63 - (m.pageCount * 4) / 2;
-            for(int i = 0; i < m.pageCount; i++){
-                //the state dot above carries the alive sign, except while sticks are to be released (no state dot)
-                bool b_stateDot = m.status.message != BigMessage::RELEASE_LEFT && m.status.message != BigMessage::RELEASE_RIGHT
-                               && m.status.message != BigMessage::RELEASE_BOTH;
-                if(i == int(m.page)) activeDot(g, x + i * 4, bottomTop + 3, m, !b_stateDot);
-                else g.drawPixel(x + i * 4 + 1, bottomTop + 4, ON);
+            float fraction = v.remainingFraction < 0.0f ? 0.0f : (v.remainingFraction > 1.0f ? 1.0f : v.remainingFraction);
+            length = int16_t(fraction * 128.0f + 0.5f);
+        }
+        //the bar's end (its last 2 px, the playhead) ignores the notches: always visible, even over a letter (owner,
+        //2026-10-27: the end was lost in a notch); there it may touch a letter top, the one exception to the gaps
+        const int16_t headFrom = v.b_overtime ? 128 : length - 2;
+        for(int16_t x = 0; x < length; x++){
+            bool b_notch = false;
+            for(int16_t dx = -1; dx <= 1 && middle && x < headFrom; dx++){
+                if(x + dx >= 0 && x + dx < 128 && middle->getPixel(x + dx, countdownBarRow + 1)) b_notch = true;
             }
+            if(!b_notch) g.drawPixel(x, countdownBarRow, ON);
         }
     }
 
     void drawStatus(Adafruit_GFX& g, const ScreenModel& m){
         drawTopRow(g, m);
-        drawMiddle(g, m);
+        if(countdownBarShown(m)){
+            //the middle drawn aside first: the bar needs to know where the word's letter tops are
+            GFXcanvas1 middle(128, 32);
+            middle.fillScreen(0);
+            drawMiddle(middle, m);
+            for(int16_t y = middleTop; y < bottomTop + pillHeight; y++){
+                for(int16_t x = 0; x < 128; x++) if(middle.getPixel(x, y)) g.drawPixel(x, y, ON);
+            }
+            countdownBar(g, m, &middle);
+        }
+        else drawMiddle(g, m);
         drawBottomRow(g, m);
     }
 

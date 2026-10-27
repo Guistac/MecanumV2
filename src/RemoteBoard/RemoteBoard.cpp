@@ -5,9 +5,7 @@
 #include <UplinkFrame.h>
 #include <LedPattern.h>
 #include "Hardware/Watchdog.h"
-#ifdef REMOTE_DIRECT
 #include "RobotBoard/MavLink.h"
-#endif
 
 //a stick within 10 % of its rest position counts as released
 static const float stickCentredThreshold = 0.1;
@@ -130,6 +128,7 @@ void RemoteBoard::initialize(){
     //the radio: one attempt here, radio.update() retries every 2 s while the screen shows RADIO FAULT.
     //The channel is remembered until the chip runs.
     loadStickCalibration();
+    arcade.setStore(&arcadeStore);
     radio.setChannel(settings.channel);
     radio.initialize(1);
     Watchdog::feed();
@@ -139,13 +138,11 @@ void RemoteBoard::initialize(){
     displayRevealTimer.start();
     if(resetCause != ResetCause::POWER_ON) rebootedMarkerUntilMillis = millis() + 5000;
 
-#ifdef REMOTE_DIRECT
-    directMavlink = new Mavlink();
-    directMavlink->setSources(&directProxy, nullptr, 0);
-    //no radio to spare: always send at the cyclic rate, so the proxy never times out between frames
-    pingSendFrequency = cyclicSendFrequency;
-    radioSendEvent.setFrequency(cyclicSendFrequency);
-#endif
+    //the USB remote [D-159]: listens on the USB all the time, sends its controls there only in USB mode
+    usbMavlink = new Mavlink();
+    usbMavlink->setSources(&usbProxy, nullptr, 0);
+    usbMavlink->b_sendControls = false;
+    usbMavlink->b_neverBlock = true;
 }
 
 
@@ -178,14 +175,14 @@ void RemoteBoard::update(){
     }
     if(temperatureReadingEvent.shouldTrigger()) radio.updateTemperature();
 
-#ifdef REMOTE_DIRECT
-    //as the receiver: the remote counts as disconnected 500 ms after its last frame
-    if(directProxy.b_connected && millis() - directProxy.lastReceiveTimeMillis > 500) directProxy.b_connected = false;
-    directMavlink->update();
-#endif
+    //the USB remote, as the receiver: the remote counts as disconnected 500 ms after its last frame
+    if(usbProxy.b_connected && millis() - usbProxy.lastReceiveTimeMillis > 500) usbProxy.b_connected = false;
+    usbMavlink->update();
+    updateLinkPath(millis());
 
     //the frame first, then the screen: drawing never delays the controls (H13)
     sendData();
+    arcade.saveDeferred();      //after the frame: an EEPROM write never delays it
     receiveData();
     link.update(millis());
 
@@ -209,22 +206,22 @@ void RemoteBoard::updateOperatorLogic(){
 
     //the games hold the sticks like the menu does, and afterwards both must be released first
     stickGuard.update(menu.isOpen() || arcade.isActive(), isLeftStickCentred(), isRightStickCentred());
+    //thank you only after the release prompt showed (a stick held at power on), not on every boot
+    if(!b_joystickZeroCaptured && stickGuard.releaseNeeded() != StickGuard::Release::NONE) b_releasePromptShown = true;
     if(stickGuard.wasReleased() && !b_joystickZeroCaptured){
         leftJoystick.captureZero();
         rightJoystick.captureZero();
         b_joystickZeroCaptured = true;
         zeroCaptureMillis = now;
-        thankYouUntilMillis = now + 1000;
+        if(b_releasePromptShown) thankYouUntilMillis = now + 1000;
     }
 
     //pushbuttons: pages, no command [D-147 point 1]
     bool b_previous = leftPushbutton.wasPushed();
     bool b_next = rightPushbutton.wasPushed();
-#ifdef REMOTE_DIRECT
     bool b_chord = leftPushbutton.isPressed() && rightPushbutton.isPressed();
-    if(b_chord && !b_dropoutChordHeld) b_simulatedDropout = !b_simulatedDropout;
+    if(b_chord && !b_dropoutChordHeld && linkPath.isUsb() && !arcade.isActive()) b_simulatedDropout = !b_simulatedDropout;
     b_dropoutChordHeld = b_chord;
-#endif
     if(b_safeMode){
         b_previous = false;
         b_next = false;
@@ -254,14 +251,18 @@ void RemoteBoard::updateOperatorLogic(){
         soundPlayer.play(RemoteSounds::pageCue(uint8_t(pages.getPage())));
     }
 
-    //enable and disable: a tick on the press, a buzz when enable cannot work now; what the vehicle does follows as a
-    //status sound (refreshGui)
+    //enable and disable: a tick on the press, the refused "no-no" when the button cannot work now; what the vehicle
+    //does follows as a status sound (refreshGui)
     bool b_enable = rightLedButton.isPressed();
     bool b_disable = leftLedButton.isPressed();
+    //the games never enable a vehicle (sendData holds enable back while they run [D-157])
     if(b_enable && !b_enableHeld){
-        playSound(RemoteSounds::refusesEnable(status.message) ? RemoteSounds::Sound::REFUSED : RemoteSounds::Sound::PRESS);
+        bool b_refused = RemoteSounds::refusesEnable(status.message) || arcade.isActive();
+        playSound(b_refused ? RemoteSounds::Sound::REFUSED : RemoteSounds::Sound::PRESS);
     }
-    if(b_disable && !b_disableHeld) playSound(RemoteSounds::Sound::PRESS);
+    if(b_disable && !b_disableHeld){
+        playSound(RemoteSounds::refusesDisable(status.message) ? RemoteSounds::Sound::REFUSED : RemoteSounds::Sound::PRESS);
+    }
     b_enableHeld = b_enable;
     b_disableHeld = b_disable;
 
@@ -281,14 +282,17 @@ void RemoteBoard::updateOperatorLogic(){
     }
     b_previousDirection = b_direction;
 
+    updateStopwatch(now);
+
     //a stick out of centre while the speed switch is at OFF does nothing: a grind for as long as it is out. Not where
-    //the sticks have a job (menu, Settings page, calibration, the games) or before they are zeroed
+    //the sticks have a job (menu, Settings page, calibration, the games, the stopwatch's edit hold) or before they are
+    //zeroed
     float deflection = 0.0f;
     for(float v : {leftJoystick.getXValue(), leftJoystick.getYValue(), rightJoystick.getXValue(), rightJoystick.getYValue()}){
         if(fabsf(v) > deflection) deflection = fabsf(v);
     }
     bool b_sticksHaveAJob = menu.isOpen() || b_calibrating || b_calibrationResult || pages.getPage() == Page::SETTINGS ||
-                            arcade.isActive() || b_arcadeLoading || !b_joystickZeroCaptured;
+                            arcade.isActive() || b_arcadeLoading || !b_joystickZeroCaptured || stopwatch.sticksBusy();
     b_sticksOffWarning = deflection > 0.15f && isSpeedSwitchOff() && !b_sticksHaveAJob;
     bool b_grind = b_sticksOffWarning && RemoteSounds::isAllowed(RemoteSounds::Sound::CLICK, settings.sound);
     if(b_grind && now - grindMillis >= RemoteSounds::grindPeriodMillis){
@@ -309,6 +313,37 @@ void RemoteBoard::updateOperatorLogic(){
     if(menu.isOpen() && pages.getPage() != Page::SETTINGS) closeMenu();
 }
 
+//the stopwatch [D-160]: its controls only on the Status page showing a state (no alarm, no sticks to release), not in
+//the menu, the calibration or the games, and not before the sticks are zeroed. It keeps running everywhere else and
+//its time-up sounds wherever the remote is. Nothing of it is sent: the stick buttons go out as before
+void RemoteBoard::updateStopwatch(uint32_t now){
+    StopwatchControl::Inputs in;
+    in.b_active = pages.getPage() == Page::STATUS && !menu.isOpen() && !arcade.isActive() && !b_arcadeLoading
+               && !b_calibrating && !b_calibrationResult && b_joystickZeroCaptured
+               && !Status::isAlarm(status.message) && stickGuard.releaseNeeded() == StickGuard::Release::NONE;
+    in.b_leftHeld = leftJoystick.isPressed();
+    in.b_rightHeld = rightJoystick.isPressed();
+    in.b_speedOff = isSpeedSwitchOff();
+    in.rightX = rightJoystick.getXValue();
+    in.rightY = rightJoystick.getYValue();
+    in.now = now;
+    uint16_t events = stopwatch.update(in);
+    if(events != StopwatchControl::NONE) b_inputActivity = true;
+    using S = RemoteSounds::Sound;
+    if(events & StopwatchControl::STARTED) playSound(S::TIMER_START);
+    if(events & StopwatchControl::STOPPED) playSound(S::TIMER_STOP);
+    //at OFF the reset press opens edit mode at once: its own tick instead
+    if(events & StopwatchControl::EDIT_ENTERED) playSound(S::TIMER_EDIT);
+    else if(events & StopwatchControl::RESET) playSound(S::TIMER_RESET);
+    if(events & StopwatchControl::EDIT_LEFT) playSound(S::TIMER_EDIT_DONE);
+    if(events & StopwatchControl::SET_CHANGED) playSound(S::VALUE);
+    if(events & (StopwatchControl::SET_LIMIT | StopwatchControl::SET_CLEARED)) playSound(S::BUMP);
+    //time up: alarm priority, but it never cuts a status alarm that is sounding (the screen blinks anyway)
+    if((events & StopwatchControl::TIME_UP) && soundPlayer.playingPriority(SoundLayer::FRONT) < SoundPriority::ALARM){
+        playSound(S::TIME_UP);
+    }
+}
+
 //the games [D-157]: in with both stick buttons held 2 s on the About page with the speed switch at OFF (sticks
 //zeroed; the own E-stop may be pressed, the safest state there is); out with the same gesture, after 2 minutes
 //without input, when the speed switch leaves OFF, the own E-stop is pressed or released (released: back on Status,
@@ -327,17 +362,28 @@ void RemoteBoard::updateArcade(bool& b_previous, bool& b_next, uint32_t now){
         //the loading tune while both are held, stopped if they are let go early; a jingle as the games open
         bool b_loading = arcade.gateProgress(now) > 0.0f;
         bool b_sound = RemoteSounds::gamesAllowed(settings.sound);
-        if(b_loading && !b_arcadeLoading && b_sound) soundPlayer.play(RemoteSounds::arcadeLoadingCue());
+        //the owner holds both sticks on purpose: the tune takes the front layer from whatever still sounds there (a
+        //status chime would otherwise refuse it, games priority being the lowest); an alarm that comes later still
+        //cuts in. The same for the jingle as the games open
+        if(b_loading && !b_arcadeLoading && b_sound){
+            soundPlayer.stop(SoundLayer::FRONT);
+            soundPlayer.play(RemoteSounds::arcadeLoadingCue());
+        }
         if(!b_loading && b_arcadeLoading && !b_entering && soundPlayer.playingPriority(SoundLayer::FRONT) == SoundPriority::GAME){
             soundPlayer.stop(SoundLayer::FRONT);
         }
         b_arcadeLoading = b_loading;
         if(b_entering){
-            if(b_sound) soundPlayer.play(RemoteSounds::arcadeStartCue());
+            if(b_sound){
+                soundPlayer.stop(SoundLayer::FRONT);
+                soundPlayer.play(RemoteSounds::arcadeStartCue());
+            }
             arcade.enter(now);
         }
         else return;
     }
+    //the games and the arcade sound into the player, unless the Sound setting is Off (the arcade's closing jingle too)
+    arcade.setSound(RemoteSounds::gamesAllowed(settings.sound) ? &soundPlayer : nullptr);
     if(!b_allowed || arcade.exitRequested() || b_estopChanged){
         leaveArcade();
         return;
@@ -349,7 +395,8 @@ void RemoteBoard::updateArcade(bool& b_previous, bool& b_next, uint32_t now){
     sticks.stick[3] = rightJoystick.getYValue();
     sticks.held[0] = leftJoystick.isPressed();
     sticks.held[1] = rightJoystick.isPressed();
-    arcade.update(sticks, b_previous, b_next, now);
+    //the pushbuttons held too: both held 3 s in the picker offer to clear the game's top 3
+    arcade.update(sticks, b_previous, b_next, now, leftPushbutton.isPressed(), rightPushbutton.isPressed());
     b_previous = false;
     b_next = false;
 }
@@ -429,11 +476,11 @@ bool RemoteBoard::updateMenu(uint32_t now){
 StatusView RemoteBoard::selectStatus(uint32_t now){
     StatusInputs in;
     in.estop = estop.getState();
-#ifndef REMOTE_DIRECT
-    //the direct build does not use the radio
-    in.b_radioFault = !radio.isInitialized();
-    in.radioFaultMillis = radio.getFaultMillis();
-#endif
+    //the USB remote does not use the radio
+    if(!linkPath.isUsb()){
+        in.b_radioFault = !radio.isInitialized();
+        in.radioFaultMillis = radio.getFaultMillis();
+    }
     in.b_linkUp = robotProxy.b_connected;
     in.battery = batteryMonitor.getState();
     in.release = stickGuard.releaseNeeded();
@@ -445,9 +492,7 @@ StatusView RemoteBoard::selectStatus(uint32_t now){
 
 void RemoteBoard::updateLeds(){
     LedInputs in;
-#ifndef REMOTE_DIRECT
-    in.b_radioFault = !radio.isInitialized();
-#endif
+    if(!linkPath.isUsb()) in.b_radioFault = !radio.isInitialized();
     in.b_localEstop = !estop.isClear();
     in.b_finder = robotProxy.b_connected && robotProxy.functionButtonPressed;
     in.b_linkUp = robotProxy.b_connected;
@@ -460,38 +505,69 @@ void RemoteBoard::updateLeds(){
 
 
 
-#ifdef REMOTE_DIRECT
+//[D-159] radio or USB: the switch itself is LinkPath's (lib/RemoteLogic). Either way the replies of the new path
+//take over the link state within one frame; nothing is reset, so a handover shows no NO LINK when both answer
+void RemoteBoard::updateLinkPath(uint32_t now){
+    bool b_wasUsb = linkPath.isUsb();
+    if(!linkPath.update(usbMavlink->b_online, robotProxy.b_connected, robotProxy.status, now)) return;
+    //either way, a button held through the handover is not a press: the new path sees enable and disable released
+    //until both are let go (radio to USB also syncs the MAVLink edges, usbExchange)
+    b_buttonsHeldThroughHandover = rightLedButton.isPressed() || leftLedButton.isPressed();
+    radio.setQuiet(linkPath.isUsb());
+    bool b_usb = linkPath.isUsb();
+    usbMavlink->b_sendControls = b_usb;
+    if(b_usb){
+        //no radio to spare: always send at the cyclic rate, so the proxy never times out between frames
+        pingSendFrequency = cyclicSendFrequency;
+        b_usbFirstFrame = true;
+    }
+    else if(b_wasUsb){
+        pingSendFrequency = 2.0;
+        b_simulatedDropout = false;
+        usbProxy.b_connected = false;       //Stacato gets zero sticks and no link bit, should it come back (D-44)
+    }
+    radioSendEvent.setFrequency(cyclicSendFrequency);
+}
+
 //The receiver's half of an exchange, done locally: decode the remote frame, and answer with the receiver's 8 byte
 //status frame while Stacato's heartbeat arrives (no Stacato: no answer, the remote shows no link)
-void RemoteBoard::directExchange(uint8_t* outgoingFrame){
+void RemoteBoard::usbExchange(uint8_t* outgoingFrame){
     if(b_simulatedDropout) return;
-    if(!decodeRemoteFrame(outgoingFrame, 8, directProxy)) return;
-    directProxy.lastReceiveTimeMillis = millis();
-    directProxy.b_connected = true;
+    if(!decodeRemoteFrame(outgoingFrame, 8, usbProxy)) return;
+    usbProxy.lastReceiveTimeMillis = millis();
+    usbProxy.b_connected = true;
+    if(b_usbFirstFrame){
+        usbMavlink->syncCommandEdges();
+        b_usbFirstFrame = false;
+    }
 
-    if(!directMavlink->b_online) return;
+    if(!usbMavlink->b_online) return;
     uint16_t statusword = 0x7;
-    statusword |= (uint8_t(directMavlink->stacatoState) & 0x7) << 3;
-    statusword |= (uint8_t(directProxy.speedSelection) & 0x3) << 6;
-    statusword |= (directProxy.txCounter & 0xF) << 12;
+    statusword |= (uint8_t(usbMavlink->stacatoState) & 0x7) << 3;
+    statusword |= (uint8_t(usbProxy.speedSelection) & 0x3) << 6;
+    statusword |= (usbProxy.txCounter & 0xF) << 12;
     uint8_t reply[8] = {0};
     reply[0] = statusword & 0xFF;
     reply[1] = (statusword >> 8) & 0xFF;
     reply[6] = 150;     //receiver RSSI: none
     handleReply(reply, 8);
 }
-#endif
 
 
 void RemoteBoard::sendData(){
     if(!radioSendEvent.shouldTrigger()) return;
-#ifndef REMOTE_DIRECT
-    if(!radio.isInitialized()) return;
-#endif
+    if(!linkPath.isUsb() && !radio.isInitialized()) return;
 
     UplinkControls controls;
     controls.b_disable = leftLedButton.isPressed();
     controls.b_enable = rightLedButton.isPressed();
+    if(b_buttonsHeldThroughHandover){
+        if(!controls.b_enable && !controls.b_disable) b_buttonsHeldThroughHandover = false;
+        controls.b_enable = false;
+        controls.b_disable = false;
+    }
+    //the games never enable a vehicle; disable always works [D-157]
+    if(arcade.isActive()) controls.b_enable = false;
     controls.speedState = speedToggle.getState();
     controls.b_direction = directionToggle.getSwitchState();
     controls.b_leftStickPressed = leftJoystick.isPressed();
@@ -500,7 +576,7 @@ void RemoteBoard::sendData(){
     controls.leftY = leftJoystick.getYValue();
     controls.rightX = rightJoystick.getXValue();
     controls.rightY = rightJoystick.getYValue();
-    //the guard catches up with the menu on the next loop: the menu itself counts too, and the games [D-148], which
+    //the guard catches up with the menu on the next loop: the menu itself counts too, and the games [D-157], which
     //send neither the sticks nor their buttons
     bool b_neutralSticks = stickGuard.holdNeutral() || menu.isOpen() || arcade.isActive()
                         || millis() - zeroCaptureMillis < zeroSettleMillis;
@@ -515,22 +591,21 @@ void RemoteBoard::sendData(){
     Uplink::encode(controls, b_neutralSticks, robotProxy.txCounter, safetyNumber, outgoingFrame);
     link.onSent();
 
-#ifdef REMOTE_DIRECT
-    robotProxy.lastSendTimeMicros = micros();
-    directExchange(outgoingFrame);
-#else
-    radio.send(outgoingFrame, 8);
-    robotProxy.lastSendTimeMicros = micros();
-#endif
+    if(linkPath.isUsb()){
+        robotProxy.lastSendTimeMicros = micros();
+        usbExchange(outgoingFrame);
+    }
+    else{
+        radio.send(outgoingFrame, 8);
+        robotProxy.lastSendTimeMicros = micros();
+    }
 }
 
 void RemoteBoard::receiveData(){
-#ifndef REMOTE_DIRECT
-    //radio listen
+    //radio listen; the USB remote ignores what it hears (another remote's receiver on the channel)
     uint8_t incomingFrame[128];
     uint8_t length = 128;
-    if(radio.receive(incomingFrame, &length)) handleReply(incomingFrame, length);
-#endif
+    if(radio.receive(incomingFrame, &length) && !linkPath.isUsb()) handleReply(incomingFrame, length);
 
     if(millis() - robotProxy.lastReceiveTime > 500) {
         robotProxy.b_connected = false;

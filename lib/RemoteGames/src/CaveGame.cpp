@@ -1,4 +1,4 @@
-//CAVE: the helicopter in the cave [D-148]. A stick pushed up climbs in proportion, a stick button is full thrust,
+//CAVE: the helicopter in the cave [D-157]. A stick pushed up climbs in proportion, a stick button is full thrust,
 //gravity pulls down. The craft hovers in a ready phase until the first input, so a new game never starts in a fall.
 //The cave is generated column by column a little ahead of the screen; the distance flown is the score.
 #include "CaveGame.h"
@@ -32,7 +32,40 @@ namespace{
     float clampf(float v, float lowest, float highest){ return v < lowest ? lowest : (v > highest ? highest : v); }
     //the cave scrolls faster the further in: px/s after this many px (one px is one column)
     float scrollSpeedAfter(float px){ return clampf(30.0f + px * 0.011f, 0.0f, 85.0f); }
+
+    //sound [D-157]: the rotor chops 9 times a second with no thrust, 25 at full (the hover, about 0.4: 15), a short
+    //dull noise tick each, louder with more thrust
+    const float rotorIdleRate = 9.0f;
+    const float rotorFullRate = 25.0f;
+    const uint16_t rotorChopMillis = 12;
+    //the thrust that holds the craft (the ready phase's hover)
+    const float hoverThrust = CaveGame::gravity / CaveGame::thrust;
 };
+
+CaveGame::CaveGame(){
+    using namespace SoundKit;
+    //every 100 m: a bright ping with its octave above, ringing out (A6, A7 qualified: Arduino names analog pins so)
+    pingNotes.synth(0, hertz(SoundKit::A6), 220, 90, 80, Synth::Wave::SQUARE, 0);
+    pingNotes.synth(0, hertz(SoundKit::A7), 140, 60, 45, Synth::Wave::PULSE25, 1);
+    pingCue = pingNotes.cue();
+    //the crash: a long burst of noise, a whistle falling under it
+    crashNotes.burst(0, 2600, 420, 100, 150, 0);
+    crashNotes.sweep(0, 2400, 260, 600, 20, Synth::Wave::SQUARE, 85, 1, 120);
+    crashCue = crashNotes.cue();
+}
+
+float CaveGame::rotorRate(float thrust){
+    return rotorIdleRate + (rotorFullRate - rotorIdleRate) * clampf(thrust, 0.0f, 1.0f);
+}
+
+void CaveGame::playRotor(float push){
+    rotorPhase += rotorRate(push) * tickSeconds;
+    if(rotorPhase < 1.0f) return;
+    rotorPhase -= float(int(rotorPhase));
+    //a dull thump of noise, its brightness a little different each time
+    uint16_t brightness = uint16_t(900 + rotorGrain.random.between(0, 700));
+    rotorGrain.play(sound(), SoundKit::noiseBurst(0, brightness, rotorChopMillis, uint8_t(55.0f + 30.0f * push), 6));
+}
 
 void CaveGame::reset(uint32_t seed){
     random.seed(seed);
@@ -58,6 +91,8 @@ void CaveGame::reset(uint32_t seed){
     crashTicks = 0;
     demoQueue = 0;
     demoAimError = 0.0f;
+    rotorPhase = 0.0f;
+    pingsPlayed = 0;
     generateUpTo(ringSize - 8);
 }
 
@@ -219,6 +254,7 @@ void CaveGame::crash(){
     crashTicks = 0;
     crashX = float(craftX) + 4.0f;
     crashY = craftY + 2.0f;
+    sound().play(crashCue);
     for(uint8_t i = 0; i < debrisCount; i++){
         Debris& d = debris[i];
         d.x = crashX + (random.unit() * 2.0f - 1.0f) * 3.0f;
@@ -257,6 +293,7 @@ void CaveGame::update(const GameInput& input){
         bool b_go = input.clicked[0] || input.clicked[1] || input.held[0] || input.held[1] || up > startStickUp;
         if(!b_go && frameTicks < readyTicks){
             craftY = startY + sinf(2.0f * 3.14159265f * bobHz * float(frameTicks) * tickSeconds);
+            playRotor(hoverThrust);
             return;
         }
         b_ready = false;
@@ -276,7 +313,17 @@ void CaveGame::update(const GameInput& input){
     craftSpeedY = clampf(craftSpeedY, -maxClimbSpeed, maxFallSpeed);
     craftY += craftSpeedY * tickSeconds;
 
-    if(hitsSomething()) crash();
+    if(hitsSomething()){
+        crash();
+        return;
+    }
+    //every 100 m a ping (it takes the tick: the rotor skips while it rings)
+    uint32_t pings = score() / pingMetres;
+    if(pings > pingsPlayed){
+        pingsPlayed = pings;
+        sound().play(pingCue);
+    }
+    playRotor(push);
 }
 
 void CaveGame::draw(Adafruit_GFX& out) const {

@@ -12,7 +12,7 @@
 class Mavlink{
     public:
 
-    //the remote's controls, and the pack read by the board (nullptr: no BATTERY_STATUS, the remote in env:remote_direct)
+    //the remote's controls, and the pack read by the board (nullptr: no BATTERY_STATUS, the USB remote [D-159])
     void setSources(RemoteProxy* remoteProxy, BatteryLevel* batteryReading, uint8_t cellCount){
         proxy = remoteProxy;
         battery = batteryReading;
@@ -41,13 +41,34 @@ class Mavlink{
     FrequencyTimer timer_BATTERY_STATUS = FrequencyTimer(1.0);
 
     bool b_online = false;
+    //the USB remote [D-159]: false sends only the heartbeat (Stacato finds the port, the remote finds Stacato), no
+    //controls, commands or battery; the receiver leaves it true
+    bool b_sendControls = true;
+    //the USB remote: a message that does not fit the USB buffer is dropped instead of waiting for the host (a port
+    //held open without reading must never stall the remote's loop); the receiver leaves it false
+    bool b_neverBlock = false;
+
+    //the buttons as last seen: a command goes out on a press, never on a button already held
+    bool b_previousEnable = false;
+    bool b_previousDisable = false;
+    bool b_previousLeft = false;
+    bool b_previousRight = false;
+    //the USB remote, its first frame after USB took over: a button held through the handover is not a press
+    void syncCommandEdges(){
+        b_previousEnable = proxy->b_shouldEnable;
+        b_previousDisable = proxy->b_shouldDisable;
+        b_previousLeft = proxy->b_leftButton;
+        b_previousRight = proxy->b_rightButton;
+    }
     LengthTimer heartbeatTimeout = LengthTimer(0.5);
 
     uint8_t outBuffer[MAVLINK_MAX_PACKET_LEN];
 
     void sendMessage(const mavlink_message_t& msg){
         uint16_t bufferSize = mavlink_msg_to_send_buffer(outBuffer, &msg);
-        if(Serial) Serial.write(outBuffer, bufferSize);
+        if(!Serial) return;
+        if(b_neverBlock && Serial.availableForWrite() < bufferSize) return;
+        Serial.write(outBuffer, bufferSize);
     }
 
     void update(){
@@ -61,14 +82,13 @@ class Mavlink{
         }
 
         if(timer_HEARTBEAT.shouldTrigger()) sendMsg_Heartbeat();
+        if(b_online && heartbeatTimeout.hasExpired()) onDisconnection();
+        if(!b_sendControls) return;
         //if(timer_POSITION_TARGET_LOCAL_NED.shouldTrigger()) sendMsg_POSITION_TARGET_LOCAL_NED();
         if(timer_MANUAL_CONTROLS.shouldTrigger()) sendMsg_MANUAL_CONTROLS();
         if(timer_BATTERY_STATUS.shouldTrigger()) sendMsg_BATTERY_STATUS();
 
-        if(b_online && heartbeatTimeout.hasExpired()) onDisconnection();
-
         //ENABLE COMMAND
-        static bool b_previousEnable = false;
         bool b_enable = proxy->b_shouldEnable;
         if(b_enable && !b_previousEnable){
             sendCmd(MAV_CMD_COMPONENT_ARM_DISARM, 1.0);
@@ -76,7 +96,6 @@ class Mavlink{
         b_previousEnable = b_enable;
 
         //DISABLE COMMAND
-        static bool b_previousDisable = false;
         bool b_disable = proxy->b_shouldDisable;
         if(b_disable && !b_previousDisable){
             sendCmd(MAV_CMD_COMPONENT_ARM_DISARM, 0.0);
@@ -84,7 +103,6 @@ class Mavlink{
         b_previousDisable = b_disable;
 
         //FLIGHT TERMINATION
-        static bool b_previousLeft = false;
         bool b_left = proxy->b_leftButton;
         if(b_left && !b_previousLeft){
             sendCmd(MAV_CMD_DO_FLIGHTTERMINATION, 1.0);
@@ -92,7 +110,6 @@ class Mavlink{
         b_previousLeft = b_left;
 
         //REBOOT
-        static bool b_previousRight = false;
         bool b_right = proxy->b_rightButton;
         if(b_right && !b_previousRight){
             sendCmd(MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN, 0.0, REBOOT_SHUTDOWN_ACTION_REBOOT);

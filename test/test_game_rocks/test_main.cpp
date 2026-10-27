@@ -1,8 +1,9 @@
-//Host tests of the ROCKS game [D-148]: pio test -e native -f test_game_rocks
+//Host tests of the ROCKS game [D-157]: pio test -e native -f test_game_rocks
 #include <unity.h>
 #include <HostGfx.h>
 #include <GameContract.h>
 #include <RocksGame.h>
+#include <RecordingSink.h>
 
 void setUp(){}
 void tearDown(){}
@@ -392,6 +393,250 @@ void test_demo_reaches_the_boss_in_some_games(){
     TEST_ASSERT_TRUE(reached >= 3);
 }
 
+//the sounds [D-157]: a falling zap for a shot; a noise burst for a rock, duller for a bigger one
+void test_sound_shot_zap_and_bursts_by_size(){
+    uint16_t brightness[RocksGame::sizeCount] = {0, 0, 0};
+    for(uint8_t size = 0; size < RocksGame::sizeCount; size++){
+        RocksGame game;
+        RecordingSink sink;
+        game.setSound(&sink);
+        game.reset(1);
+        game.placeSingleRockForTest(game.getShipX() + 20, game.getShipY(), 0, 0, size);
+        game.update(sticks(0, 0, 1, 0));
+        TEST_ASSERT_EQUAL_UINT8(RocksGame::FX_SHOT, game.getLastSound());
+        const RecordingSink::Play* p = sink.last(SoundLayer::FRONT);
+        TEST_ASSERT_FALSE(p->b_note);
+        //synth notes (a timer square would cut the pulse), falling
+        TEST_ASSERT_TRUE(p->cue.notes[0].kind == SoundNote::Kind::SYNTH);
+        TEST_ASSERT_TRUE(p->cue.notes[p->cue.noteCount - 1].hertz < p->cue.notes[0].hertz);
+        TEST_ASSERT_TRUE(p->cue.lengthMillis() < 100);
+        for(int t = 0; t < 10 && game.score() == 0; t++) game.update(sticks(0, 0, 0.3f, 0));
+        TEST_ASSERT_TRUE(game.score() > 0);
+        TEST_ASSERT_EQUAL_UINT8(RocksGame::FX_BURST, game.getLastSound());
+        p = sink.last(SoundLayer::FRONT);
+        TEST_ASSERT_TRUE(p->cue.notes[0].wave == Synth::Wave::NOISE);
+        for(uint16_t i = 0; i < p->cue.noteCount; i++) TEST_ASSERT_TRUE(p->cue.notes[i].kind == SoundNote::Kind::SYNTH);
+        brightness[size] = p->cue.notes[0].hertz;
+        TEST_ASSERT_EQUAL_UINT32(0, sink.count(SoundLayer::BACK));
+    }
+    TEST_ASSERT_TRUE(brightness[0] < brightness[1]);
+    TEST_ASSERT_TRUE(brightness[1] < brightness[2]);
+}
+
+//much happens at once: a sound never cuts a more important one still playing (ship lost over bursts over shots)
+void test_sound_ranks_keep_the_important_one(){
+    RocksGame game;
+    RecordingSink sink;
+    game.setSound(&sink);
+    game.reset(1);
+    //from here the front layer always reports a sound playing
+    sink.setPlaying(SoundLayer::FRONT, true);
+    game.placeSingleRockForTest(game.getShipX() + 15, game.getShipY(), 0, 0, 2);
+    for(int t = 0; t < 10 && game.score() == 0; t++) game.update(sticks(0, 0, 1, 0));
+    TEST_ASSERT_EQUAL_UINT8(RocksGame::FX_BURST, game.getLastSound());
+    //more shots do not cut the burst
+    game.placeSingleRockForTest(5, 5, 0, 0, 2);
+    uint32_t plays = sink.count(SoundLayer::FRONT);
+    for(int t = 0; t < 30; t++) game.update(sticks(0, 0, 1, 0));
+    TEST_ASSERT_EQUAL_UINT32(plays, sink.count(SoundLayer::FRONT));
+    TEST_ASSERT_EQUAL_UINT8(RocksGame::FX_BURST, game.getLastSound());
+    //the ship lost cuts it: a long falling noise
+    game.placeSingleRockForTest(game.getShipX(), game.getShipY(), 0, 0, 0);
+    game.update(GameInput());
+    TEST_ASSERT_FALSE(game.isShipAlive());
+    TEST_ASSERT_EQUAL_UINT8(RocksGame::FX_SHIP_LOST, game.getLastSound());
+    const RecordingSink::Play* p = sink.last(SoundLayer::FRONT);
+    TEST_ASSERT_TRUE(p->cue.notes[0].wave == Synth::Wave::NOISE);
+    TEST_ASSERT_TRUE(p->cue.lengthMillis() >= 900);
+    uint16_t first = p->cue.notes[0].hertz, lastNoise = 0;
+    for(uint16_t i = 0; i < p->cue.noteCount; i++) if(p->cue.notes[i].wave == Synth::Wave::NOISE) lastNoise = p->cue.notes[i].hertz;
+    TEST_ASSERT_TRUE(lastNoise < first / 4);
+    //and nothing cuts the ship lost, not even a power-up (taken by the ship once back)
+    plays = sink.count(SoundLayer::FRONT);
+    game.placeSingleRockForTest(5, 5, 0, 0, 2);
+    for(int t = 0; t < 80; t++) game.update(GameInput());
+    TEST_ASSERT_TRUE(game.isShipAlive());
+    game.placePickupForTest(RocksGame::POWER_RAPID, game.getShipX(), game.getShipY());
+    game.update(GameInput());
+    TEST_ASSERT_EQUAL_UINT8(RocksGame::POWER_RAPID, game.getWeapon());
+    TEST_ASSERT_EQUAL_UINT32(plays, sink.count(SoundLayer::FRONT));
+    //once the front is quiet, anything plays again
+    sink.setPlaying(SoundLayer::FRONT, false);
+    for(int t = 0; t < 3; t++) game.update(sticks(0, 0, -1, 0));
+    TEST_ASSERT_EQUAL_UINT8(RocksGame::FX_SHOT, game.getLastSound());
+}
+
+//a saucer on the screen warbles, a mine ticks, faster the closer it is: grains, skipped while anything else plays
+void test_sound_saucer_warble_and_mine_ticks(){
+    RocksGame game;
+    RecordingSink sink;
+    game.setSound(&sink);
+    game.reset(1);
+    game.placeSingleRockForTest(5, 5, 0, 0, 2);
+    game.placeEnemyForTest(RocksGame::SAUCER, 110, 8, 0, 0);
+    uint16_t lowest = 60000, highest = 0;
+    for(int t = 0; t < 40; t++){
+        game.update(GameInput());
+        const RecordingSink::Play* p = sink.last(SoundLayer::FRONT);
+        if(!p) continue;
+        TEST_ASSERT_TRUE(p->b_note);
+        TEST_ASSERT_TRUE(p->note.millis < 40);
+        if(p->note.hertz < lowest) lowest = p->note.hertz;
+        if(p->note.hertz > highest) highest = p->note.hertz;
+    }
+    TEST_ASSERT_EQUAL_UINT8(RocksGame::FX_WARBLE, game.getLastSound());
+    TEST_ASSERT_EQUAL_UINT32(20, sink.noteCount(SoundLayer::FRONT));
+    TEST_ASSERT_TRUE(highest - lowest > 300);
+    sink.setPlaying(SoundLayer::FRONT, true);
+    uint32_t plays = sink.count(SoundLayer::FRONT);
+    for(int t = 0; t < 20; t++) game.update(GameInput());
+    TEST_ASSERT_EQUAL_UINT32(plays, sink.count(SoundLayer::FRONT));
+
+    int ticks[2] = {0, 0};
+    for(int near = 0; near < 2; near++){
+        RocksGame g;
+        RecordingSink s;
+        g.setSound(&s);
+        g.reset(1);
+        g.placeSingleRockForTest(5, 5, 0, 0, 2);
+        g.placeEnemyForTest(RocksGame::MINE, g.getShipX() + (near ? 14.0f : 55.0f), g.getShipY(), 0, 0);
+        for(int t = 0; t < 40; t++) g.update(GameInput());
+        TEST_ASSERT_TRUE(g.isShipAlive());
+        TEST_ASSERT_EQUAL_UINT8(RocksGame::FX_MINE_TICK, g.getLastSound());
+        ticks[near] = int(s.noteCount(SoundLayer::FRONT));
+    }
+    TEST_ASSERT_TRUE(ticks[0] >= 2);
+    TEST_ASSERT_TRUE(ticks[1] > ticks[0] + 2);
+}
+
+//a power-up: a rising arpeggio; a cleared wave: a jingle once the last burst is over; a boss: its intro
+void test_sound_power_up_wave_clear_and_boss_intro(){
+    RocksGame game;
+    RecordingSink sink;
+    game.setSound(&sink);
+    game.reset(1);
+    game.placeSingleRockForTest(5, 5, 0, 0, 2);
+    game.placePickupForTest(RocksGame::POWER_SPREAD, game.getShipX(), game.getShipY());
+    game.update(GameInput());
+    TEST_ASSERT_EQUAL_UINT8(RocksGame::FX_POWER_UP, game.getLastSound());
+    const RecordingSink::Play* p = sink.last(SoundLayer::FRONT);
+    for(uint16_t i = 1; i < p->cue.noteCount; i++) TEST_ASSERT_TRUE(p->cue.notes[i].hertz > p->cue.notes[i - 1].hertz);
+
+    //the last rock: its burst, the jingle waits while the burst plays, then comes
+    game.placeSingleRockForTest(game.getShipX() + 15, game.getShipY(), 0, 0, 2);
+    for(int t = 0; t < 10 && game.getRockCount() > 0; t++) game.update(sticks(0, 0, 1, 0));
+    TEST_ASSERT_EQUAL_UINT8(0, game.getRockCount());
+    sink.setPlaying(SoundLayer::FRONT, true);
+    for(int t = 0; t < 10; t++) game.update(GameInput());
+    TEST_ASSERT_EQUAL_UINT8(RocksGame::FX_BURST, game.getLastSound());
+    sink.setPlaying(SoundLayer::FRONT, false);
+    game.update(GameInput());
+    TEST_ASSERT_EQUAL_UINT8(RocksGame::FX_WAVE_CLEAR, game.getLastSound());
+    TEST_ASSERT_EQUAL_UINT8(1, game.getWave());
+
+    game.startWaveForTest(5);
+    game.update(GameInput());
+    TEST_ASSERT_EQUAL_UINT8(RocksGame::FX_BOSS_INTRO, game.getLastSound());
+    p = sink.last(SoundLayer::FRONT);
+    TEST_ASSERT_TRUE(p->cue.lengthMillis() < 1000);
+}
+
+//the music: the pulse starts in playMusic, looping on the back layer; it speeds up as the wave's rocks thin out
+void test_sound_pulse_speeds_up_as_rocks_thin_out(){
+    RocksGame game;
+    RecordingSink sink;
+    game.setSound(&sink);
+    game.reset(1);
+    game.playMusic();
+    TEST_ASSERT_EQUAL_UINT32(1, sink.cueCount(SoundLayer::BACK));
+    const RecordingSink::Play* p = sink.last(SoundLayer::BACK);
+    TEST_ASSERT_EQUAL_UINT16(2, p->cue.noteCount);
+    TEST_ASSERT_TRUE(p->cue.loopMillis > 0);
+    TEST_ASSERT_TRUE(p->cue.notes[0].hertz != p->cue.notes[1].hertz);
+    //low (ominous) but within the disc's reach: F4 and E4 on the narrowest pulse at full level
+    TEST_ASSERT_TRUE(p->cue.notes[0].hertz > 300 && p->cue.notes[1].hertz > 300);
+    TEST_ASSERT_TRUE(p->cue.notes[0].hertz < 400 && p->cue.notes[1].hertz < 400);
+    TEST_ASSERT_TRUE(p->cue.notes[0].wave == Synth::Wave::PULSE12 && p->cue.notes[0].levelPercent == 100);
+    TEST_ASSERT_TRUE(p->cue.notes[0].kind == SoundNote::Kind::SYNTH);
+    TEST_ASSERT_EQUAL_UINT16(RocksGame::pulseSlowest, sink.getTempo(SoundLayer::BACK));
+
+    //one of the three large rocks broken: a little faster
+    game.placeSingleRockForTest(5, 5, 0, 0, 0);
+    game.update(GameInput());
+    uint16_t oneLarge = sink.getTempo(SoundLayer::BACK);
+    TEST_ASSERT_TRUE(oneLarge > RocksGame::pulseSlowest);
+    //one pebble left: near the fastest
+    game.placeSingleRockForTest(5, 5, 0, 0, 2);
+    game.update(GameInput());
+    uint16_t onePebble = sink.getTempo(SoundLayer::BACK);
+    TEST_ASSERT_TRUE(onePebble > oneLarge);
+    TEST_ASSERT_TRUE(onePebble >= RocksGame::pulseFastest - 20 && onePebble <= RocksGame::pulseFastest);
+    //playMusic again (a resume) keeps the tempo of the moment; a new wave starts slow again
+    game.playMusic();
+    TEST_ASSERT_EQUAL_UINT16(onePebble, sink.getTempo(SoundLayer::BACK));
+    game.startWaveForTest(2);
+    game.update(GameInput());
+    TEST_ASSERT_EQUAL_UINT16(RocksGame::pulseSlowest, sink.getTempo(SoundLayer::BACK));
+    //only the music touches the back layer
+    TEST_ASSERT_EQUAL_UINT32(2, sink.count(SoundLayer::BACK));
+}
+
+//the boss fight: intro, clanks on its parts, bursts when one goes, a big blast when it is beaten, then the jingle;
+//the pulse speeds up as it is worn down
+void test_sound_boss_fight(){
+    RocksGame game;
+    RecordingSink sink;
+    game.setSound(&sink);
+    game.reset(2);
+    game.startWaveForTest(5);
+    game.playMusic();
+    uint16_t startTempo = sink.getTempo(SoundLayer::BACK);
+    game.update(GameInput());
+    uint32_t seen = 1u << game.getLastSound();
+    uint16_t fastest = 0;
+    for(int t = 0; t < 50 * 120 && !game.isOver() && game.getWave() == 5; t++){
+        uint8_t part = 0;
+        while(part < 3 && game.getBossPartHealth(part) == 0) part++;
+        if(game.isBossActive()) pilot(game, part, true);
+        else game.update(GameInput());
+        seen |= 1u << game.getLastSound();
+        if(game.isBossActive() && sink.getTempo(SoundLayer::BACK) > fastest) fastest = sink.getTempo(SoundLayer::BACK);
+    }
+    TEST_ASSERT_EQUAL_UINT8(1, game.getBossesBeaten());
+    TEST_ASSERT_TRUE(seen & (1u << RocksGame::FX_BOSS_INTRO));
+    TEST_ASSERT_TRUE(seen & (1u << RocksGame::FX_BOSS_HIT));
+    TEST_ASSERT_TRUE(seen & (1u << RocksGame::FX_BURST));
+    TEST_ASSERT_TRUE(seen & (1u << RocksGame::FX_BOSS_DOWN));
+    TEST_ASSERT_TRUE(seen & (1u << RocksGame::FX_WAVE_CLEAR));
+    TEST_ASSERT_EQUAL_UINT16(RocksGame::pulseSlowest, startTempo);
+    TEST_ASSERT_TRUE(fastest > startTempo + 100);
+}
+
+//sound never changes the game: the demo plays the same with a sink as without one (silent, the picker's demo)
+void test_demo_same_with_and_without_sound(){
+    RocksGame silent, heard;
+    RecordingSink sink;
+    heard.setSound(&sink);
+    silent.reset(31);
+    heard.reset(31);
+    heard.playMusic();
+    for(int t = 0; t < 50 * 120 && !silent.isOver(); t++){
+        GameInput a, b;
+        silent.demo(a);
+        heard.demo(b);
+        silent.update(a);
+        heard.update(b);
+        TEST_ASSERT_EQUAL_FLOAT(silent.getShipX(), heard.getShipX());
+        TEST_ASSERT_EQUAL_FLOAT(silent.getShipY(), heard.getShipY());
+        TEST_ASSERT_EQUAL_UINT8(silent.getRockCount(), heard.getRockCount());
+        TEST_ASSERT_EQUAL_UINT32(silent.score(), heard.score());
+    }
+    TEST_ASSERT_EQUAL_UINT8(silent.getLives(), heard.getLives());
+    TEST_ASSERT_TRUE(heard.isOver() == silent.isOver());
+    TEST_ASSERT_TRUE(sink.count(SoundLayer::FRONT) > 100);
+    TEST_ASSERT_EQUAL_UINT8(RocksGame::FX_NONE, silent.getLastSound());
+}
+
 int main(){
     UNITY_BEGIN();
     RUN_TEST(test_contract);
@@ -410,5 +655,12 @@ int main(){
     RUN_TEST(test_boss_every_fifth_wave_parts_first_then_a_bonus);
     RUN_TEST(test_bare_core_is_hurt_only_while_open);
     RUN_TEST(test_demo_reaches_the_boss_in_some_games);
+    RUN_TEST(test_sound_shot_zap_and_bursts_by_size);
+    RUN_TEST(test_sound_ranks_keep_the_important_one);
+    RUN_TEST(test_sound_saucer_warble_and_mine_ticks);
+    RUN_TEST(test_sound_power_up_wave_clear_and_boss_intro);
+    RUN_TEST(test_sound_pulse_speeds_up_as_rocks_thin_out);
+    RUN_TEST(test_sound_boss_fight);
+    RUN_TEST(test_demo_same_with_and_without_sound);
     return UNITY_END();
 }

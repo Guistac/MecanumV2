@@ -7,15 +7,18 @@
 #include <StickCalibration.h>
 #include <BootGuard.h>
 #include <RobotStates.h>
+#include <Stopwatch.h>
 
 //Everything the remote's screens show, filled by RemoteBoard once per frame. The drawing below only reads it, so the
 //same code draws on the OLED and, on the Mac, into a canvas saved as a picture (tools/screens)
 struct ScreenModel{
     uint32_t now = 0;
-    uint8_t frame = 0;                  //counts the frames drawn: the alive spinner in the active page dot
+    uint8_t frame = 0;                  //counts the frames drawn: the alive sign's travelling gap
 
     //link
-    bool b_direct = false;              //env:remote_direct: USB instead of a channel
+    bool b_direct = false;              //the USB remote [D-159]: USB instead of a channel
+    bool b_usbWaiting = false;          //Stacato is on the USB, a vehicle still enabled over the radio: CH and USB
+                                        //alternate until it is disabled
     bool b_dropout = false;
     uint8_t channel = 0;
     bool b_linkUp = false;
@@ -45,6 +48,7 @@ struct ScreenModel{
     uint8_t speedState = 0;
     bool b_sticksOffWarning = false;    //a stick pushed while the speed switch is at OFF (the grind sounds)
     bool b_worldFrame = false;
+    StopwatchView stopwatch;            //the rehearsal stopwatch, bottom centre of the Status page [D-160]
 
     //pages
     Page page = Page::STATUS;

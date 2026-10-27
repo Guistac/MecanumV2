@@ -3,10 +3,12 @@
 #include <stddef.h>
 #include <string.h>
 #include <Adafruit_GFX.h>
+#include <Sound.h>
 
-//The remote's games (easter egg) [D-148]: each game is one class with its rules, its drawing on the 128 x 32 screen
+//The remote's games (easter egg) [D-157]: each game is one class with its rules, its drawing on the 128 x 32 screen
 //and a built-in player for the attract mode. The Arcade runs them; the firmware and the Mac (tests, renderer) use the
-//same code. A game never sees the pushbuttons, the speed switch or the E-stop, and never sends anything.
+//same code. A game never sees the pushbuttons, the speed switch or the E-stop, and never sends anything. It makes
+//sound only through sound() (lib/RemoteAudio/src/SoundKit.h says how) [D-157].
 
 //The two sticks, read once per tick
 struct GameInput{
@@ -58,15 +60,38 @@ public:
 
     virtual bool isOver() const = 0;
 
-    //the result of the game, compared for the best of the session (kept in RAM only)
+    //the result of the game, ranked in the Arcade's top 3 (kept in EEPROM): higher is better unless
+    //lowerScoreIsBetter(); 0 never enters (unless lower is better)
     virtual uint32_t score() const = 0;
     virtual bool lowerScoreIsBetter() const { return false; }
     //at most 9 characters
     virtual void scoreText(char* out, size_t size, uint32_t value) const;
+    //the score on the game over screen, at most 15 characters: scoreText unless the game says more (Plume: the points
+    //and the altitude, PTS 1450 412M)
+    virtual void overText(char* out, size_t size, uint32_t value) const { scoreText(out, size, value); }
 
     //the attract mode: fills the input a simple built-in player gives now (the picker shows the game playing itself,
     //the renderer records it)
     virtual void demo(GameInput& input) = 0;
+
+    //how to play, for the help card and the pause screen: up to 3 lines of at most 21 characters (5 x 7 font), upper
+    //case, abbreviated (L STICK, CLICK, UP/DN); unused lines nullptr
+    virtual void helpLines(const char* lines[3]) const { lines[0] = lines[1] = lines[2] = nullptr; }
+
+    //sound [D-158]: the Arcade starts the game's music here when it starts, on resume and when music is switched back
+    //on (back layer, looping, the tempo for the current level); the game changes the tempo itself as its level rises
+    virtual void playMusic(){}
+
+    //where the game's sounds go: the Arcade's filtering sink while played, nothing (silent) in the picker's demo, a
+    //RecordingSink in tests. nullptr: silent
+    void setSound(SoundSink* sink){ soundSink = sink; }
+
+protected:
+    //the game's sounds go here (never nullptr: a silent sink when none is set)
+    SoundSink& sound() const;
+
+private:
+    SoundSink* soundSink = nullptr;
 };
 
 //Drawing helpers shared by the games and the Arcade, the same rules as the remote's screens
@@ -87,6 +112,17 @@ namespace GameDraw{
     int16_t pill(Adafruit_GFX& out, int16_t x, int16_t y, const char* label, bool b_clear = true);
     int16_t pillWidth(const char* label);
     void pillCentered(Adafruit_GFX& out, int16_t centreX, int16_t y, const char* label, bool b_clear = true);
+
+    //the 5 x 7 font a quarter turn, for the games played with the remote held sideways (turned a quarter turn counter-
+    //clockwise, game up = screen right: Blocks, Plume) [D-157]: the text runs from the screen's top edge towards its
+    //bottom edge, the letters' tops towards the screen's right edge. topX: the screen column of the letters' tops (the
+    //text covers topX - 6 to topX), y: the screen row it starts at; its length down the screen is textWidth(s)
+    void textSideways(Adafruit_GFX& out, int16_t topX, int16_t y, const char* s, uint16_t color = ON);
+    void textSidewaysCentered(Adafruit_GFX& out, int16_t topX, int16_t centreY, const char* s, uint16_t color = ON);
+    //the same drawn inverted over what is there (XOR), so it reads over rock: lit(context, x, y) says whether the
+    //screen pixel is lit before the text (a game knows its own frame; the display cannot be read back)
+    typedef bool (*LitQuery)(const void* context, int16_t x, int16_t y);
+    void textSidewaysXor(Adafruit_GFX& out, int16_t topX, int16_t y, const char* s, LitQuery lit, const void* context);
 
     //the bold word font of the remote (FreeSansBold9pt7b), baseline at y: only for the Arcade's big words
     void bigTextCentered(Adafruit_GFX& out, int16_t centreX, int16_t baselineY, const char* s, uint16_t color = ON);

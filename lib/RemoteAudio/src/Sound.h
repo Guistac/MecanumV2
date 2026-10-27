@@ -12,13 +12,14 @@
 struct SoundNote{
     enum class Kind : uint8_t{
         SQUARE,     //a timer square wave on both legs of the disc: the loudest, one at a time, silences the synth
-        SYNTH,      //a synth voice: any waveform, a level and a decay, up to two at once per layer
+        SYNTH,      //a synth voice: any waveform, a level and a decay; two at once in front, three behind
         DUET,       //a square on each leg at its own pitch (hertz, hertzB): two notes at once, or a rough beating
                     //buzz when they are close; as loud as SQUARE, silences the synth
     };
     uint16_t atMillis;          //from the start of the cue
     Kind kind;
-    uint8_t voice;              //synth: 0 or 1 within the layer
+    uint8_t voice;              //synth: 0, 1 or 2 within the layer (front: 2 plays on its voice 1; music behind:
+                                //melody 0, bass 1, drums 2)
     Synth::Wave wave;           //synth
     uint16_t hertz;
     uint16_t millis;
@@ -30,14 +31,14 @@ struct SoundNote{
 //a sound: its notes in time order, how much it matters, whether it repeats
 struct SoundCue{
     const SoundNote* notes = nullptr;
-    uint8_t noteCount = 0;
+    uint16_t noteCount = 0;     //a looping tune can have more than 255 notes
     uint8_t priority = 0;       //a cue cuts off a playing one of the same or a lower priority, never a higher one
     uint16_t loopMillis = 0;    //0 plays once; otherwise starts again after this long (music)
 
     //how long it sounds: the end of its last note
     uint32_t lengthMillis() const {
         uint32_t end = 0;
-        for(uint8_t i = 0; i < noteCount; i++){
+        for(uint16_t i = 0; i < noteCount; i++){
             uint32_t noteEnd = uint32_t(notes[i].atMillis) + notes[i].millis;
             if(noteEnd > end) end = noteEnd;
         }
@@ -46,7 +47,7 @@ struct SoundCue{
 };
 
 //a cue from a static note list: SoundCue c = soundCue(myNotes, Priority::GAME);
-template<uint8_t N>
+template<uint16_t N>
 SoundCue soundCue(const SoundNote (&notes)[N], uint8_t priority, uint16_t loopMillis = 0){
     SoundCue cue;
     cue.notes = notes;
@@ -63,7 +64,8 @@ namespace SoundPriority{
 };
 
 //two layers play at once: effects in front (interface sounds, alarms, a game's effects), music behind (a game's
-//tune, looping). Each has its own two synth voices; a square note in either silences the synth while it sounds
+//tune, looping). Front has two synth voices, back three (melody, bass, drums); a square note in either silences the
+//synth (both layers) while it sounds
 enum class SoundLayer : uint8_t{ FRONT, BACK, COUNT };
 
 //what a part plays its sounds into (games get one of these; they never see the player or the board)
@@ -74,6 +76,23 @@ public:
     //a single note made up at run time (a pitch from the game state): kept by the sink, no list needed
     virtual bool playNote(const SoundNote& note, uint8_t priority, SoundLayer layer = SoundLayer::FRONT) = 0;
     virtual void stop(SoundLayer layer) = 0;
+    //how fast the layer's cues play, 100 = as written (150: half as fast again, notes and decays shorter by as
+    //much). It stays until set again; changing it while playing keeps the place in the cue
+    virtual void setTempo(SoundLayer layer, uint16_t percent) = 0;
+    //something sounds on that layer (a game skips a continuous grain while its own one-shot effect plays)
+    virtual bool isPlaying(SoundLayer layer) const = 0;
+    //the priority of what plays on that layer, 0 when nothing does (a sink that cannot tell: games priority)
+    virtual uint8_t playingPriority(SoundLayer layer) const { return isPlaying(layer) ? SoundPriority::GAME : 0; }
+};
+
+//a sink that plays nothing (a game without sound, the picker's demo)
+class SilentSink : public SoundSink{
+public:
+    bool play(const SoundCue&, SoundLayer = SoundLayer::FRONT) override { return false; }
+    bool playNote(const SoundNote&, uint8_t, SoundLayer = SoundLayer::FRONT) override { return false; }
+    void stop(SoundLayer) override {}
+    void setTempo(SoundLayer, uint16_t) override {}
+    bool isPlaying(SoundLayer) const override { return false; }
 };
 
 //a recorded sound: 8-bit signed samples (in flash on the Teensy: PROGMEM), made from an audio file by

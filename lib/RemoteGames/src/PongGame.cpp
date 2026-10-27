@@ -1,8 +1,12 @@
 #include "PongGame.h"
 #include <math.h>
 #include <stdio.h>
+#include <SoundKit.h>
 
 constexpr float PongGame::fullTravelStick;
+const uint16_t PongGame::wallHertz;
+const uint16_t PongGame::pointWonHertz;
+const uint16_t PongGame::pointLostHertz;
 
 namespace{
     const float serveSpeed = 75.0f;         //px/s, a crossing in about 1.6 s
@@ -26,7 +30,38 @@ namespace{
     float clampf(float value, float lowest, float highest){
         return value < lowest ? lowest : (value > highest ? highest : value);
     }
+
+    //the sounds: timer squares, Pong has no music to cut. A paddle blip from B5 at the serve's speed to B6 at the top
+    //speed, the wall an octave under the slowest paddle blip
+    const uint16_t paddleLowHertz = 988;
+    const uint16_t paddleHighHertz = 1976;
+    const uint16_t paddleMillis = 35;
+    const uint16_t wallMillis = 25;
+    const uint16_t pointMillis = 240;
+    const SoundNote::Kind SQ = SoundNote::Kind::SQUARE;
+    //C6 E6 G6 C7, the last one longer
+    const SoundNote winNotes[] = {
+        {0, SQ, 0, Synth::Wave::SQUARE, 1047, 60, 0, 0},
+        {70, SQ, 0, Synth::Wave::SQUARE, 1319, 60, 0, 0},
+        {140, SQ, 0, Synth::Wave::SQUARE, 1568, 60, 0, 0},
+        {210, SQ, 0, Synth::Wave::SQUARE, 2093, 170, 0, 0},
+    };
+    //G5 Eb5 C5, then a low G4 that hangs
+    const SoundNote loseNotes[] = {
+        {0, SQ, 0, Synth::Wave::SQUARE, 784, 80, 0, 0},
+        {95, SQ, 0, Synth::Wave::SQUARE, 622, 80, 0, 0},
+        {190, SQ, 0, Synth::Wave::SQUARE, 523, 80, 0, 0},
+        {285, SQ, 0, Synth::Wave::SQUARE, 392, 100, 0, 0},
+    };
 }
+
+uint16_t PongGame::paddleHertz(float speed){
+    float share = clampf((speed - serveSpeed) / (topSpeed - serveSpeed), 0.0f, 1.0f);
+    return uint16_t(float(paddleLowHertz) + share * float(paddleHighHertz - paddleLowHertz) + 0.5f);
+}
+
+SoundCue PongGame::winJingle(){ return soundCue(winNotes, SoundPriority::GAME); }
+SoundCue PongGame::loseJingle(){ return soundCue(loseNotes, SoundPriority::GAME); }
 
 //screen y grows downward, the stick's y upward
 float PongGame::stickPaddleTop(float stickY){
@@ -136,14 +171,18 @@ void PongGame::hitBall(uint8_t side){
     ballSpeed = ballSpeed + speedStep > topSpeed ? topSpeed : ballSpeed + speedStep;
     ballVelocityX = ballSpeed * cosf(angle) * (side == 0 ? 1.0f : -1.0f);
     ballVelocityY = ballSpeed * sinf(angle);
+    sound().playNote(SoundKit::squareNote(0, paddleHertz(ballSpeed), paddleMillis), SoundPriority::GAME);
 }
 
 void PongGame::scorePoint(uint8_t side){
     if(points[side] < winningPoints) points[side]++;
     if(points[side] >= winningPoints){
         b_over = true;
+        //the last point is the jingle, seen from the left player
+        sound().play(side == 0 ? winJingle() : loseJingle());
         return;
     }
+    sound().playNote(SoundKit::squareNote(0, side == 0 ? pointWonHertz : pointLostHertz, pointMillis), SoundPriority::GAME);
     //served toward the side that lost the point
     serveDirection = side == 0 ? 1 : -1;
     serve();
@@ -172,14 +211,18 @@ void PongGame::update(const GameInput& input){
     float previousX = ballX;
     ballX += ballVelocityX * tickSeconds;
     ballY += ballVelocityY * tickSeconds;
+    bool b_wall = false;
     if(ballY < 0.0f){
         ballY = -ballY;
         ballVelocityY = -ballVelocityY;
+        b_wall = true;
     }
     else if(ballY > courtBottom){
         ballY = 2.0f * courtBottom - ballY;
         ballVelocityY = -ballVelocityY;
+        b_wall = true;
     }
+    if(b_wall) sound().playNote(SoundKit::squareNote(0, wallHertz, wallMillis), SoundPriority::GAME);
 
     //a paddle's face crossed during this tick: the ball's height at the crossing decides (no skipping at speed)
     for(uint8_t side = 0; side < 2; side++){

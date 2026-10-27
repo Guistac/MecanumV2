@@ -5,9 +5,13 @@
 //pushed up or down is the top or bottom), the computer plays the right one. A second player takes the right paddle by
 //pushing the right stick past half way: two people sharing one remote, for the rest of that game.
 
-//The left player's paddle against the computer (or a second player) [D-148]. The ball bounces off the top and bottom
+//The left player's paddle against the computer (or a second player) [D-157]. The ball bounces off the top and bottom
 //edges, speeds up a little with each hit and leaves a paddle at an angle set by where it hit it. After a point it is
 //served again from the middle, toward the side that lost the point.
+//Sound [D-157]: no music (the classic), timer squares only: a high blip off a paddle that rises with the ball's
+//speed, a lower one off the top and bottom, a longer low tone for a point (higher when the left player scores), and
+//a jingle at the end, rising when the left player wins, falling when they lose. All shorter than 400 ms, so they end
+//before the Arcade's game over phrase.
 class PongGame : public Game{
 public:
     static const uint8_t winningPoints = 7;
@@ -28,6 +32,11 @@ public:
     uint32_t score() const override;
     void scoreText(char* out, size_t size, uint32_t value) const override;
     void demo(GameInput& input) override;
+    void helpLines(const char* lines[3]) const override {
+        lines[0] = "L STICK: YOUR PADDLE";
+        lines[1] = "R STICK: 2ND PLAYER";
+        lines[2] = "FIRST TO 7 WINS";
+    }
 
     //where a human's stick (y, -1..1, up positive) places the paddle's top once it has followed: full travel at
     //fullTravelStick, the very ends of a thumb stick are hard to hold
@@ -40,9 +49,17 @@ public:
     float getBallX() const { return ballX; }
     float getBallY() const { return ballY; }
     float getBallVelocityX() const { return ballVelocityX; }
+    float getBallVelocityY() const { return ballVelocityY; }
     float getBallSpeed() const { return ballSpeed; }
     bool isServing() const { return serveTicks > 0; }
     bool isTwoPlayers() const { return b_twoPlayers; }
+    //the sounds' pitches and the end jingles, for the tests
+    static uint16_t paddleHertz(float ballSpeed);
+    static const uint16_t wallHertz = 494;
+    static const uint16_t pointWonHertz = 294;
+    static const uint16_t pointLostHertz = 220;
+    static SoundCue winJingle();
+    static SoundCue loseJingle();
 
 private:
     //the built-in player of one side (the computer on the right, the demo on the left): the paddle top it wants

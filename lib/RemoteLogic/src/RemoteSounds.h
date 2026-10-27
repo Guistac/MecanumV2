@@ -26,13 +26,18 @@ namespace RemoteSounds{
         SAVED,          //settings or calibration saved: two rising notes
         DISCARDED,      //menu left without saving: two falling notes
         PRESS,          //enable or disable pressed
-        REFUSED,        //enable pressed while it cannot work (E-stop, no link, sticks to release): a low buzz
+        REFUSED,        //enable or disable pressed while it cannot work (refusesEnable, refusesDisable): a "no-no",
+                        //two falling rough buzzes
         STATUS_ENABLING,        //status: a quick rising pair ("arming")
         STATUS_ENABLED,         //a bright B major arpeggio with an echo
-        STATUS_DISABLING,       //a quick falling pair
-        STATUS_DISABLED,        //falling fifths to a low B, an echo
-        STATUS_ESTOP,           //an E-stop engaged (own, external or the vehicle stopping): noise, then low
-                                //beating buzzes stepping down, deliberately harsh
+        STATUS_DISABLING,       //the vehicle ramping down (DISABLING, or STOPPING: Stacato reports a disable ramp
+                                //and an E-stop ramp alike): two short falling notes, looping (disablingLoopMillis)
+                                //until the next state's sound cuts in; the board ends it on any other status and
+                                //after disablingLoopMaxMillis
+        STATUS_DISABLED,        //three falling arpeggios, each lower and softer, to a fading low B; it starts on the
+                                //loop's notes, so it reads as the ramp settling
+        STATUS_ESTOP,           //an E-stop certain (own button, or the vehicle reporting itself E-stopped): noise,
+                                //then fast tritones stepping down, deliberately harsh
         STATUS_ESTOP_RELEASED,  //a calm rise, an echo
         STATUS_LINK_FOUND,      //the receiver answers again: two pings rising, an echo
         WARNING,                //link lost, radio fault, E-stop wiring, battery: three rough two-leg beeps
@@ -43,6 +48,13 @@ namespace RemoteSounds{
         DIRECTION_CLEAR,
         SEARCHING,      //NO LINK, every 2 s with the LEDs: a low ping with the left LED flash, a higher one with the
                         //right, then three fading echoes
+        TIMER_START,    //the stopwatch [D-160]: interface ticks, one plain square each: start A7, stop A6, reset D6,
+        TIMER_STOP,     //edit mode entered C8, left C7 (its steps are VALUE, its ends and clearing BUMP)
+        TIMER_RESET,
+        TIMER_EDIT,
+        TIMER_EDIT_DONE,
+        TIME_UP,        //a countdown reached zero: three rising clean beeps (F sharp major, off the interface scale, no
+                        //echo), alarm priority: plays at Alarms only, not at Off
         COUNT
     };
 
@@ -60,6 +72,9 @@ namespace RemoteSounds{
 
     //enable cannot work while this shows
     bool refusesEnable(BigMessage message);
+    //disable cannot reach the vehicle while this shows (no link, radio fault); otherwise it always does its job, even
+    //with the vehicle already stopped
+    bool refusesDisable(BigMessage message);
 
     //the speed switch's sound for its new state (SpeedMode), or NONE between the two OFF readings
     Sound forSpeedChange(uint8_t fromState, uint8_t toState);
@@ -77,6 +92,10 @@ namespace RemoteSounds{
     //start jingle when the arcade opens. Games priority; they play unless the setting is Off
     SoundCue arcadeLoadingCue();
     SoundCue arcadeStartCue();
+
+    //the ramp's loop: its period, and how long it may run at most (a state stuck at STOPPING never loops for ever)
+    static const uint16_t disablingLoopMillis = 200;
+    static const uint32_t disablingLoopMaxMillis = 4000;
 
     //NO LINK: the searching ping starts with the LED period (Leds::pattern), searchPeriodMillis
     static const uint32_t searchPeriodMillis = 2000;

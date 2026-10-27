@@ -3,6 +3,8 @@
 #include <stdio.h>
 
 const uint32_t RocksGame::pointsBySize[RocksGame::sizeCount] = {20, 50, 100};
+const uint16_t RocksGame::pulseSlowest;
+const uint16_t RocksGame::pulseFastest;
 
 namespace{
     const float shipSpeed = 45.0f;              //px/s with the left stick full over
@@ -124,8 +126,13 @@ void RocksGame::waveLabel(char* out, size_t size, uint8_t n){
     else snprintf(out, size, "WAVE %u", unsigned(n));
 }
 
+RocksGame::RocksGame(){
+    buildSounds();
+}
+
 void RocksGame::reset(uint32_t seed){
     random.seed(seed);
+    resetSound();
     demoRandom.seed(seed * 2654435761u + 1u);
     rockCount = 0;
     bulletCount = 0;
@@ -193,6 +200,7 @@ void RocksGame::startWave(){
         float v = speed * (0.8f + 0.4f * random.unit());
         addRock(x, y, cosf(angle) * v, sinf(angle) * v, 0);
     }
+    waveHits = remainingHits();
     //the enemies come one kind at a time: saucers in wave 2, mines in wave 3, then both, more after each boss
     if(wave == 2 || wave == 3) enemiesLeft = 2;
     else if(wave >= 4) enemiesLeft = uint8_t(3 + bossesBeaten > 6 ? 6 : 3 + bossesBeaten);
@@ -306,6 +314,7 @@ void RocksGame::breakRock(uint8_t index){
     rocks[index] = rocks[--rockCount];
     points += pointsBySize[parent.size];
     addPuff(parent.x, parent.y);
+    playBurst(parent.size);
     //rocks hardly ever carry a power-up: those are the enemies' loot
     if(parent.size == 0 && random.below(25) == 0) dropPickup(parent.x, parent.y, parent.vx, parent.vy);
     if(parent.size + 1 >= sizeCount) return;
@@ -356,6 +365,7 @@ void RocksGame::removeEnemy(uint8_t index, bool b_shot){
     if(!b_shot) return;
     points += gone.kind == SAUCER ? pointsSaucer : pointsMine;
     addPuff(gone.x, gone.y);
+    playBurst(1);
     //half the saucers and a third of the mines leave a power-up
     if(random.below(gone.kind == SAUCER ? 2 : 3) == 0) dropPickup(gone.x, gone.y, gone.vx, gone.vy);
 }
@@ -397,6 +407,7 @@ void RocksGame::collect(uint8_t kind){
         weaponTicks = weaponLife;
     }
     addPuff(shipX, shipY);
+    playEffect(powerUpNotes.cue(), RANK_JINGLE, FX_POWER_UP);
 }
 
 void RocksGame::startBoss(){
@@ -419,6 +430,7 @@ void RocksGame::startBoss(){
     boss.coreCycle = 0;
     boss.fightTicks = 0;
     enemiesLeft = 0;
+    queueJingle(FX_BOSS_INTRO);
 }
 
 void RocksGame::bossPartCentre(uint8_t part, float& x, float& y) const {
@@ -506,14 +518,20 @@ bool RocksGame::hitBoss(float x, float y){
         if(--boss.turretHp[part] == 0){
             points += pointsTurret;
             addPuff(px, py);
+            playBurst(0);
         }
+        else playEffect(bossHitNotes.cue(), RANK_SHOT, FX_BOSS_HIT);
     } else if(part == 2){
         if(--boss.plateHp == 0){
             points += pointsPlate;
             addPuff(px, py);
             boss.fanFire = 60;
+            playBurst(0);
         }
-    } else if(--boss.coreHp == 0){
+        else playEffect(bossHitNotes.cue(), RANK_SHOT, FX_BOSS_HIT);
+    } else if(--boss.coreHp > 0){
+        playEffect(bossHitNotes.cue(), RANK_SHOT, FX_BOSS_HIT);
+    } else {
         //beaten: it blows up, its shots vanish, a big bonus and a power-up for the next waves
         boss.b_active = false;
         bossDeathTicks = 1;
@@ -523,6 +541,7 @@ bool RocksGame::hitBoss(float x, float y){
         shotCount = 0;
         addPuff(px, py);
         dropPickup(px - 20.0f, py, 0, 0);
+        playEffect(bossDownNotes.cue(), RANK_JINGLE, FX_BOSS_DOWN);
     }
     return true;
 }
@@ -532,6 +551,7 @@ bool RocksGame::hitShip(){
         b_shield = false;
         invulnerableTicks = invulnerableAfterShield;
         addPuff(shipX, shipY);
+        playBurst(1);
         return false;
     }
     killShip();
@@ -547,6 +567,7 @@ void RocksGame::killShip(){
     //a fresh ship starts clean: no shots on their way, no weapon
     shotCount = 0;
     weaponTicks = 0;
+    playEffect(shipLostNotes.cue(), RANK_SHIP_LOST, FX_SHIP_LOST);
 }
 
 void RocksGame::addBullet(float angle){
@@ -570,6 +591,7 @@ void RocksGame::fire(){
         addBullet(angle);
     }
     fireCooldown = getWeapon() == POWER_RAPID ? rapidInterval : fireInterval;
+    playEffect(zapNotes.cue(), RANK_SHOT, FX_SHOT);
 }
 
 void RocksGame::updateEnemies(){
@@ -622,6 +644,7 @@ void RocksGame::updateEnemies(){
 void RocksGame::update(const GameInput& input){
     if(b_over) return;
     ticks++;
+    updateSound();
     const float dt = tickSeconds;
     for(uint8_t i = 0; i < maxPuffs; i++) if(puffs[i].age < (puffs[i].b_big ? burstPuffTicks : puffTicks)) puffs[i].age++;
 
@@ -632,6 +655,7 @@ void RocksGame::update(const GameInput& input){
         if(bossDeathTicks > bossBlowTicks){
             bossDeathTicks = 0;
             celebrateTicks = celebrationTicks;
+            queueJingle(FX_WAVE_CLEAR);
         }
     } else if(celebrateTicks > 0){
         celebrateTicks--;
@@ -639,7 +663,11 @@ void RocksGame::update(const GameInput& input){
     }
 
     //a cleared screen: a short pause with the next wave's name, then the wave
-    if(waveCleared() && waveTicks == 0) waveTicks = wavePauseTicks;
+    if(waveCleared() && waveTicks == 0){
+        waveTicks = wavePauseTicks;
+        //a boss wave had its jingle when the boss went down
+        if(!isBossWave(wave)) queueJingle(FX_WAVE_CLEAR);
+    }
     if(waveTicks > 0){
         waveTicks--;
         if(waveTicks == 0 && waveCleared()){
@@ -1163,4 +1191,183 @@ void RocksGame::demo(GameInput& input){
     float strength = nearestDistance < 42.0f || (boss.b_active && fabsf(dx) < 42.0f) ? 1.0f : 0.4f;
     input.stick[2] = cosf(angle) * strength;
     input.stick[3] = -sinf(angle) * strength;
+}
+
+//The sound [D-157]. Everything here only reads the game: its own random numbers, its own counters
+
+namespace{
+    using W = Synth::Wave;
+    const uint8_t jingleWaitTicks = 50;         //a jingle waits up to 1 s for the burst before it, then is dropped
+    const uint8_t warblePeriodTicks = 2;        //a saucer's warble: a grain every 40 ms, its pitch swinging
+    const uint16_t warbleMillis = 32;
+    const float warbleCentre = 1300.0f;
+    const float warbleSwing = 350.0f;
+    const float warbleStep = 1.1f;              //rad a grain: a swing about every 230 ms
+    const uint16_t mineTickMillis = 10;
+    const uint16_t pulseBeatMillis = 600;       //at tempo 100: a beat every 0.6 s, every 0.2 s at 300
+}
+
+void RocksGame::buildSounds(){
+    //(SoundKit::A3 by its full name: the Teensy has an analog pin A3)
+    using namespace SoundKit;
+    //the pulse: F4 then E4 in turn, 150 ms held on the narrowest pulse at full level. Low enough to stay ominous, high
+    //enough for the disc (nearly silent below 400 Hz: its harmonics, 1 to 4 kHz, carry the notes)
+    pulseNotes.clear();
+    pulseNotes.synth(0, hertz(F4), 150, 100, 0, W::PULSE12, 1);
+    pulseNotes.synth(pulseBeatMillis, hertz(E4), 150, 100, 0, W::PULSE12, 1);
+    //a shot: a quick falling zap
+    zapNotes.clear();
+    zapNotes.sweep(0, 2400, 600, 60, 6, W::SQUARE, 75, 0, 15);
+    //a part of the boss hit: a dull clank
+    bossHitNotes.clear();
+    bossHitNotes.synth(0, 330, 30, 85, 12, W::PULSE25).burst(0, 1800, 20, 70, 8, 1);
+    //a power-up: C5 E5 G5 C6 E6 up, the last one ringing
+    static const uint8_t powerUp[] = {C5, E5, G5, C6, E6};
+    powerUpNotes.clear();
+    for(uint8_t i = 0; i < sizeof(powerUp); i++){
+        bool b_last = i == sizeof(powerUp) - 1;
+        powerUpNotes.synth(uint16_t(i * 45), hertz(powerUp[i]), b_last ? 140 : 40, 85, b_last ? 70 : 0);
+    }
+    //a wave cleared (or a boss down): G5 C6 E6 G6, then C7 over C6
+    static const uint8_t cleared[] = {G5, C6, E6, G6};
+    waveClearNotes.clear();
+    for(uint8_t i = 0; i < sizeof(cleared); i++) waveClearNotes.synth(uint16_t(i * 80), hertz(cleared[i]), 70, 90);
+    waveClearNotes.synth(320, hertz(C7), 220, 95, 110).synth(320, hertz(C6), 220, 70, 110, W::PULSE25, 1);
+    //the boss comes: a warning trill E4 F4 E4 F4, then a long D4 over A3
+    static const uint8_t intro[] = {E4, F4, E4, F4};
+    bossIntroNotes.clear();
+    for(uint8_t i = 0; i < sizeof(intro); i++) bossIntroNotes.synth(uint16_t(i * 70), hertz(intro[i]), 60, 90, 0, W::PULSE25);
+    bossIntroNotes.synth(290, hertz(D4), 380, 95, 200, W::PULSE25).synth(290, hertz(SoundKit::A3), 380, 80, 200, W::SQUARE, 1);
+    //the boss blows up: a long noise falling, a low tone falling under it
+    bossDownNotes.clear();
+    bossDownNotes.sweep(0, 2500, 200, 900, 18, W::NOISE, 100, 0, 250);
+    bossDownNotes.sweep(0, 500, 100, 900, 18, W::SQUARE, 70, 1, 200);
+    //the ship lost: the longest, a noise falling from bright to dull over a second, a tone falling under it
+    shipLostNotes.clear();
+    shipLostNotes.sweep(0, 4000, 300, 1100, 22, W::NOISE, 100, 0, 300);
+    shipLostNotes.sweep(0, 700, 110, 1000, 20, W::SQUARE, 70, 1, 200);
+}
+
+void RocksGame::resetSound(){
+    frontRank = RANK_GRAIN;
+    lastSound = FX_NONE;
+    pendingJingle = FX_NONE;
+    pendingTicks = 0;
+    warblePhase = 0;
+    waveHits = 0;
+    playedTempo = 0;
+}
+
+void RocksGame::playMusic(){
+    sound().play(pulseNotes.cue(SoundPriority::GAME, uint16_t(2 * pulseBeatMillis)), SoundLayer::BACK);
+    playedTempo = pulseTempo();
+    sound().setTempo(SoundLayer::BACK, playedTempo);
+}
+
+bool RocksGame::playEffect(const SoundCue& cue, uint8_t rank, uint8_t effect){
+    SoundSink& out = sound();
+    if(out.isPlaying(SoundLayer::FRONT) && rank < frontRank) return false;
+    if(!out.play(cue, SoundLayer::FRONT)) return false;
+    frontRank = rank;
+    lastSound = effect;
+    return true;
+}
+
+//a burst of noise, duller and longer for a bigger rock (a large one with a low thump under it), each a little
+//different
+void RocksGame::playBurst(uint8_t size){
+    if(sound().isPlaying(SoundLayer::FRONT) && RANK_BURST < frontRank) return;
+    static const uint16_t brightness[sizeCount] = {1100, 2000, 3400};
+    static const uint16_t millis[sizeCount] = {260, 160, 90};
+    static const uint16_t decay[sizeCount] = {110, 60, 30};
+    if(size >= sizeCount) size = sizeCount - 1;
+    float vary = 0.92f + 0.16f * soundRandom.unit();
+    burstNotes.clear();
+    burstNotes.burst(0, uint16_t(brightness[size] * vary), millis[size], 100, decay[size]);
+    if(size == 0) burstNotes.synth(0, 140, 90, 85, 45, W::PULSE25, 1);
+    playEffect(burstNotes.cue(), RANK_BURST, FX_BURST);
+}
+
+void RocksGame::queueJingle(uint8_t effect){
+    pendingJingle = effect;
+    pendingTicks = jingleWaitTicks;
+}
+
+uint16_t RocksGame::remainingHits() const {
+    static const uint8_t hits[sizeCount] = {7, 3, 1};
+    uint16_t n = 0;
+    for(uint8_t i = 0; i < rockCount; i++) n = uint16_t(n + hits[rocks[i].size < sizeCount ? rocks[i].size : 0]);
+    return n;
+}
+
+uint16_t RocksGame::pulseTempo() const {
+    float share;
+    if(boss.b_active){
+        //the boss: from its health
+        float total = float(boss.turretMax * 2 + boss.plateMax + boss.coreMax);
+        share = total > 0.0f ? 1.0f - float(getBossHealth()) / total : 0.0f;
+    } else {
+        uint16_t left = remainingHits();
+        if(left == 0) share = enemyCount > 0 ? 1.0f : 0.0f;    //the calm between waves, unless a straggler flies
+        else share = waveHits > left ? 1.0f - float(left) / float(waveHits) : 0.0f;
+    }
+    uint16_t tempo = uint16_t(float(pulseSlowest) + share * float(pulseFastest - pulseSlowest));
+    return uint16_t(tempo / 5 * 5);
+}
+
+void RocksGame::updateSound(){
+    SoundSink& out = sound();
+    //the pulse follows what is left of the wave
+    uint16_t tempo = pulseTempo();
+    if(tempo != playedTempo){
+        playedTempo = tempo;
+        out.setTempo(SoundLayer::BACK, tempo);
+    }
+
+    //a jingle plays once the front is free of anything that matters as much as a burst
+    if(pendingJingle != FX_NONE){
+        bool b_free = !out.isPlaying(SoundLayer::FRONT) || frontRank < RANK_BURST;
+        if(b_free){
+            const SoundCue cue = pendingJingle == FX_BOSS_INTRO ? bossIntroNotes.cue() : waveClearNotes.cue();
+            playEffect(cue, RANK_JINGLE, pendingJingle);
+            pendingJingle = FX_NONE;
+        }
+        else if(--pendingTicks == 0) pendingJingle = FX_NONE;
+    }
+
+    //the grains, skipped while anything else plays in front: a saucer on the screen warbles, the nearest mine ticks
+    //(faster the closer it is, quick while it blinks before it moves)
+    bool b_saucer = false;
+    float mineDistance = 1000.0f;
+    bool b_mineWaking = false;
+    for(uint8_t i = 0; i < enemyCount; i++){
+        const Enemy& enemy = enemies[i];
+        if(enemy.kind == SAUCER){
+            if(enemy.x > 0.0f && enemy.x < float(width)) b_saucer = true;
+            continue;
+        }
+        float d = lengthOf(wrapDelta(shipX, enemy.x, width), wrapDelta(shipY, enemy.y, height));
+        if(d < mineDistance){
+            mineDistance = d;
+            b_mineWaking = enemy.age <= mineWarnTicks;
+        }
+    }
+    if(b_saucer && warbleGrain.due(warblePeriodTicks)){
+        warblePhase += warbleStep;
+        if(warblePhase > 6.2831853f) warblePhase -= 6.2831853f;
+        uint16_t pitch = uint16_t(warbleCentre + warbleSwing * sinf(warblePhase));
+        if(warbleGrain.play(out, SoundKit::synthNote(0, pitch, warbleMillis, 65, 10))){
+            frontRank = RANK_GRAIN;
+            lastSound = FX_WARBLE;
+        }
+    }
+    if(mineDistance < 1000.0f){
+        float period = b_mineWaking ? 5.0f : 4.0f + mineDistance / 5.0f;
+        if(period > 25.0f) period = 25.0f;
+        uint16_t pitch = b_mineWaking ? 2200 : 2800;
+        if(mineGrain.due(uint8_t(period)) && mineGrain.play(out, SoundKit::synthNote(0, pitch, mineTickMillis, 75, 5))){
+            frontRank = RANK_GRAIN;
+            lastSound = FX_MINE_TICK;
+        }
+    }
 }

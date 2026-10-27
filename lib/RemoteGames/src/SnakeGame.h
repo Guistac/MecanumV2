@@ -1,11 +1,15 @@
 #pragma once
 #include "Game.h"
+#include <SoundKit.h>
 
 //Snake: steer with either stick (up, down, left, right), eat the food to grow, do not bite yourself or hit a wall.
 //Open edges wrap around. A blinking diamond now and then is worth 5 for a few seconds; from level 2 a mouse runs
 //from the head, worth 10. Every 10 food a new walled level, a little faster; the score counts the points.
+//Sound [D-157]: an original bouncy loop behind (melody, bass, drums), faster each level; synth effects in front (eat
+//blips climbing the pentatonic as the snake grows, the diamond's twinkle and arpeggio, the mouse's squeak, the level
+//jingle), squares only for the death
 
-//[D-148] The field is a grid of 42 x 10 cells at a 3 px pitch: each segment is 2 x 2, the body links its segments
+//[D-157] The field is a grid of 42 x 10 cells at a 3 px pitch: each segment is 2 x 2, the body links its segments
 //into one line so that two runs of the body side by side stay apart by 1 px of dark. Walls are hatched, never solid
 class SnakeGame : public Game{
 public:
@@ -31,6 +35,25 @@ public:
     bool isOver() const override { return state == State::OVER; }
     uint32_t score() const override { return points; }
     void demo(GameInput& input) override;
+    void helpLines(const char* lines[3]) const override {
+        lines[0] = "ANY STICK: STEER";
+        lines[1] = "EAT TO GROW, NO BITES";
+        lines[2] = "DIAMOND 5  MOUSE 10";
+    }
+    void playMusic() override;
+
+    //sound, for the tests: the first pitch of each effect (the eat blip: on the pentatonic from C5, one step a
+    //segment grown), the music's tempo at a level
+    static const uint16_t eatHertz = 523;       //C5, the first food of a level
+    static const uint16_t twinkleHertz = 2637;  //E7, the diamond appears
+    static const uint16_t bonusHertz = 1047;    //C6, the diamond eaten: an arpeggio up
+    static const uint16_t squeakHertz = 1800;   //the mouse eaten: its squeak's sweep starts here
+    static const uint16_t levelHertz = 784;     //G5, the new level's jingle
+    static const uint16_t deathHertz = 1568;    //G6, the death's first square
+    static const uint16_t tuneStepMillis = 170; //an eighth at tempo 100
+    static const uint16_t tuneSteps = 64;       //8 bars of 4/4 in eighths
+    static uint16_t musicTempo(uint16_t level);
+    static uint16_t eatPitch(uint16_t grown);
 
     //for the tests
     uint16_t getLength() const { return length; }
@@ -79,6 +102,8 @@ private:
     //demo: the size of the room left after a move
     uint16_t roomAfter(int16_t newHead, bool b_grows, bool& b_reachesTail);
     void drawWalls(Adafruit_GFX& out) const;
+    //sound (never game state)
+    void buildTune();
 
     GameRandom random;
     int16_t body[cellCount];
@@ -120,4 +145,11 @@ private:
     bool b_demoCareless = false;
     uint16_t scratchDistance[cellCount];
     int16_t scratchQueue[cellCount];
+
+    //the music, built at the first playMusic()
+    SoundKit::NoteList<224> tune;              //200 notes: 44 of melody, 32 of bass, 124 of drums
+    SoundCue music;
+    bool b_tuneBuilt = false;
+    //an effect made at run time (the squeak's sweeps); the player reads it while it sounds
+    SoundKit::NoteList<16> effect;
 };

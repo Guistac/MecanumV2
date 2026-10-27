@@ -82,10 +82,12 @@ namespace RemoteSounds{
             {900, SY, 0, W::SQUARE, 988, 70, 15, 50},
             {1000, SY, 0, W::SQUARE, 740, 80, 15, 50},
         };
-        //two low squares a little apart: a rough buzz
+        //"no-no": two falling rough buzzes, each leg a semitone from the other (timer squares, beating). The low synth
+        //buzz it replaces (196 and 208 Hz) was too quiet on the disc, loud only from about 1 kHz (owner, 2026-10-27);
+        //not the warning's three equal high beeps
         const SoundNote refused[] = {
-            {0, SY, 0, W::SQUARE, 196, 180, 100, 0},
-            {0, SY, 1, W::SQUARE, 208, 180, 100, 0},
+            {0, DU, 0, W::SQUARE, 740, 90, 0, 0, 784},
+            {140, DU, 0, W::SQUARE, 554, 140, 0, 0, 587},
         };
 
         //status: off the interface's C pentatonic, several notes, the last one echoed by the synth's square at 70 and
@@ -102,17 +104,27 @@ namespace RemoteSounds{
             {400, SY, 0, W::SQUARE, 1976, 100, 70, 60},
             {580, SY, 0, W::SQUARE, 1976, 100, 35, 60},
         };
+        //the vehicle ramping down (STOPPING, DISABLING): the disabled arpeggio's first two notes, short, repeated every
+        //disablingLoopMillis until the next state cuts in (owner, 2026-10-27: shorter, repetitive, a hard transition
+        //into disabled)
         const SoundNote statusDisabling[] = {
-            {0, SQ, 0, W::SQUARE, 988, 40, 0, 0},
-            {50, SQ, 0, W::SQUARE, 740, 40, 0, 0},
+            {0, SY, 0, W::SQUARE, 1480, 35, 85, 0},
+            {60, SY, 0, W::SQUARE, 1245, 35, 85, 0},
         };
+        //the vehicle disabled (owner, 2026-10-27: less dramatic than the E-stop): three falling B major arpeggios, each
+        //starting lower, slower and softer, settling on a low B that fades. Synth squares, not the timer's: quieter
+        //than the E-stop by nature
         const SoundNote statusDisabled[] = {
-            {0, SQ, 0, W::SQUARE, 1976, 60, 0, 0},
-            {70, SQ, 0, W::SQUARE, 1480, 60, 0, 0},
-            {140, SQ, 0, W::SQUARE, 988, 60, 0, 0},
-            {210, SQ, 0, W::SQUARE, 494, 160, 0, 0},
-            {440, SY, 0, W::SQUARE, 494, 120, 70, 80},
-            {640, SY, 0, W::SQUARE, 494, 120, 35, 80},
+            {0, SY, 0, W::SQUARE, 1480, 45, 100, 0},
+            {50, SY, 0, W::SQUARE, 1245, 45, 100, 0},
+            {100, SY, 0, W::SQUARE, 988, 45, 100, 0},
+            {200, SY, 0, W::SQUARE, 1245, 50, 85, 0},
+            {260, SY, 0, W::SQUARE, 988, 50, 85, 0},
+            {320, SY, 0, W::SQUARE, 740, 50, 85, 0},
+            {430, SY, 0, W::SQUARE, 988, 60, 70, 0},
+            {500, SY, 0, W::SQUARE, 740, 60, 70, 0},
+            {570, SY, 0, W::SQUARE, 622, 60, 70, 0},
+            {690, SY, 0, W::SQUARE, 494, 220, 70, 120},
         };
         //a noise burst, then a fast alternation of tritones (30 ms a note) stepping down: deliberately harsh, and
         //squares on both legs so it is the loudest sound the remote makes (the low beating duets were too quiet)
@@ -148,6 +160,20 @@ namespace RemoteSounds{
             {440, DU, 0, W::SQUARE, 1397, 130, 0, 0, 1480},
         };
 
+        //the stopwatch [D-160]: one plain square each, C pentatonic, pitches of their own within the set
+        const SoundNote timerStart[] = {{0, SQ, 0, W::SQUARE, 3520, 40, 0, 0}};
+        const SoundNote timerStop[] = {{0, SQ, 0, W::SQUARE, 1760, 50, 0, 0}};
+        const SoundNote timerReset[] = {{0, SQ, 0, W::SQUARE, 1175, 60, 0, 0}};
+        const SoundNote timerEdit[] = {{0, SQ, 0, W::SQUARE, 4186, 40, 0, 0}};
+        const SoundNote timerEditDone[] = {{0, SQ, 0, W::SQUARE, 2093, 60, 0, 0}};
+        //time up: three clean beeps rising F#6 A#6 C#7, evenly spaced like a kitchen timer, the last one longer; not the
+        //warning's three equal rough duets, not a status arpeggio (those are fast and echoed)
+        const SoundNote timeUp[] = {
+            {0, SQ, 0, W::SQUARE, 1480, 120, 0, 0},
+            {200, SQ, 0, W::SQUARE, 1865, 120, 0, 0},
+            {400, SQ, 0, W::SQUARE, 2217, 260, 0, 0},
+        };
+
         #define NOTES(LIST) LIST, uint8_t(sizeof(LIST) / sizeof(SoundNote))
         struct Entry{ const SoundNote* list; uint8_t count; };
         const Entry table[] = {
@@ -173,13 +199,24 @@ namespace RemoteSounds{
             {NOTES(directionSet)},
             {NOTES(directionClear)},
             {NOTES(searching)},
+            {NOTES(timerStart)},
+            {NOTES(timerStop)},
+            {NOTES(timerReset)},
+            {NOTES(timerEdit)},
+            {NOTES(timerEditDone)},
+            {NOTES(timeUp)},
         };
         #undef NOTES
         static_assert(sizeof(table) / sizeof(Entry) == size_t(Sound::COUNT), "one entry per sound");
 
-        //an E-stop shown: own, external, or the vehicle's emergency stop under way
+        //an E-stop shown: own or external. Not STOPPING: Stacato reports a vehicle ramping down the same way after a
+        //disable and after an E-stop (MAV_STATE_CRITICAL), so it is the stopping sound, and the E-stop sound comes
+        //only when the E-stop is certain (own button, or the vehicle reporting itself E-stopped)
         bool isEstop(BigMessage m){
-            return m == BigMessage::ESTOP || m == BigMessage::EXT_ESTOP || m == BigMessage::STOPPING;
+            return m == BigMessage::ESTOP || m == BigMessage::EXT_ESTOP;
+        }
+        bool isStopping(BigMessage m){
+            return m == BigMessage::STOPPING || m == BigMessage::DISABLING;
         }
 
         //states the receiver reported: the link was up
@@ -243,7 +280,7 @@ namespace RemoteSounds{
     }
 
     bool isAlarm(Sound sound){
-        return sound >= Sound::STATUS_ENABLING && sound <= Sound::WARNING;
+        return (sound >= Sound::STATUS_ENABLING && sound <= Sound::WARNING) || sound == Sound::TIME_UP;
     }
 
     bool gamesAllowed(uint8_t level){ return Level(level) != Level::OFF; }
@@ -264,11 +301,16 @@ namespace RemoteSounds{
         if(from == BigMessage::NO_LINK && isReported(to)) return Sound::STATUS_LINK_FOUND;
         if(to == BigMessage::ENABLING) return Sound::STATUS_ENABLING;
         if(to == BigMessage::ENABLED) return Sound::STATUS_ENABLED;
-        if(to == BigMessage::DISABLING) return Sound::STATUS_DISABLING;
+        if(isStopping(to) && !isStopping(from)) return Sound::STATUS_DISABLING;
+        //cuts the ramp's loop, or alone when there was no ramp (an enable that failed)
         if(to == BigMessage::DISABLED && isReported(from)) return Sound::STATUS_DISABLED;
         if(to == BigMessage::NO_LINK && isReported(from)) return Sound::WARNING;
         if(to == BigMessage::RADIO_FAULT || to == BigMessage::ESTOP_WIRING || to == BigMessage::BATTERY_CRITICAL) return Sound::WARNING;
         return Sound::NONE;
+    }
+
+    bool refusesDisable(BigMessage message){
+        return message == BigMessage::NO_LINK || message == BigMessage::RADIO_FAULT;
     }
 
     bool refusesEnable(BigMessage message){
@@ -293,6 +335,7 @@ namespace RemoteSounds{
         c.notes = e.list;
         c.noteCount = e.count;
         c.priority = isAlarm(sound) ? SoundPriority::ALARM : SoundPriority::INTERFACE;
+        if(sound == Sound::STATUS_DISABLING) c.loopMillis = disablingLoopMillis;
         return c;
     }
 }

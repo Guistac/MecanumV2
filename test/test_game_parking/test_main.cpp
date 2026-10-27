@@ -1,9 +1,10 @@
-//Host tests of the PARKING game [D-148]: pio test -e native -f test_game_parking
+//Host tests of the PARKING game [D-157]: pio test -e native -f test_game_parking
 #include <unity.h>
 #include <math.h>
 #include <HostGfx.h>
 #include <GameContract.h>
 #include <ParkingGame.h>
+#include <RecordingSink.h>
 
 void setUp(){}
 void tearDown(){}
@@ -234,6 +235,172 @@ void test_demo_parks_all_twelve_stages_fairly(){
     }
 }
 
+//sound [D-157]: the motor whines while the vehicle moves, higher and louder the faster; nothing when it stands still
+void test_motor_whine_follows_the_speed_and_stops_when_still(){
+    ParkingGame game;
+    RecordingSink sink;
+    game.setSound(&sink);
+    driving(game, 20, 20, 0);
+    sink.clear();
+    run(game, GameInput(), 50);
+    TEST_ASSERT_EQUAL_UINT32(0, sink.total());
+    //slowly: grains every other tick, synth notes on the front layer only
+    run(game, sticks(0, 0.3f, 0), 25);
+    sink.clear();
+    run(game, sticks(0, 0.3f, 0), 20);
+    TEST_ASSERT_EQUAL_UINT32(10, sink.noteCount(SoundLayer::FRONT));
+    TEST_ASSERT_EQUAL_UINT32(0, sink.count(SoundLayer::BACK));
+    const RecordingSink::Play* slow = sink.last(SoundLayer::FRONT);
+    TEST_ASSERT_TRUE(slow->note.kind == SoundNote::Kind::SYNTH);
+    TEST_ASSERT_EQUAL_UINT8(SoundPriority::GAME, slow->priority);
+    TEST_ASSERT_TRUE(slow->note.millis < 40);       //shorter than its period
+    uint16_t slowHertz = slow->note.hertz;
+    uint8_t slowLevel = slow->note.levelPercent;
+    //fast: higher and louder
+    game.place(20, 20, 0);
+    run(game, sticks(0, 1, 0), 15);
+    uint16_t fastHertz = sink.lastHertz(SoundLayer::FRONT);
+    TEST_ASSERT_TRUE(fastHertz > slowHertz + 300);
+    TEST_ASSERT_TRUE(sink.last(SoundLayer::FRONT)->note.levelPercent > slowLevel);
+    //a one-shot effect playing: the grain waits
+    sink.setPlaying(SoundLayer::FRONT, true);
+    uint32_t before = sink.total();
+    run(game, sticks(0, 1, 0), 4);
+    TEST_ASSERT_EQUAL_UINT32(before, sink.total());
+    sink.setPlaying(SoundLayer::FRONT, false);
+    //let go: it ramps down to a stop, then silence
+    run(game, GameInput(), 30);
+    before = sink.total();
+    run(game, GameInput(), 50);
+    TEST_ASSERT_EQUAL_UINT32(before, sink.total());
+}
+
+void test_sliding_along_a_wall_scrapes(){
+    ParkingGame game;
+    RecordingSink sink;
+    game.setSound(&sink);
+    driving(game, 30, 9.15f, 0);
+    run(game, sticks(-0.7f, 0.7f, 0), 30);
+    sink.clear();
+    run(game, sticks(-0.7f, 0.7f, 0), 10);
+    TEST_ASSERT_EQUAL_UINT16(0, game.getPenaltyCount());
+    //a noise grain every tick, softer than a square grind (synth, under full level)
+    TEST_ASSERT_EQUAL_UINT32(10, sink.noteCount(SoundLayer::FRONT));
+    const RecordingSink::Play* p = sink.last(SoundLayer::FRONT);
+    TEST_ASSERT_TRUE(p->note.kind == SoundNote::Kind::SYNTH);
+    TEST_ASSERT_TRUE(p->note.wave == Synth::Wave::NOISE);
+    TEST_ASSERT_TRUE(p->note.levelPercent < 80);
+    TEST_ASSERT_TRUE(p->note.millis < 20);
+    //driving free again: the whine, no scrape
+    game.place(30, 20, 0);
+    run(game, sticks(0, 0.7f, 0), 10);
+    TEST_ASSERT_TRUE(sink.last(SoundLayer::FRONT)->note.wave != Synth::Wave::NOISE);
+}
+
+void test_impact_crunches_once(){
+    ParkingGame game;
+    RecordingSink sink;
+    game.setSound(&sink);
+    driving(game, 46, 14, 0);
+    run(game, sticks(-1, 0, 0), 50);
+    TEST_ASSERT_EQUAL_UINT16(1, game.getPenaltyCount());
+    TEST_ASSERT_EQUAL_UINT32(1, sink.cueCount(SoundLayer::FRONT));
+    //the crunch: noise and a low buzz
+    const SoundCue& crunch = game.impactSound();
+    bool b_noise = false, b_low = false;
+    for(uint16_t i = 0; i < crunch.noteCount; i++){
+        if(crunch.notes[i].wave == Synth::Wave::NOISE) b_noise = true;
+        else if(crunch.notes[i].hertz < 200) b_low = true;
+    }
+    TEST_ASSERT_TRUE(b_noise && b_low);
+    TEST_ASSERT_TRUE(crunch.lengthMillis() <= 250);
+    bool b_heard = false;
+    for(uint8_t back = 0; back < RecordingSink::keep; back++){
+        const RecordingSink::Play* p = sink.last(SoundLayer::FRONT, back);
+        if(p && !p->b_note && p->cue.notes == crunch.notes) b_heard = true;
+    }
+    TEST_ASSERT_TRUE(b_heard);
+    //pushing on: no second crunch
+    run(game, sticks(-1, 0, 0), 50);
+    TEST_ASSERT_EQUAL_UINT32(1, sink.cueCount(SoundLayer::FRONT));
+}
+
+static bool cueHeard(const RecordingSink& sink, const SoundCue& cue){
+    for(uint8_t back = 0; back < RecordingSink::keep; back++){
+        const RecordingSink::Play* p = sink.last(SoundLayer::FRONT, back);
+        if(p && !p->b_note && p->cue.notes == cue.notes) return true;
+    }
+    return false;
+}
+
+void test_parked_chimes_and_the_last_stage_plays_the_fanfare(){
+    ParkingGame game;
+    RecordingSink sink;
+    game.setSound(&sink);
+    driving(game, 76, 20, 0);
+    sink.clear();
+    run(game, GameInput(), ParkingGame::parkedHoldTicks);
+    TEST_ASSERT_TRUE(game.getPhase() == ParkingGame::Phase::PARKED);
+    TEST_ASSERT_EQUAL_UINT32(1, sink.total());
+    TEST_ASSERT_TRUE(cueHeard(sink, game.chimeSound()));
+    TEST_ASSERT_FALSE(cueHeard(sink, game.fanfareSound()));
+    //the flash and the next intro are quiet
+    run(game, GameInput(), ParkingGame::flashTicks + ParkingGame::introTicks);
+    TEST_ASSERT_EQUAL_UINT32(1, sink.total());
+
+    //a whole game by the demo player: a chime for each of the first eleven stages, the fanfare for the twelfth,
+    //over within about a second
+    ParkingGame full;
+    full.setSound(&sink);
+    full.reset(4);
+    sink.clear();
+    uint32_t chimes = 0;
+    bool b_fanfare = false;
+    for(int t = 0; t < 9000 && !full.isOver(); t++){
+        GameInput input;
+        full.demo(input);
+        ParkingGame::Phase before = full.getPhase();
+        uint32_t cues = sink.cueCount(SoundLayer::FRONT);
+        full.update(input);
+        if(before == ParkingGame::Phase::DRIVE && full.getPhase() == ParkingGame::Phase::PARKED){
+            TEST_ASSERT_EQUAL_UINT32(cues + 1, sink.cueCount(SoundLayer::FRONT));
+            const RecordingSink::Play* p = sink.last(SoundLayer::FRONT);
+            if(p->cue.notes == full.chimeSound().notes) chimes++;
+            if(p->cue.notes == full.fanfareSound().notes) b_fanfare = true;
+        }
+    }
+    TEST_ASSERT_TRUE(full.isOver());
+    TEST_ASSERT_EQUAL_UINT32(ParkingGame::levelCount - 1, chimes);
+    TEST_ASSERT_TRUE(b_fanfare);
+    TEST_ASSERT_TRUE(full.fanfareSound().lengthMillis() <= 1200);
+    TEST_ASSERT_EQUAL_UINT32(0, sink.count(SoundLayer::BACK));
+}
+
+//sound never changes the game: the demo plays the same with a sink and without; without one nothing is heard
+void test_sound_leaves_the_demo_deterministic_and_silent_without_a_sink(){
+    ParkingGame quiet, loud;
+    RecordingSink sink, detached;
+    loud.setSound(&sink);
+    quiet.setSound(&detached);
+    quiet.setSound(nullptr);
+    quiet.reset(9);
+    loud.reset(9);
+    for(int t = 0; t < 4000 && !quiet.isOver(); t++){
+        GameInput a, b;
+        quiet.demo(a);
+        loud.demo(b);
+        quiet.update(a);
+        loud.update(b);
+        TEST_ASSERT_EQUAL_FLOAT(quiet.getX(), loud.getX());
+        TEST_ASSERT_EQUAL_FLOAT(quiet.getY(), loud.getY());
+        TEST_ASSERT_EQUAL_FLOAT(quiet.getHeading(), loud.getHeading());
+    }
+    TEST_ASSERT_EQUAL_UINT32(quiet.getClockTicks(), loud.getClockTicks());
+    TEST_ASSERT_EQUAL_UINT8(quiet.getLevel(), loud.getLevel());
+    TEST_ASSERT_TRUE(sink.total() > 100);
+    TEST_ASSERT_EQUAL_UINT32(0, detached.total());
+}
+
 int main(int argc, char** argv){
     UNITY_BEGIN();
     RUN_TEST(test_contract);
@@ -248,5 +415,10 @@ int main(int argc, char** argv){
     RUN_TEST(test_every_stage_starts_free);
     RUN_TEST(test_time_limit_ends_the_game_and_unparked_stages_cost);
     RUN_TEST(test_demo_parks_all_twelve_stages_fairly);
+    RUN_TEST(test_motor_whine_follows_the_speed_and_stops_when_still);
+    RUN_TEST(test_sliding_along_a_wall_scrapes);
+    RUN_TEST(test_impact_crunches_once);
+    RUN_TEST(test_parked_chimes_and_the_last_stage_plays_the_fanfare);
+    RUN_TEST(test_sound_leaves_the_demo_deterministic_and_silent_without_a_sink);
     return UNITY_END();
 }

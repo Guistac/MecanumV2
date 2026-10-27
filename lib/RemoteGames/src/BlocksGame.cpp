@@ -44,6 +44,32 @@ namespace{
     //piece turned at the entry) or one away from it (a piece turned on the stack)
     const int8_t kicks[7][2] = {{0, 0}, {0, 1}, {0, -1}, {0, 2}, {0, -2}, {-1, 0}, {1, 0}};
 
+    //the effects with fixed notes (front layer; synth while the music plays, squares only for the game over)
+    using W = Synth::Wave;
+    const SoundNote::Kind SY = SoundNote::Kind::SYNTH, SQ = SoundNote::Kind::SQUARE;
+    //four columns at once: A major up quick, the top held over its fifth
+    const SoundNote fourNotes[] = {
+        {0, SY, 0, W::SQUARE, BlocksGame::fourHertz, 50, 95, 0},
+        {55, SY, 0, W::SQUARE, 1109, 50, 95, 0},
+        {110, SY, 0, W::SQUARE, 1319, 50, 95, 0},
+        {165, SY, 0, W::SQUARE, 1760, 170, 100, 90},
+        {165, SY, 1, W::PULSE25, 1319, 170, 80, 90},
+    };
+    //level up: E6 A6 B6 E7, the last one ringing
+    const SoundNote levelNotes[] = {
+        {0, SY, 0, W::PULSE25, BlocksGame::levelHertz, 60, 90, 0},
+        {70, SY, 0, W::PULSE25, 1760, 60, 90, 0},
+        {140, SY, 0, W::PULSE25, 1976, 60, 90, 0},
+        {210, SY, 0, W::PULSE25, 2637, 160, 95, 80},
+    };
+    //game over: G5 E5 C5 A4 falling, squares (the music has stopped), over before the Arcade's phrase at 400 ms
+    const SoundNote overNotes[] = {
+        {0, SQ, 0, W::SQUARE, BlocksGame::overHertz, 70, 0, 0},
+        {80, SQ, 0, W::SQUARE, 659, 70, 0, 0},
+        {160, SQ, 0, W::SQUARE, 523, 70, 0, 0},
+        {240, SQ, 0, W::SQUARE, 440, 130, 0, 0},
+    };
+
     void drawCell(Adafruit_GFX& out, int16_t a, int16_t b){
         out.fillRect(wellX + a * BlocksGame::cellPitch, wellY + b * BlocksGame::cellPitch, 2, 2, GameDraw::ON);
     }
@@ -130,7 +156,12 @@ void BlocksGame::spawn(){
     fallTimer = 0.0f;
     lockTimer = 0;
     lockResets = 0;
-    if(!fits(piece)) b_over = true;
+    if(!fits(piece)){
+        b_over = true;
+        //the music stops, a falling phrase
+        sound().stop(SoundLayer::BACK);
+        sound().play(soundCue(overNotes, SoundPriority::GAME));
+    }
 }
 
 bool BlocksGame::fits(const Piece& p) const {
@@ -199,6 +230,7 @@ void BlocksGame::lockPiece(){
         clearing[a] = b_full;
         if(b_full) full++;
     }
+    playLanding(full);
     if(full){
         points += uint32_t(clearPoints[full]) * level();
         clearTimer = clearTicks;     //the wipe plays, then collapse() and the next piece
@@ -220,7 +252,14 @@ void BlocksGame::collapse(){
     }
     for(; to < wellLength; to++) memset(board[to], 0, wellWidth);
     memset(clearing, 0, sizeof(clearing));
+    uint8_t before = level();
     cleared = uint16_t(cleared + removed);
+    if(level() != before){
+        //a jingle in front; the music faster, and from level 3 with its drums (from the top, under the jingle)
+        sound().play(soundCue(levelNotes, SoundPriority::GAME));
+        sound().setTempo(SoundLayer::BACK, musicTempo(level()));
+        if(before < drumsFromLevel && level() >= drumsFromLevel) startTune();
+    }
 }
 
 void BlocksGame::update(const GameInput& input){
@@ -263,8 +302,16 @@ void BlocksGame::update(const GameInput& input){
         if(moveTicks > 200) moveTicks = repeatDelayTicks;
     }
 
-    if(input.clicked[1] || b_flickUp) b_moved |= tryRotate(1);
-    else if(b_flickDown) b_moved |= tryRotate(-1);
+    bool b_turned = false;
+    if(input.clicked[1] || b_flickUp) b_turned = tryRotate(1);
+    else if(b_flickDown) b_turned = tryRotate(-1);
+    //a blip for a turn, a tick for a step across; both give way to an effect still sounding
+    if((b_turned || b_moved) && !sound().isPlaying(SoundLayer::FRONT)){
+        SoundNote note = b_turned ? SoundKit::synthNote(0, rotateHertz, 30, 80, 15)
+                                  : SoundKit::synthNote(0, moveHertz, 10, 60, 5);
+        sound().playNote(note, SoundPriority::GAME);
+    }
+    b_moved |= b_turned;
 
     if(input.clicked[0]){
         piece.a = int8_t(piece.a - dropDistance(piece));
@@ -335,10 +382,13 @@ void BlocksGame::draw(Adafruit_GFX& out) const {
         for(uint8_t i = 0; i < 4; i++) drawCell(out, piece.a + cells[i].a, piece.b + cells[i].b);
     }
 
-    //HUD: the score at the top right, the next piece in the middle as it will enter, the level at the bottom
+    //HUD right of the entry line, its text sideways to read in the sideways grip (game up = screen right) [D-157]:
+    //the score at the right edge (the top of the HUD in that grip), the next piece in the middle as it will enter, the
+    //level next to the entry line; each centred across the screen
     char text[12];
-    snprintf(text, sizeof(text), "%lu", (unsigned long)points);
-    GameDraw::textRight(out, width - 1, 0, text);
+    if(points < 100000) snprintf(text, sizeof(text), "%lu", (unsigned long)points);
+    else snprintf(text, sizeof(text), "%luK", (unsigned long)(points / 1000));     //5 characters fit across
+    GameDraw::textSidewaysCentered(out, width - 1, height / 2, text);
     Cell next[4];
     uint8_t nextPiece = bag[bagIndex];
     cellsOf(nextPiece, 0, next);
@@ -358,7 +408,92 @@ void BlocksGame::draw(Adafruit_GFX& out) const {
                      GameDraw::ON);
     }
     snprintf(text, sizeof(text), "L%u", (unsigned)level());
-    GameDraw::textRight(out, width - 1, height - 7, text);
+    GameDraw::textSidewaysCentered(out, hudX + 6, height / 2, text);
+}
+
+uint16_t BlocksGame::musicTempo(uint8_t level){
+    //6 % faster a level, at most 160 %
+    uint16_t percent = uint16_t(100 + 6 * (level > 1 ? level - 1 : 0));
+    return percent < 160 ? percent : 160;
+}
+
+//Korobeiniki, the 19th-century folk song (public domain), in A minor: the folk melody's two parts, each twice, an
+//eighth a step. The bass and the drums are ours: the bass is roots and fifths a quarter apart, the root an octave up
+//every other bar; the drums a march, kick on 1, snare on 3, hats between.
+//Written for the disc (loud only from about 1 kHz to 5 kHz, nearly silent below 400 Hz): the melody an octave above
+//the song's usual one (A5 to A6, 880 to 1760 Hz) on a full square, the bass an octave up too (C4 to A5) and short, a
+//narrow pulse under the melody, so the voices rarely sound together at full swing (the synth clips their sum at 1)
+void BlocksGame::buildTune(){
+    using namespace SoundKit;
+    //Arduino owns A0 to A17 (the analog pins): the A notes under other names
+    const uint8_t a4 = SoundKit::A4, a5 = SoundKit::A5, a6 = SoundKit::A6;
+    static const uint8_t partOne[32] PROGMEM = {
+        E6, HOLD, B5, C6,   D6, HOLD, C6, B5,   a5, HOLD, a5, C6,   E6, HOLD, D6, C6,
+        B5, HOLD, HOLD, C6, D6, HOLD, E6, HOLD, C6, HOLD, a5, HOLD, a5, HOLD, HOLD, HOLD,
+    };
+    static const uint8_t partTwo[32] PROGMEM = {
+        D6, HOLD, HOLD, F6, a6, HOLD, G6, F6,   E6, HOLD, HOLD, C6, E6, HOLD, D6, C6,
+        B5, HOLD, B5, C6,   D6, HOLD, E6, HOLD, C6, HOLD, a5, HOLD, a5, HOLD, HOLD, HOLD,
+    };
+    //a quarter an entry, two a 2/4 bar: Am E7 Am Am E E7 Am Am, then Dm Dm C C E E7 Am Am
+    static const uint8_t bassOne[16] PROGMEM = {
+        a4, E5,   E5, B4,   a4, E5,   a5, E5,   E4, B4,   E5, B4,   a4, E5,   a5, E5,
+    };
+    static const uint8_t bassTwo[16] PROGMEM = {
+        D4, a4,   D5, a4,   C4, G4,   C5, G4,   E4, B4,   E5, B4,   a4, E5,   a5, E5,
+    };
+    for(uint8_t withDrums = 0; withDrums < 2; withDrums++){
+        NoteWriter& out = withDrums ? static_cast<NoteWriter&>(tuneDrums) : static_cast<NoteWriter&>(tune);
+        out.clear();
+        Tracker t(out, tuneStepMillis);
+        //the melody legato on a full square; the bass plucked (a third of its quarter, decaying)
+        t.instrument(0, Synth::Wave::SQUARE, 88).instrument(1, Synth::Wave::PULSE12, 32, 60);
+        for(uint8_t half = 0; half < 2; half++){
+            const uint8_t* melody = half ? partTwo : partOne;
+            const uint8_t* bass = half ? bassTwo : bassOne;
+            for(uint8_t again = 0; again < 2; again++){
+                uint16_t at = uint16_t(half * 64 + again * 32);
+                t.line(0, melody, 32, at, 1, 78).line(1, bass, 16, at, 2, 45);
+            }
+        }
+        if(withDrums) t.drums("K.H.S.H.K.HKS.H.", 0, tuneSteps / 16, 70);
+        music[withDrums] = t.cue(tuneSteps);
+    }
+    b_tuneBuilt = true;
+}
+
+const SoundCue& BlocksGame::tuneCue(bool b_withDrums){
+    if(!b_tuneBuilt) buildTune();
+    return music[b_withDrums ? 1 : 0];
+}
+
+//the tune for the level from its start, at the level's tempo
+void BlocksGame::startTune(){
+    if(!b_tuneBuilt) buildTune();
+    sound().setTempo(SoundLayer::BACK, musicTempo(level()));
+    sound().play(music[level() >= drumsFromLevel ? 1 : 0], SoundLayer::BACK);
+}
+
+void BlocksGame::playMusic(){
+    if(!b_over) startTune();
+}
+
+//a piece locked: a low thud, or for cleared columns a rising sweep (higher and longer for more), a fanfare for four
+void BlocksGame::playLanding(uint8_t columns){
+    if(columns >= 4){
+        sound().play(soundCue(fourNotes, SoundPriority::GAME));
+        return;
+    }
+    effect.clear();
+    if(columns == 0){
+        effect.sweep(0, landHertz, 110, 60, 4, Synth::Wave::SQUARE, 100, 0, 30);
+        effect.burst(0, 1200, 30, 60, 12, 1);
+    }
+    else{
+        effect.sweep(0, clearHertz, uint16_t(1000 + 500 * columns), uint16_t(110 + 40 * columns), 10,
+                     Synth::Wave::PULSE25, 90, 0, 40);
+    }
+    sound().play(effect.cue());
 }
 
 float BlocksGame::evaluate(const Piece& p) const {

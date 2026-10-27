@@ -141,7 +141,7 @@ EEPROM: byte 0 channel (as before; blank reads as 15, as before), 1 contrast, 2 
 
 | Where | What |
 | --- | --- |
-| `lib/RemoteLogic/src` | hardware-free logic, tested on the host: `StickGuard`, `AxisStepper`, `EstopContacts`, `BatteryMonitor`, `RemoteSettings`, `SettingsMenu`, `PageNavigator`, `StatusView` (big line and line 3), `Dimmer`, `BootGuard` (`ResetHistory`), `UplinkFrame`, `LinkMonitor`, `LedPattern`, `StickCalibration` (math, storage, procedure); `RobotStates.h` and `LiIonBattery.h` moved here |
+| `lib/RemoteLogic/src` | hardware-free logic, tested on the host: `StickGuard`, `AxisStepper`, `EstopContacts`, `BatteryMonitor`, `RemoteSettings`, `SettingsMenu`, `PageNavigator`, `StatusView` (big line and line 3), `Dimmer`, `BootGuard` (`ResetHistory`), `UplinkFrame`, `LinkMonitor`, `LedPattern`, `StickCalibration` (math, storage, procedure), `Stopwatch` (D-160); `RobotStates.h` and `LiIonBattery.h` moved here |
 | `test/test_remote_logic` | the host tests: `pio test -e native` |
 | `src/RemoteBoard/RemoteBoard.cpp` | the loop: inputs, logic, LEDs, radio, frame, reply, screen |
 | `lib/RemoteUi/src` | the screens: `RemoteScreens` draws a `ScreenModel` with Adafruit GFX (fonts, shapes, small icon bitmaps) |
@@ -171,10 +171,12 @@ The display is 128 x 32 pixels, read at arm's length. Rules, from the review of 
 - Main screen grid: top line rows 0..6 (signal, channel, vehicle voltage, remote battery), middle rows 8..22 (the
   state word with a dot, or an alarm banner with an icon), bottom rows 23..31. Bottom left above the speed switch:
   `OFF` as plain text, `SLOW` / `FAST` in a pill; bottom right above the frame switch: `BODY` plain, `WORLD` in a pill;
-  between them the page dots, a marker pill or "thank you". During an alarm (a full-width banner leaves no gap above
+  between them the stopwatch (Stopwatch (D-160) below; the Status page has no page dots), or while they last a
+  marker pill or "thank you". A countdown adds its bar across the screen in row 8. During an alarm (a full-width banner leaves no gap above
   9 px pills) the bottom row is the alarm's explanation in plain text.
 - The alive sign: a one pixel gap travelling round a dot's edge every few frames (the screen is still being drawn),
-  one per screen: the state dot on the main screen (the page dots stay still there), the active page dot on the pages
+  one per screen: the state dot on the main screen, the active page dot on the pages; while sticks are to be released
+  the main screen has no state dot, and a single 3 x 3 dot at the right end of the bottom row's centre span carries it
   ([alive_enabled.gif](alive_enabled.gif), [alive_page.gif](alive_page.gif)). A hung loop no longer freezes the screen
   for long anyway: the watchdog reboots the remote within a second.
 - Signal: a 16 px wedge filled column by column (16 steps) with the weaker of the two RSSIs, the rest a dotted
@@ -201,7 +203,67 @@ screen reveals itself as before ([startup.gif](startup.gif)). `tools/screens/log
 `lib/RemoteUi/src/BerupoLogo.h` (each letter at 4x, 24 px tall, gloss marks filled in); `RemoteSplash` draws it.
 Both stick buttons held at power on: the former "Becker Poels" startup instead (0.75 s, unchanged).
 
-### Games (easter egg, D-148 pending)
+### Stopwatch (D-160)
+
+Owner's request (2026-10-27), for rehearsals driven from the handheld alone: a stopwatch and countdown on the main
+screen. Display only: nothing changes in what the remote sends (the stick button bits go out as before, Stacato
+ignores them). Logic in `lib/RemoteLogic/src/Stopwatch.h` (`Stopwatch`, `StopwatchControl`), host tested; the set time
+lives in RAM only (kept until power off).
+
+Controls, only on the Status page showing a state: not on any other page, not with the menu open, in the games or
+their loading, in the calibration, before the sticks are zeroed at startup, during an alarm or while sticks are to be
+released. A press that happened elsewhere is spent: holding a button while coming back does nothing.
+
+- Right stick click: start / stop (stopped: start continues).
+- Left stick click: reset (to 0:00, or to the set countdown) and stop.
+- Both together: nothing. A click acts 50 ms after its press (or on its release, if sooner) and only if the other
+  button stays up; a press while the other one is held is ignored (except in edit mode, where the right click clears
+  the set time). The time is taken at the press, so nothing is lost.
+- Edit mode: hold the left stick button with the speed switch at OFF (its press resets first, so the timer is never
+  running). While held (owner, after trying it: second-accurate, quick for minutes):
+  - right stick up / down: +/- 1 s (first step on the push, repeats after 400 ms every 150 ms, every 80 ms once
+    held 1.5 s; always 1 s);
+  - right stick right / left: +/- 1 min (first step on the push, repeats after 400 ms every 200 ms);
+  - a diagonal push counts as its stronger axis;
+  - right stick click: clear to 0:00 (counting up), BUMP;
+  - 0:00 to 99:59: a step past either end stays there (BUMP); stepping down to 0:00 also sounds BUMP.
+
+  Letting go (or the switch leaving OFF) ends it: the timer stands at the new time. A stick already out when edit
+  mode starts does nothing until it has come back. During the edit hold the
+  sticks-at-OFF grind and the OFF blink stay quiet (only then).
+
+The two stick buttons are otherwise unused inputs, and the timer interferes with nothing: its state lives in the
+board and is never paused or reset by a page change, the menu, the calibration, the games, the USB/radio handover or an
+alarm; it keeps counting, shown on the Status page only. The time-up beeps play wherever the remote is (they may cut
+a game effect). Nothing it does changes the frame sent, the stick guard, the zero capture, the arcade gate or the
+menu.
+
+Screen, bottom centre between the speed and frame labels, centred on x 63 and kept 1 px clear of both:
+
+- Counting up or idle: plain digits, `m:ss.t` below 10 minutes, `mm:ss` from 10 (`0:00.0`, `2:13.4`, `12:05`).
+- Countdown: plain digits (the time left, rounded up to the tenth) and a 1 px bar across the whole width in row 8,
+  lit from the left for remaining / set time, so it shrinks from right to left; idle with a set time it is full.
+  Row 8 is the only row that keeps 1 px clear of the top row (row 7 empty); the state word's letters start at row 9,
+  so the bar leaves a notch over each letter top (the letter's columns and one either side). Nothing touches and
+  nothing else moves. The other candidates, rendered and rejected: moving the state word down 1 px (bar in row 8)
+  makes its baseline touch the bottom row's pills (SLOW / FAST, WORLD, the edit and overtime pills) in 4 of 5
+  example screens; the bar at the bottom edge with the bottom row 1 px up touches every pill along the bar and the
+  word's baseline as well. The screen has 32 rows and the full layout uses all of them, so one of the three had to
+  give; the notches cost nothing else.
+- Past zero it does not stop: negative time counting away from zero (`-0:05.0`, `-1:12.3`) in a pill, the pill and
+  plain text taking turns every 0.5 s, the bar full and blinking with it; stopped there, pill and bar steady, the
+  time frozen.
+- Stopped (otherwise): the digits blink slowly (0.8 s on, 0.4 s off).
+- Edit mode: a steady filled pill `SET 2:30` (`SET 0:00` = counting up) with a small stick mark: up and down
+  triangles (seconds) and a dot either side (minutes).
+- Markers (`REBOOT`, `RST`, `HOT`, `SAFE`) and "thank you" show over it while they last; during an alarm the row is
+  the alarm's note as before, the bar is hidden too, and the timer runs on.
+
+Sounds (D-158 families): start A7, stop A6, reset D6, edit entered C8, edit left C7, each one plain square (interface,
+setting All); steps the VALUE sound, the ends and clearing BUMP. Time up: three clean rising beeps F#6 A#6 C#7, once
+at zero, alarm priority (plays at Alarms only, not at Off; it does not cut a status alarm that is sounding).
+
+### Games (easter egg, D-157)
 
 Six games on the sticks: Pong, Parking (the Mecanum vehicle, driven as in body frame), Cave, Rocks (twin-stick
 shooter), Snake and Blocks (Tetris turned sideways, the floor on the left). Code in `lib/RemoteGames` (one class per

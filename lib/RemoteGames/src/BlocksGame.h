@@ -1,10 +1,14 @@
 #pragma once
 #include "Game.h"
+#include <SoundKit.h>
 
 //BLOCKS: the falling-blocks game turned a quarter turn. The well's floor is the line at the left, pieces enter at the
 //right and fall leftward; a full column clears. Left stick up/down moves the piece across, left stick left drops it
 //faster, left click drops it at once; right click or a right stick flick up rotates clockwise, a flick down rotates
 //back. Every 10 columns the level rises and the pieces fall faster; the game ends when a new piece cannot enter.
+//Sound [D-157]: Korobeiniki behind (the folk melody, our own bass, our own drums from level 3), faster each level;
+//synth effects in front (move tick, rotate blip, landing thud, clear sweep or fanfare, level jingle), squares only
+//for the game over
 class BlocksGame : public Game{
 public:
     static const int8_t wellLength = 28;    //cells from the floor (left) to the entry (right)
@@ -19,6 +23,27 @@ public:
     bool isOver() const override { return b_over; }
     uint32_t score() const override { return points; }
     void demo(GameInput& input) override;
+    void helpLines(const char* lines[3]) const override {
+        lines[0] = "L UP/DN: MOVE PIECE";
+        lines[1] = "L LEFT/L CLICK: DROP";
+        lines[2] = "R CLICK/FLICK: ROTATE";
+    }
+    void playMusic() override;
+
+    //sound, for the tests: the first pitch of each effect, the music's tempo at a level, the level the drums join
+    static const uint16_t moveHertz = 2637;     //E7, a tick
+    static const uint16_t rotateHertz = 1397;   //F6, a blip
+    static const uint16_t landHertz = 330;      //the thud's sweep starts here
+    static const uint16_t clearHertz = 523;     //the clear's sweep starts here (one to three columns)
+    static const uint16_t fourHertz = 880;      //A5, the fanfare for four columns
+    static const uint16_t levelHertz = 1319;    //E6, the level jingle
+    static const uint16_t overHertz = 784;      //G5, the game over's first square
+    static const uint8_t drumsFromLevel = 3;
+    static const uint16_t tuneStepMillis = 200; //an eighth at tempo 100 (a quarter at 150 a minute)
+    static const uint16_t tuneSteps = 128;      //16 bars of 4/4 in eighths: part one twice, part two twice
+    static uint16_t musicTempo(uint8_t level);
+    //the tune (the tests, the WAV renderer): with or without its drums, built on first use
+    const SoundCue& tuneCue(bool b_withDrums);
 
     //for the tests
     uint8_t pieceType() const { return piece.type; }
@@ -55,6 +80,11 @@ private:
     int8_t dropDistance(const Piece& p) const;
     void collapse();
 
+    //sound (never game state)
+    void buildTune();
+    void startTune();
+    void playLanding(uint8_t columns);
+
     //the demo player
     void plan();
     float evaluate(const Piece& p) const;
@@ -87,4 +117,12 @@ private:
     uint8_t demoWait = 0;
     uint8_t demoRotateWait = 0;
     uint16_t demoTicks = 0;
+
+    //the music, built at the first playMusic(): melody and bass, and the same with the drums
+    SoundKit::NoteList<144> tune;
+    SoundKit::NoteList<352> tuneDrums;         //330 notes: 138 of melody and bass, 192 of drums
+    SoundCue music[2];
+    bool b_tuneBuilt = false;
+    //an effect made at run time (sweeps); the player reads it while it sounds
+    SoundKit::NoteList<24> effect;
 };

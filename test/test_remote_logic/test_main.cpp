@@ -9,6 +9,8 @@
 #include <RemoteSettings.h>
 #include <SettingsMenu.h>
 #include <SoundPlayer.h>
+#include <SoundKit.h>
+#include <RecordingSink.h>
 #include <RemoteSounds.h>
 #include <PageNavigator.h>
 #include <StatusView.h>
@@ -18,6 +20,8 @@
 #include <LinkMonitor.h>
 #include <LedPattern.h>
 #include <StickCalibration.h>
+#include <LinkPath.h>
+#include <Stopwatch.h>
 
 void setUp(){}
 void tearDown(){}
@@ -331,9 +335,18 @@ void test_status_changes_sound_once_and_not_at_power_on(){
     TEST_ASSERT_TRUE(forStatusChange(M::ENABLING, M::ENABLED) == Sound::STATUS_ENABLED);
     TEST_ASSERT_TRUE(forStatusChange(M::ENABLED, M::DISABLING) == Sound::STATUS_DISABLING);
     TEST_ASSERT_TRUE(forStatusChange(M::DISABLING, M::DISABLED) == Sound::STATUS_DISABLED);
+    TEST_ASSERT_TRUE(forStatusChange(M::ENABLING, M::DISABLED) == Sound::STATUS_DISABLED);
     TEST_ASSERT_TRUE(forStatusChange(M::ENABLED, M::ESTOP) == Sound::STATUS_ESTOP);
-    TEST_ASSERT_TRUE(forStatusChange(M::ENABLED, M::STOPPING) == Sound::STATUS_ESTOP);
-    TEST_ASSERT_TRUE(forStatusChange(M::STOPPING, M::EXT_ESTOP) == Sound::NONE);
+    //Stacato reports a disable ramp and an E-stop ramp alike: the stopping sound, then the E-stop sound only when
+    //the vehicle reports itself E-stopped; a normal disable ends on the disabled arpeggio
+    TEST_ASSERT_TRUE(forStatusChange(M::ENABLED, M::STOPPING) == Sound::STATUS_DISABLING);
+    TEST_ASSERT_TRUE(forStatusChange(M::STOPPING, M::DISABLED) == Sound::STATUS_DISABLED);
+    //the ramp loops until the next state cuts in; the disabled arpeggio plays once
+    TEST_ASSERT_EQUAL_UINT16(disablingLoopMillis, cue(Sound::STATUS_DISABLING).loopMillis);
+    TEST_ASSERT_EQUAL_UINT16(0, cue(Sound::STATUS_DISABLED).loopMillis);
+    TEST_ASSERT_EQUAL_UINT8(SoundPriority::ALARM, cue(Sound::STATUS_DISABLING).priority);
+    TEST_ASSERT_TRUE(forStatusChange(M::STOPPING, M::EXT_ESTOP) == Sound::STATUS_ESTOP);
+    TEST_ASSERT_TRUE(forStatusChange(M::ESTOP, M::STOPPING) == Sound::STATUS_ESTOP_RELEASED);
     TEST_ASSERT_TRUE(forStatusChange(M::ESTOP, M::EXT_ESTOP) == Sound::NONE);        //still E-stopped for a moment
     TEST_ASSERT_TRUE(forStatusChange(M::EXT_ESTOP, M::DISABLED) == Sound::STATUS_ESTOP_RELEASED);
     TEST_ASSERT_TRUE(forStatusChange(M::DISABLED, M::NO_LINK) == Sound::WARNING);
@@ -344,6 +357,12 @@ void test_status_changes_sound_once_and_not_at_power_on(){
     TEST_ASSERT_TRUE(forSpeedChange(uint8_t(SpeedMode::HIGH_SPEED), uint8_t(SpeedMode::LOW_SPEED)) == Sound::SPEED_OFF);
     TEST_ASSERT_TRUE(refusesEnable(M::ESTOP));
     TEST_ASSERT_FALSE(refusesEnable(M::DISABLED));
+    //disable is refused only when it cannot reach the vehicle
+    TEST_ASSERT_TRUE(refusesDisable(M::NO_LINK));
+    TEST_ASSERT_TRUE(refusesDisable(M::RADIO_FAULT));
+    TEST_ASSERT_FALSE(refusesDisable(M::ENABLED));
+    TEST_ASSERT_FALSE(refusesDisable(M::DISABLED));
+    TEST_ASSERT_FALSE(refusesDisable(M::ESTOP));
 }
 
 void test_player_alarms_are_not_cut_by_lower_priority(){
@@ -364,8 +383,9 @@ void test_player_alarms_are_not_cut_by_lower_priority(){
     TEST_ASSERT_EQUAL_UINT16(2093, out.lastHertz);
     TEST_ASSERT_TRUE(player.play(RemoteSounds::cue(RemoteSounds::Sound::REFUSED)));
     for(uint32_t t = 3000; t < 3500; t += 5) player.update(t, out);
-    TEST_ASSERT_EQUAL_INT(2, out.plays);        //the buzz: two synth voices
-    TEST_ASSERT_TRUE(out.lastVoice >= 2);       //the front layer's voices
+    TEST_ASSERT_EQUAL_INT(7, out.tones);        //the "no-no": two falling two-leg buzzes, as loud as squares
+    TEST_ASSERT_EQUAL_INT(0, out.plays);
+    TEST_ASSERT_EQUAL_UINT16(554, out.lastHertz);
 }
 
 void test_player_layers_loop_and_notes_made_at_run_time(){
@@ -393,6 +413,242 @@ void test_player_layers_loop_and_notes_made_at_run_time(){
     player.stop(SoundLayer::BACK);
     player.update(1005, out);
     TEST_ASSERT_FALSE(player.isPlaying(SoundLayer::BACK));
+}
+
+//——— the sound engine for the games [D-158]: three back voices, long cues, tempo, the kit ———
+
+//every synth note the player hands over: its voice, pitch and length
+struct NoteLog : public SoundOutput{
+    static const int size = 512;
+    uint8_t voice[size];
+    uint16_t hertz[size];
+    float seconds[size];
+    float decay[size];
+    uint32_t at[size];
+    int count = 0;
+    uint32_t now = 0;
+    void tone(uint16_t) override {}
+    void duet(uint16_t, uint16_t) override {}
+    void quietSquares() override {}
+    void play(uint8_t v, Synth::Wave, float h, float, float s, float d) override {
+        if(count >= size) return;
+        voice[count] = v;
+        hertz[count] = uint16_t(h);
+        seconds[count] = s;
+        decay[count] = d;
+        at[count] = now;
+        count++;
+    }
+    void release(uint8_t) override {}
+    void playClip(uint8_t, const SoundClip&, float) override {}
+    void playScore(const SynthScoreNote*, uint8_t) override {}
+};
+
+static void runPlayer(SoundPlayer& player, NoteLog& out, uint32_t from, uint32_t to){
+    for(uint32_t t = from; t < to; t++){
+        out.now = t;
+        player.update(t, out);
+    }
+}
+
+void test_player_back_layer_has_three_voices(){
+    static const SoundNote music[] = {
+        {0, SoundNote::Kind::SYNTH, 0, Synth::Wave::PULSE25, 523, 50, 80, 0},
+        {0, SoundNote::Kind::SYNTH, 1, Synth::Wave::TRIANGLE, 131, 50, 80, 0},
+        {0, SoundNote::Kind::SYNTH, 2, Synth::Wave::NOISE, 4500, 50, 80, 20},
+    };
+    static const SoundNote effect[] = {
+        {0, SoundNote::Kind::SYNTH, 0, Synth::Wave::SQUARE, 1000, 50, 80, 0},
+        {0, SoundNote::Kind::SYNTH, 2, Synth::Wave::SQUARE, 2000, 50, 80, 0},
+    };
+    SoundPlayer player;
+    NoteLog out;
+    runPlayer(player, out, 0, 1);
+    TEST_ASSERT_TRUE(player.play(soundCue(music, SoundPriority::GAME), SoundLayer::BACK));
+    TEST_ASSERT_TRUE(player.play(soundCue(effect, SoundPriority::GAME), SoundLayer::FRONT));
+    runPlayer(player, out, 1, 10);
+    TEST_ASSERT_EQUAL_INT(5, out.count);
+    //front first (layer 0): voice 0 on synth voice 2, voice 2 on its voice 1 (synth 3); back: 0, 1 and 4
+    TEST_ASSERT_EQUAL_UINT8(2, out.voice[0]);
+    TEST_ASSERT_EQUAL_UINT8(3, out.voice[1]);
+    TEST_ASSERT_EQUAL_UINT8(0, out.voice[2]);
+    TEST_ASSERT_EQUAL_UINT8(1, out.voice[3]);
+    TEST_ASSERT_EQUAL_UINT8(4, out.voice[4]);
+    TEST_ASSERT_EQUAL_UINT8(4, SoundPlayer::synthVoice(SoundLayer::BACK, 2));
+    TEST_ASSERT_TRUE(Synth::voiceCount > 4);
+}
+
+void test_player_plays_cues_of_more_than_255_notes(){
+    static SoundNote notes[300];
+    for(uint16_t i = 0; i < 300; i++) notes[i] = {uint16_t(i * 10), SoundNote::Kind::SYNTH, 0, Synth::Wave::SQUARE, uint16_t(200 + i), 5, 80, 0};
+    SoundCue cue = soundCue(notes, SoundPriority::GAME, 3000);
+    TEST_ASSERT_EQUAL_UINT16(300, cue.noteCount);
+    TEST_ASSERT_EQUAL_UINT32(2995, cue.lengthMillis());
+    SoundPlayer player;
+    NoteLog out;
+    runPlayer(player, out, 0, 1);
+    player.play(cue, SoundLayer::BACK);
+    runPlayer(player, out, 1, 3005);
+    TEST_ASSERT_EQUAL_INT(301, out.count);         //all 300, then the loop's first again
+    TEST_ASSERT_EQUAL_UINT16(499, out.hertz[299]);
+    TEST_ASSERT_EQUAL_UINT16(200, out.hertz[300]);
+}
+
+void test_player_tempo_keeps_the_place_and_shortens_notes(){
+    static const SoundNote tune[] = {
+        {0, SoundNote::Kind::SYNTH, 0, Synth::Wave::SQUARE, 100, 80, 80, 40},
+        {100, SoundNote::Kind::SYNTH, 0, Synth::Wave::SQUARE, 200, 80, 80, 40},
+        {200, SoundNote::Kind::SYNTH, 0, Synth::Wave::SQUARE, 300, 80, 80, 40},
+        {300, SoundNote::Kind::SYNTH, 0, Synth::Wave::SQUARE, 400, 80, 80, 40},
+        {400, SoundNote::Kind::SYNTH, 0, Synth::Wave::SQUARE, 500, 80, 80, 40},
+    };
+    SoundPlayer player;
+    NoteLog out;
+    runPlayer(player, out, 0, 1);
+    SoundSink& sink = player;
+    TEST_ASSERT_FALSE(sink.isPlaying(SoundLayer::BACK));
+    sink.play(soundCue(tune, SoundPriority::GAME, 500), SoundLayer::BACK);
+    runPlayer(player, out, 1, 250);
+    TEST_ASSERT_EQUAL_INT(3, out.count);
+    TEST_ASSERT_TRUE(sink.isPlaying(SoundLayer::BACK));
+    //twice as fast from 250 ms: the note at 300 comes 25 ms later, not at once and not 50 ms later
+    sink.setTempo(SoundLayer::BACK, 200);
+    TEST_ASSERT_EQUAL_UINT16(200, player.getTempo(SoundLayer::BACK));
+    runPlayer(player, out, 250, 270);
+    TEST_ASSERT_EQUAL_INT(3, out.count);
+    runPlayer(player, out, 270, 280);
+    TEST_ASSERT_EQUAL_INT(4, out.count);
+    TEST_ASSERT_EQUAL_UINT32(275, out.at[3]);
+    TEST_ASSERT_FLOAT_WITHIN(0.0005f, 0.040f, out.seconds[3]);     //80 ms written, half as long
+    TEST_ASSERT_FLOAT_WITHIN(0.0005f, 0.020f, out.decay[3]);
+    TEST_ASSERT_FLOAT_WITHIN(0.0005f, 0.080f, out.seconds[0]);
+    //the loop goes on at that speed: 400 at 325, the loop's start (500) at 375
+    runPlayer(player, out, 280, 380);
+    TEST_ASSERT_EQUAL_INT(6, out.count);
+    TEST_ASSERT_EQUAL_UINT16(100, out.hertz[5]);
+    //clamped, and a stopped layer is not playing
+    sink.setTempo(SoundLayer::BACK, 0);
+    TEST_ASSERT_EQUAL_UINT16(SoundPlayer::minTempo, player.getTempo(SoundLayer::BACK));
+    sink.stop(SoundLayer::BACK);
+    TEST_ASSERT_FALSE(sink.isPlaying(SoundLayer::BACK));
+    SilentSink silent;
+    TEST_ASSERT_FALSE(silent.play(soundCue(tune, SoundPriority::GAME)));
+    TEST_ASSERT_FALSE(silent.isPlaying(SoundLayer::FRONT));
+}
+
+void test_sound_kit_pitches_drums_and_sweeps(){
+    using namespace SoundKit;
+    TEST_ASSERT_EQUAL_UINT16(440, hertz(A4));
+    TEST_ASSERT_EQUAL_UINT16(262, hertz(C4));
+    TEST_ASSERT_EQUAL_UINT16(880, hertz(A5));
+    TEST_ASSERT_EQUAL_UINT8(E5, pentatonic(C5, 2));
+    TEST_ASSERT_EQUAL_UINT8(D6, pentatonic(C5, 6));
+    //the kick, for the disc: a thump of noise, then a square sweeping fast from 500 Hz to 150 Hz, all on the drum
+    //voice within about 50 ms; snare and hat bright noise (the noise's pitch is its rate of change, so its energy
+    //sits below it: the disc's 1 to 5 kHz)
+    SoundNote k[kickNoteCount];
+    TEST_ASSERT_EQUAL_UINT8(6, kick(k, 100));
+    TEST_ASSERT_TRUE(k[0].wave == Synth::Wave::NOISE);
+    TEST_ASSERT_EQUAL_UINT16(500, k[1].hertz);
+    TEST_ASSERT_EQUAL_UINT16(150, k[5].hertz);
+    for(uint8_t i = 2; i < kickNoteCount; i++) TEST_ASSERT_TRUE(k[i].hertz < k[i - 1].hertz);
+    TEST_ASSERT_TRUE(k[5].atMillis + k[5].millis <= 100 + 55);
+    for(const SoundNote& n : k) TEST_ASSERT_EQUAL_UINT8(2, n.voice);
+    SoundNote s = snare(0), h = hat(0);
+    TEST_ASSERT_TRUE(s.wave == Synth::Wave::NOISE && s.millis == 90 && s.voice == 2);
+    TEST_ASSERT_TRUE(h.wave == Synth::Wave::NOISE && h.millis == 20 && h.levelPercent < s.levelPercent);
+    //a sweep: from the first pitch to the last, evenly in time
+    SoundNote w[maxSweepSteps];
+    TEST_ASSERT_EQUAL_UINT8(8, sweep(w, 50, 2000, 500, 80, 8));
+    TEST_ASSERT_EQUAL_UINT16(2000, w[0].hertz);
+    TEST_ASSERT_EQUAL_UINT16(500, w[7].hertz);
+    TEST_ASSERT_EQUAL_UINT16(50, w[0].atMillis);
+    TEST_ASSERT_EQUAL_UINT16(120, w[7].atMillis);
+    for(uint8_t i = 1; i < 8; i++) TEST_ASSERT_TRUE(w[i].hertz < w[i - 1].hertz);
+    //a grain only every period, and not over an effect playing in front
+    RecordingSink sink;
+    Grain grain;
+    int played = 0;
+    for(int t = 0; t < 12; t++) if(grain.due(3) && grain.play(sink, synthNote(0, 300, 20, 60))) played++;
+    TEST_ASSERT_EQUAL_INT(4, played);
+    sink.setPlaying(SoundLayer::FRONT, true);
+    TEST_ASSERT_FALSE(grain.play(sink, synthNote(0, 300, 20, 60)));
+    TEST_ASSERT_TRUE(grain.play(sink, synthNote(0, 300, 20, 60), false));
+    //sound's own random numbers: the same seed, the same pitches
+    SoundRandom a(7), b(7);
+    for(int i = 0; i < 5; i++) TEST_ASSERT_EQUAL_UINT32(a.next(), b.next());
+}
+
+void test_tracker_writes_a_tune_in_time_order(){
+    using namespace SoundKit;
+    static NoteList<64> notes;
+    static const uint8_t melody[] = {E5, HOLD, B4, C5, REST, D5};
+    static const Step bass[] = {{0, 1, C3, 2, 70}, {4, 1, G2, 2, 70}};
+    Tracker t(notes, 100);
+    t.instrument(0, Synth::Wave::PULSE25, 50).instrument(1, Synth::Wave::TRIANGLE, 100, 30);
+    t.drums("K..S", 0, 2).line(0, melody, sizeof(melody), 0, 1, 80).steps(bass, 2);
+    SoundCue cue = t.cue(8);
+    TEST_ASSERT_EQUAL_UINT16(800, cue.loopMillis);
+    TEST_ASSERT_EQUAL_UINT8(SoundPriority::GAME, cue.priority);
+    //drums: 2 kicks of 6 notes, 2 snares; melody: 4 notes (the HOLD lengthens E5, the REST is nothing); bass 2
+    TEST_ASSERT_EQUAL_UINT16(12 + 2 + 4 + 2, cue.noteCount);
+    for(uint16_t i = 1; i < cue.noteCount; i++) TEST_ASSERT_TRUE(cue.notes[i].atMillis >= cue.notes[i - 1].atMillis);
+    //E5 two steps long, half gated; the bass with its own wave and decay
+    bool b_e5 = false, b_bass = false;
+    for(uint16_t i = 0; i < cue.noteCount; i++){
+        const SoundNote& n = cue.notes[i];
+        if(n.hertz == hertz(E5)){
+            b_e5 = true;
+            TEST_ASSERT_EQUAL_UINT16(100, n.millis);
+            TEST_ASSERT_TRUE(n.wave == Synth::Wave::PULSE25);
+            TEST_ASSERT_EQUAL_UINT8(0, n.voice);
+        }
+        if(n.hertz == hertz(G2)){
+            b_bass = true;
+            TEST_ASSERT_EQUAL_UINT16(400, n.atMillis);
+            TEST_ASSERT_EQUAL_UINT16(200, n.millis);
+            TEST_ASSERT_EQUAL_UINT16(30, n.decayMillis);
+            TEST_ASSERT_TRUE(n.wave == Synth::Wave::TRIANGLE);
+        }
+    }
+    TEST_ASSERT_TRUE(b_e5 && b_bass);
+    //the D5 after the rest at step 5
+    TEST_ASSERT_TRUE(cue.notes[cue.noteCount - 1].atMillis == 500 || cue.notes[cue.noteCount - 2].atMillis == 500);
+    //a full list drops what does not fit
+    NoteList<2> tiny;
+    tiny.kick(0);
+    TEST_ASSERT_EQUAL_UINT16(2, tiny.size());
+    TEST_ASSERT_TRUE(tiny.isFull());
+}
+
+void test_recording_sink_remembers_per_layer(){
+    static const SoundNote two[] = {
+        {0, SoundNote::Kind::SYNTH, 0, Synth::Wave::SQUARE, 700, 50, 80, 0},
+        {60, SoundNote::Kind::SYNTH, 0, Synth::Wave::SQUARE, 900, 50, 80, 0},
+    };
+    RecordingSink sink;
+    SoundSink& s = sink;
+    s.play(soundCue(two, SoundPriority::GAME, 120), SoundLayer::BACK);
+    s.playNote(SoundKit::synthNote(0, 1234, 20, 70), SoundPriority::GAME);
+    s.setTempo(SoundLayer::BACK, 140);
+    s.stop(SoundLayer::FRONT);
+    TEST_ASSERT_EQUAL_UINT32(1, sink.cueCount(SoundLayer::BACK));
+    TEST_ASSERT_EQUAL_UINT32(1, sink.noteCount(SoundLayer::FRONT));
+    TEST_ASSERT_EQUAL_UINT32(2, sink.total());
+    TEST_ASSERT_EQUAL_UINT16(1234, sink.lastHertz(SoundLayer::FRONT));
+    TEST_ASSERT_EQUAL_UINT16(700, sink.lastHertz(SoundLayer::BACK));
+    TEST_ASSERT_TRUE(sink.heard(SoundLayer::BACK, 900));
+    TEST_ASSERT_FALSE(sink.heard(SoundLayer::FRONT, 900));
+    TEST_ASSERT_EQUAL_UINT16(120, sink.last(SoundLayer::BACK)->cue.loopMillis);
+    TEST_ASSERT_EQUAL_UINT16(140, sink.getTempo(SoundLayer::BACK));
+    TEST_ASSERT_EQUAL_UINT32(1, sink.stopCount(SoundLayer::FRONT));
+    TEST_ASSERT_NULL(sink.last(SoundLayer::FRONT, 1));
+    for(int i = 0; i < 40; i++) s.playNote(SoundKit::synthNote(0, uint16_t(100 + i), 20, 70), SoundPriority::GAME);
+    TEST_ASSERT_EQUAL_UINT16(139, sink.lastHertz(SoundLayer::FRONT));
+    TEST_ASSERT_EQUAL_UINT16(138, sink.last(SoundLayer::FRONT, 1)->note.hertz);
+    sink.clear();
+    TEST_ASSERT_EQUAL_UINT32(0, sink.total());
+    TEST_ASSERT_EQUAL_UINT16(100, sink.getTempo(SoundLayer::BACK));
 }
 
 //——— PageNavigator ———
@@ -759,6 +1015,416 @@ void test_calibrator_rest_then_circle(){
     TEST_ASSERT_EQUAL_UINT16(980, calibrator.getResult().axes[2].high);
 }
 
+//[D-159] USB takes over after 1 s of Stacato's heartbeat, never while a vehicle drives over the radio; back to the
+//radio as soon as the heartbeat stops
+void test_link_path_usb_takes_over_and_gives_back(){
+    const uint8_t disabled = uint8_t(RobotState::DISABLED);
+    const uint8_t enabled = uint8_t(RobotState::ENABLED);
+    LinkPath link;
+    TEST_ASSERT_FALSE(link.update(false, true, disabled, 0));
+    TEST_ASSERT_TRUE(link.getPath() == LinkPath::Path::RADIO);
+    //heartbeat appears: not before a second without a gap
+    TEST_ASSERT_FALSE(link.update(true, true, disabled, 100));
+    TEST_ASSERT_FALSE(link.update(true, true, disabled, 1099));
+    TEST_ASSERT_TRUE(link.update(true, true, disabled, 1100));
+    TEST_ASSERT_TRUE(link.isUsb());
+    TEST_ASSERT_FALSE(link.update(true, false, disabled, 5000));
+    //heartbeat gone: radio at once
+    TEST_ASSERT_TRUE(link.update(false, false, disabled, 6000));
+    TEST_ASSERT_FALSE(link.isUsb());
+    //a gap restarts the settle time
+    link.update(true, false, disabled, 7000);
+    link.update(false, false, disabled, 7500);
+    TEST_ASSERT_FALSE(link.update(true, false, disabled, 7600));
+    TEST_ASSERT_FALSE(link.update(true, false, disabled, 8500));
+    TEST_ASSERT_TRUE(link.update(true, false, disabled, 8600));
+}
+
+void test_link_path_waits_while_driving_over_radio(){
+    const uint8_t disabled = uint8_t(RobotState::DISABLED);
+    LinkPath link;
+    link.update(true, true, uint8_t(RobotState::ENABLED), 0);
+    TEST_ASSERT_FALSE(link.update(true, true, uint8_t(RobotState::ENABLED), 2000));
+    TEST_ASSERT_TRUE(link.isUsbWaiting(true, 2000));
+    TEST_ASSERT_FALSE(link.update(true, true, uint8_t(RobotState::ENABLING), 3000));
+    //disabled, or the radio link gone (the receiver stops the vehicle itself): USB takes over
+    TEST_ASSERT_TRUE(link.update(true, true, disabled, 4000));
+    TEST_ASSERT_FALSE(link.isUsbWaiting(true, 4000));
+    LinkPath lost;
+    lost.update(true, true, uint8_t(RobotState::ENABLED), 0);
+    TEST_ASSERT_TRUE(lost.update(true, false, uint8_t(RobotState::ENABLED), 1000));
+    //a ramp waits too, but at most 5 s (Stacato reports a vehicle that is off as E-stopping, for ever)
+    const uint8_t stopping = uint8_t(RobotState::EMERGENCY_STOPPING);
+    LinkPath ramp;
+    ramp.update(true, true, stopping, 0);
+    TEST_ASSERT_FALSE(ramp.update(true, true, stopping, 2000));
+    TEST_ASSERT_FALSE(ramp.update(true, true, uint8_t(RobotState::DISABLING), 4900));
+    TEST_ASSERT_TRUE(ramp.update(true, true, stopping, 5000));
+    //no Stacato: never waiting
+    LinkPath none;
+    none.update(false, true, uint8_t(RobotState::ENABLED), 0);
+    TEST_ASSERT_FALSE(none.isUsbWaiting(false, 5000));
+}
+
+//——— Stopwatch [D-160] ———
+
+void test_stopwatch_start_stop_reset_and_format(){
+    Stopwatch w;
+    TEST_ASSERT_TRUE(w.getState() == Stopwatch::State::IDLE);
+    TEST_ASSERT_EQUAL_UINT32(0, w.elapsed(5000));
+    w.start(1000);
+    TEST_ASSERT_EQUAL_UINT32(2500, w.elapsed(3500));
+    w.stop(4000);
+    TEST_ASSERT_TRUE(w.getState() == Stopwatch::State::STOPPED);
+    TEST_ASSERT_EQUAL_UINT32(3000, w.elapsed(9000));
+    w.start(10000);                      //stopped: start continues
+    TEST_ASSERT_EQUAL_UINT32(4000, w.elapsed(11000));
+    w.reset();
+    TEST_ASSERT_TRUE(w.getState() == Stopwatch::State::IDLE);
+    TEST_ASSERT_EQUAL_UINT32(0, w.elapsed(12000));
+    //across the millis() wrap
+    w.start(0xFFFFFF00u);
+    TEST_ASSERT_EQUAL_UINT32(0x200, w.elapsed(0x100));
+
+    char t[12];
+    Stopwatch::format(t, sizeof(t), 0, true); TEST_ASSERT_EQUAL_STRING("0:00.0", t);
+    Stopwatch::format(t, sizeof(t), 133499, true); TEST_ASSERT_EQUAL_STRING("2:13.4", t);
+    Stopwatch::format(t, sizeof(t), 599999, true); TEST_ASSERT_EQUAL_STRING("9:59.9", t);
+    Stopwatch::format(t, sizeof(t), 725000, true); TEST_ASSERT_EQUAL_STRING("12:05", t);
+    Stopwatch::format(t, sizeof(t), 5000, false, true); TEST_ASSERT_EQUAL_STRING("-0:05", t);
+    Stopwatch::format(t, sizeof(t), 72300, true, true); TEST_ASSERT_EQUAL_STRING("-1:12.3", t);
+    Stopwatch::format(t, sizeof(t), 150000, false); TEST_ASSERT_EQUAL_STRING("2:30", t);
+}
+
+void test_stopwatch_countdown_range_overtime_and_time_up_once(){
+    Stopwatch w;
+    TEST_ASSERT_EQUAL_UINT32(0, w.setCountdown(-10000));
+    TEST_ASSERT_EQUAL_UINT32(Stopwatch::maxSetMillis, w.setCountdown(200 * 60000));
+    TEST_ASSERT_EQUAL_UINT32(5999000, w.getSetMillis());           //99:59
+    TEST_ASSERT_EQUAL_UINT32(20000, w.setCountdown(20500));       //whole seconds
+    TEST_ASSERT_TRUE(w.isCountdown());
+    w.start(0);
+    TEST_ASSERT_EQUAL_UINT32(15000, w.remaining(5000));
+    TEST_ASSERT_FALSE(w.update(19999));
+    TEST_ASSERT_TRUE(w.update(20000));                            //time up, once
+    TEST_ASSERT_FALSE(w.update(20100));
+    TEST_ASSERT_TRUE(w.isOvertime(25000));
+    TEST_ASSERT_EQUAL_UINT32(0, w.remaining(25000));
+    TEST_ASSERT_EQUAL_UINT32(5000, w.overtime(25000));
+    w.stop(26000);
+    w.start(30000);
+    TEST_ASSERT_FALSE(w.update(31000));                           //resumed in overtime: not again
+    w.reset();                                                    //back to the set time
+    TEST_ASSERT_EQUAL_UINT32(20000, w.remaining(40000));
+    w.start(40000);
+    TEST_ASSERT_TRUE(w.update(60000));                            //after a reset it sounds again
+    //0:00 is plain counting up: never time up
+    w.setCountdown(0);
+    w.start(0);
+    TEST_ASSERT_FALSE(w.isCountdown());
+    TEST_ASSERT_FALSE(w.update(100000));
+    TEST_ASSERT_FALSE(w.isOvertime(100000));
+}
+
+//one loop of the control: the inputs, a time
+struct StopwatchRig{
+    StopwatchControl c;
+    StopwatchControl::Inputs in;
+    StopwatchRig(){ in.b_active = true; }
+    uint16_t at(uint32_t now){ in.now = now; return c.update(in); }
+};
+
+void test_stopwatch_clicks_start_stop_and_reset(){
+    StopwatchRig r;
+    TEST_ASSERT_EQUAL_UINT16(0, r.at(0));
+    r.in.b_rightHeld = true;
+    TEST_ASSERT_EQUAL_UINT16(0, r.at(1000));                       //waits for the both window
+    TEST_ASSERT_EQUAL_UINT16(StopwatchControl::STARTED, r.at(1050));
+    TEST_ASSERT_TRUE(r.c.stopwatch().isRunning());
+    TEST_ASSERT_EQUAL_UINT32(100, r.c.stopwatch().elapsed(1100));   //counted from the press
+    TEST_ASSERT_EQUAL_UINT16(0, r.at(2000));                       //held: once
+    r.in.b_rightHeld = false; r.at(2100);
+    //a quick click (released before the window) acts on the release, timed at the press
+    r.in.b_rightHeld = true; TEST_ASSERT_EQUAL_UINT16(0, r.at(5000));
+    r.in.b_rightHeld = false; TEST_ASSERT_EQUAL_UINT16(StopwatchControl::STOPPED, r.at(5020));
+    TEST_ASSERT_EQUAL_UINT32(4000, r.c.stopwatch().elapsed(9000));
+    //left click: reset and stop, at speed not OFF no edit mode
+    r.in.b_rightHeld = true; r.at(6000); r.at(6060);               //running again
+    r.in.b_rightHeld = false; r.at(6100);
+    r.in.b_leftHeld = true; r.at(7000);
+    TEST_ASSERT_EQUAL_UINT16(StopwatchControl::RESET, r.at(7050));
+    TEST_ASSERT_FALSE(r.c.isEditing());
+    TEST_ASSERT_TRUE(r.c.stopwatch().getState() == Stopwatch::State::IDLE);
+    TEST_ASSERT_EQUAL_UINT32(0, r.c.stopwatch().elapsed(8000));
+}
+
+void test_stopwatch_both_buttons_do_nothing(){
+    StopwatchRig r;
+    r.at(0);
+    //pressed in the same loop
+    r.in.b_leftHeld = true; r.in.b_rightHeld = true;
+    TEST_ASSERT_EQUAL_UINT16(0, r.at(100));
+    TEST_ASSERT_EQUAL_UINT16(0, r.at(500));
+    r.in.b_leftHeld = false; r.in.b_rightHeld = false;
+    TEST_ASSERT_EQUAL_UINT16(0, r.at(600));
+    //right first, left 30 ms later (within the window): nothing, also when let go one by one
+    r.in.b_rightHeld = true; r.at(1000);
+    r.in.b_leftHeld = true; TEST_ASSERT_EQUAL_UINT16(0, r.at(1030));
+    TEST_ASSERT_EQUAL_UINT16(0, r.at(2000));
+    r.in.b_rightHeld = false; TEST_ASSERT_EQUAL_UINT16(0, r.at(2100));
+    r.in.b_leftHeld = false; TEST_ASSERT_EQUAL_UINT16(0, r.at(2200));
+    TEST_ASSERT_TRUE(r.c.stopwatch().getState() == Stopwatch::State::IDLE);
+    //running, left held: a right click does not stop it; its own press had acted before
+    r.in.b_rightHeld = true; r.at(3000); r.at(3050);
+    r.in.b_rightHeld = false; r.at(3100);
+    r.in.b_leftHeld = true; r.at(4000);
+    TEST_ASSERT_EQUAL_UINT16(StopwatchControl::RESET, r.at(4050));
+    r.in.b_rightHeld = true; TEST_ASSERT_EQUAL_UINT16(0, r.at(4200));
+    TEST_ASSERT_EQUAL_UINT16(0, r.at(4300));
+    TEST_ASSERT_FALSE(r.c.stopwatch().isRunning());
+}
+
+void test_stopwatch_nothing_on_other_pages(){
+    StopwatchRig r;
+    r.in.b_active = false;                  //another page, the menu, the games, the calibration, the startup phase
+    r.in.b_speedOff = true;
+    r.at(0);
+    r.in.b_rightHeld = true;
+    TEST_ASSERT_EQUAL_UINT16(0, r.at(100));
+    TEST_ASSERT_EQUAL_UINT16(0, r.at(200));
+    r.in.b_rightHeld = false; r.at(300);
+    TEST_ASSERT_FALSE(r.c.stopwatch().isRunning());
+    r.in.b_leftHeld = true;
+    TEST_ASSERT_EQUAL_UINT16(0, r.at(400));
+    r.in.rightY = 1.0f;
+    TEST_ASSERT_EQUAL_UINT16(0, r.at(500));
+    TEST_ASSERT_EQUAL_UINT16(0, r.at(1500));
+    TEST_ASSERT_FALSE(r.c.isEditing());
+    TEST_ASSERT_FALSE(r.c.sticksBusy());
+    TEST_ASSERT_EQUAL_UINT32(0, r.c.stopwatch().getSetMillis());
+    //back on Status with the button still held: the press was spent elsewhere, nothing happens until a new one
+    r.in.b_active = true;
+    TEST_ASSERT_EQUAL_UINT16(0, r.at(1600));
+    TEST_ASSERT_EQUAL_UINT16(0, r.at(2000));
+    TEST_ASSERT_FALSE(r.c.isEditing());
+    //a running timer keeps running off the page, and its time up still comes; editing ends silently on leaving
+    r.in.b_leftHeld = false; r.in.rightY = 0.0f; r.at(2100);
+    r.in.b_leftHeld = true; r.at(2200); r.at(2250);
+    TEST_ASSERT_TRUE(r.c.isEditing());
+    r.in.rightY = 1.0f; r.at(2300);                                 //1 step: 0:01
+    r.in.rightY = 0.0f; r.at(2350);
+    r.in.b_active = false;
+    TEST_ASSERT_EQUAL_UINT16(0, r.at(2400));
+    TEST_ASSERT_FALSE(r.c.isEditing());
+    r.in.b_active = true; r.in.b_leftHeld = false; r.at(2500);
+    r.in.b_rightHeld = true; r.at(3000); r.at(3050);
+    r.in.b_rightHeld = false; r.at(3100);
+    r.in.b_active = false;
+    TEST_ASSERT_EQUAL_UINT16(StopwatchControl::TIME_UP, r.at(13000));
+    r.in.b_rightHeld = true; r.at(14000); r.at(14100);
+    TEST_ASSERT_TRUE(r.c.stopwatch().isRunning());                  //a click on another page did not stop it
+}
+
+//the owner's rule: the stick buttons act on the Status page only, and the time runs on everywhere
+void test_stopwatch_runs_across_pages_and_clicks_elsewhere_do_nothing(){
+    StopwatchRig r;
+    r.at(0);
+    r.in.b_rightHeld = true; r.at(1000); r.at(1050);
+    r.in.b_rightHeld = false; r.at(1100);
+    TEST_ASSERT_TRUE(r.c.stopwatch().isRunning());
+    //to the About page (or the menu, the games): the board says inactive
+    r.in.b_active = false;
+    r.at(2000);
+    //a right click there: not stopped; a left click: not reset; the left held at OFF: no edit mode
+    r.in.b_rightHeld = true; TEST_ASSERT_EQUAL_UINT16(0, r.at(3000)); TEST_ASSERT_EQUAL_UINT16(0, r.at(3100));
+    r.in.b_rightHeld = false; TEST_ASSERT_EQUAL_UINT16(0, r.at(3200));
+    r.in.b_speedOff = true;
+    r.in.b_leftHeld = true; TEST_ASSERT_EQUAL_UINT16(0, r.at(4000)); TEST_ASSERT_EQUAL_UINT16(0, r.at(4100));
+    TEST_ASSERT_FALSE(r.c.isEditing());
+    TEST_ASSERT_FALSE(r.c.sticksBusy());
+    r.in.b_leftHeld = false; TEST_ASSERT_EQUAL_UINT16(0, r.at(4200));
+    TEST_ASSERT_TRUE(r.c.stopwatch().isRunning());
+    //back on Status 10 s later: the time ran on
+    r.in.b_active = true;
+    TEST_ASSERT_EQUAL_UINT16(0, r.at(11000));
+    TEST_ASSERT_EQUAL_UINT32(10000, r.c.view(11000).shownMillis);
+    TEST_ASSERT_TRUE(r.c.stopwatch().isRunning());
+}
+
+void test_stopwatch_edit_mode_set_clear_and_leave(){
+    StopwatchRig r;
+    r.in.b_speedOff = true;
+    r.at(0);
+    //the left button held at OFF: reset, then edit mode while held
+    r.in.b_leftHeld = true; r.at(100);
+    uint16_t e = r.at(150);
+    TEST_ASSERT_TRUE(e & StopwatchControl::RESET);
+    TEST_ASSERT_TRUE(e & StopwatchControl::EDIT_ENTERED);
+    TEST_ASSERT_TRUE(r.c.isEditing());
+    TEST_ASSERT_TRUE(r.c.sticksBusy());                             //no grind, no OFF blink
+    TEST_ASSERT_TRUE(r.c.view(150).b_editing);
+    //up: +1 s on the push, the repeat after 400 ms then every 150 ms, every 80 ms after 1.5 s, always 1 s
+    r.in.rightY = 0.7f;
+    TEST_ASSERT_EQUAL_UINT16(StopwatchControl::SET_CHANGED, r.at(200));
+    TEST_ASSERT_EQUAL_UINT32(1000, r.c.stopwatch().getSetMillis());
+    TEST_ASSERT_EQUAL_UINT16(0, r.at(599));
+    TEST_ASSERT_EQUAL_UINT16(StopwatchControl::SET_CHANGED, r.at(600));
+    TEST_ASSERT_EQUAL_UINT16(0, r.at(749));
+    TEST_ASSERT_EQUAL_UINT16(StopwatchControl::SET_CHANGED, r.at(750));
+    TEST_ASSERT_EQUAL_UINT32(3000, r.c.stopwatch().getSetMillis());
+    for(uint32_t t = 900; t <= 1650; t += 150) r.at(t);             //900 .. 1650: six more, 1 s each
+    TEST_ASSERT_EQUAL_UINT32(9000, r.c.stopwatch().getSetMillis());
+    TEST_ASSERT_EQUAL_UINT16(0, r.at(1799));
+    TEST_ASSERT_EQUAL_UINT16(StopwatchControl::SET_CHANGED, r.at(1800));    //held 1.6 s: from now every 80 ms
+    TEST_ASSERT_EQUAL_UINT16(0, r.at(1879));
+    TEST_ASSERT_EQUAL_UINT16(StopwatchControl::SET_CHANGED, r.at(1880));
+    TEST_ASSERT_EQUAL_UINT32(11000, r.c.stopwatch().getSetMillis());
+    r.in.rightY = 0.0f; r.at(1900);
+    //down: -1 s
+    r.in.rightY = -0.8f;
+    TEST_ASSERT_EQUAL_UINT16(StopwatchControl::SET_CHANGED, r.at(2000));
+    TEST_ASSERT_EQUAL_UINT32(10000, r.c.stopwatch().getSetMillis());
+    r.in.rightY = 0.0f; r.at(2100);
+    //right: +1 min, repeats after 400 ms every 200 ms
+    r.in.rightX = 0.8f;
+    TEST_ASSERT_EQUAL_UINT16(StopwatchControl::SET_CHANGED, r.at(2200));
+    TEST_ASSERT_EQUAL_UINT32(70000, r.c.stopwatch().getSetMillis());
+    TEST_ASSERT_EQUAL_UINT16(0, r.at(2599));
+    TEST_ASSERT_EQUAL_UINT16(StopwatchControl::SET_CHANGED, r.at(2600));
+    TEST_ASSERT_EQUAL_UINT16(0, r.at(2799));
+    TEST_ASSERT_EQUAL_UINT16(StopwatchControl::SET_CHANGED, r.at(2800));
+    TEST_ASSERT_EQUAL_UINT32(190000, r.c.stopwatch().getSetMillis());
+    r.in.rightX = 0.0f; r.at(2900);
+    //left: -1 min (no longer a clear)
+    r.in.rightX = -0.8f;
+    TEST_ASSERT_EQUAL_UINT16(StopwatchControl::SET_CHANGED, r.at(3000));
+    TEST_ASSERT_EQUAL_UINT32(130000, r.c.stopwatch().getSetMillis());
+    r.in.rightX = 0.0f; r.at(3100);
+    //a diagonal push counts as its stronger axis: mostly right is +1 min, mostly up +1 s
+    r.in.rightX = 0.8f; r.in.rightY = 0.65f;
+    TEST_ASSERT_EQUAL_UINT16(StopwatchControl::SET_CHANGED, r.at(3200));
+    TEST_ASSERT_EQUAL_UINT32(190000, r.c.stopwatch().getSetMillis());
+    r.in.rightX = 0.0f; r.in.rightY = 0.0f; r.at(3300);
+    r.in.rightX = 0.65f; r.in.rightY = 0.8f;
+    r.at(3400);
+    TEST_ASSERT_EQUAL_UINT32(191000, r.c.stopwatch().getSetMillis());
+    r.in.rightX = 0.0f; r.in.rightY = 0.0f; r.at(3500);
+    //the right stick's click clears to 0:00 (count up); no start, no stop
+    r.in.b_rightHeld = true;
+    TEST_ASSERT_EQUAL_UINT16(StopwatchControl::SET_CLEARED, r.at(3600));
+    TEST_ASSERT_EQUAL_UINT32(0, r.c.stopwatch().getSetMillis());
+    TEST_ASSERT_EQUAL_UINT16(0, r.at(3700));
+    TEST_ASSERT_FALSE(r.c.stopwatch().isRunning());
+    r.in.b_rightHeld = false; TEST_ASSERT_EQUAL_UINT16(0, r.at(3800));
+    TEST_ASSERT_TRUE(r.c.isEditing());
+    //below 0:00 stays (the limit), by seconds and by minutes
+    r.in.rightY = -0.8f;
+    TEST_ASSERT_EQUAL_UINT16(StopwatchControl::SET_LIMIT, r.at(3900));
+    r.in.rightY = 0.0f; r.at(4000);
+    r.in.rightX = -0.8f;
+    TEST_ASSERT_EQUAL_UINT16(StopwatchControl::SET_LIMIT, r.at(4100));
+    r.in.rightX = 0.0f; r.at(4200);
+    //0:30 down a minute: clamped to 0:00, cleared
+    for(int i = 0; i < 30; i++){ r.in.rightY = 0.8f; r.at(5000 + i * 20); r.in.rightY = 0.0f; r.at(5010 + i * 20); }
+    TEST_ASSERT_EQUAL_UINT32(30000, r.c.stopwatch().getSetMillis());
+    r.in.rightX = -0.8f;
+    TEST_ASSERT_EQUAL_UINT16(StopwatchControl::SET_CLEARED, r.at(6000));
+    r.in.rightX = 0.0f; r.at(6100);
+    //above 99:59 stays: 100 minutes up, then one second more
+    for(int i = 0; i < 100; i++){ r.in.rightX = 0.8f; r.at(7000 + i * 20); r.in.rightX = 0.0f; r.at(7010 + i * 20); }
+    TEST_ASSERT_EQUAL_UINT32(5999000, r.c.stopwatch().getSetMillis());
+    r.in.rightY = 0.8f;
+    TEST_ASSERT_EQUAL_UINT16(StopwatchControl::SET_LIMIT, r.at(10000));
+    r.in.rightY = 0.0f; r.at(10100);
+    //set 2:30 and let go: the timer stands at it, a countdown
+    r.in.b_rightHeld = true; r.at(10200); r.in.b_rightHeld = false; r.at(10300);
+    r.in.rightX = 0.8f; r.at(10400); r.in.rightX = 0.0f; r.at(10500);
+    r.in.rightX = 0.8f; r.at(10600); r.in.rightX = 0.0f; r.at(10700);
+    for(int i = 0; i < 30; i++){ r.in.rightY = 0.8f; r.at(11000 + i * 20); r.in.rightY = 0.0f; r.at(11010 + i * 20); }
+    TEST_ASSERT_EQUAL_UINT32(150000, r.c.stopwatch().getSetMillis());
+    r.in.b_leftHeld = false;
+    TEST_ASSERT_EQUAL_UINT16(StopwatchControl::EDIT_LEFT, r.at(13000));
+    TEST_ASSERT_FALSE(r.c.isEditing());
+    TEST_ASSERT_FALSE(r.c.sticksBusy());
+    StopwatchView v = r.c.view(13000);
+    TEST_ASSERT_TRUE(v.b_countdown);
+    TEST_ASSERT_EQUAL_UINT32(150000, v.shownMillis);
+    TEST_ASSERT_EQUAL_FLOAT(1.0f, v.remainingFraction);
+    //run it: half done, rounded up to the tenth
+    r.in.b_rightHeld = true; r.at(14000); r.at(14050);
+    r.in.b_rightHeld = false; r.at(14100);
+    v = r.c.view(14000 + 75000 - 50);
+    TEST_ASSERT_EQUAL_UINT32(75100, v.shownMillis);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.5f, v.remainingFraction);
+    TEST_ASSERT_EQUAL_UINT16(StopwatchControl::TIME_UP, r.at(164000));
+    v = r.c.view(169000);
+    TEST_ASSERT_TRUE(v.b_overtime);
+    TEST_ASSERT_EQUAL_UINT32(5000, v.shownMillis);                  //-0:05, still running: nothing stops it
+    TEST_ASSERT_TRUE(r.c.stopwatch().isRunning());
+    TEST_ASSERT_EQUAL_UINT16(0, r.at(236300));
+    TEST_ASSERT_EQUAL_UINT32(72300, r.c.view(236300).shownMillis);  //-1:12.3
+    //a right click stops it there, the negative time frozen
+    r.in.b_rightHeld = true; r.at(236300); r.at(236350);
+    r.in.b_rightHeld = false; r.at(236400);
+    TEST_ASSERT_FALSE(r.c.stopwatch().isRunning());
+    v = r.c.view(250000);
+    TEST_ASSERT_TRUE(v.b_overtime);
+    TEST_ASSERT_EQUAL_UINT32(72300, v.shownMillis);
+    //a left click resets to the set time, kept in RAM; leaving OFF while editing ends the edit
+    r.in.b_leftHeld = true; r.at(260000);
+    e = r.at(260050);
+    TEST_ASSERT_TRUE(e & StopwatchControl::RESET);
+    TEST_ASSERT_EQUAL_UINT32(150000, r.c.view(260050).shownMillis);
+    TEST_ASSERT_TRUE(r.c.isEditing());
+    r.in.b_speedOff = false;
+    TEST_ASSERT_EQUAL_UINT16(StopwatchControl::EDIT_LEFT, r.at(260100));
+    //at SLOW or FAST the held left button is a reset only, the stick drives, its click does nothing
+    r.in.rightY = 0.9f; r.in.rightX = 0.9f;
+    TEST_ASSERT_EQUAL_UINT16(0, r.at(260200));
+    r.in.b_rightHeld = true;
+    TEST_ASSERT_EQUAL_UINT16(0, r.at(260300));
+    TEST_ASSERT_FALSE(r.c.sticksBusy());
+    TEST_ASSERT_EQUAL_UINT32(150000, r.c.stopwatch().getSetMillis());
+}
+
+void test_stopwatch_edit_ignores_a_stick_already_out(){
+    StopwatchRig r;
+    r.in.b_speedOff = true;
+    r.in.rightY = 0.9f;
+    r.in.rightX = -0.9f;
+    r.at(0);
+    r.in.b_leftHeld = true; r.at(100);
+    TEST_ASSERT_TRUE(r.at(150) & StopwatchControl::EDIT_ENTERED);
+    TEST_ASSERT_EQUAL_UINT16(0, r.at(200));
+    TEST_ASSERT_EQUAL_UINT16(0, r.at(1000));
+    r.in.rightY = 0.0f; r.in.rightX = 0.0f; r.at(1100);
+    r.in.rightY = 0.9f;
+    TEST_ASSERT_EQUAL_UINT16(StopwatchControl::SET_CHANGED, r.at(1200));
+}
+
+void test_stopwatch_sounds(){
+    using namespace RemoteSounds;
+    const uint8_t alarms = uint8_t(Level::ALARMS), off = uint8_t(Level::OFF), all = uint8_t(Level::ALL);
+    TEST_ASSERT_TRUE(isAllowed(Sound::TIME_UP, alarms));
+    TEST_ASSERT_FALSE(isAllowed(Sound::TIME_UP, off));
+    TEST_ASSERT_EQUAL_UINT8(SoundPriority::ALARM, cue(Sound::TIME_UP).priority);
+    TEST_ASSERT_EQUAL_UINT8(3, cue(Sound::TIME_UP).noteCount);
+    //three rising beeps
+    const SoundNote* n = cue(Sound::TIME_UP).notes;
+    TEST_ASSERT_TRUE(n[0].hertz < n[1].hertz && n[1].hertz < n[2].hertz);
+    TEST_ASSERT_FALSE(isAllowed(Sound::TIMER_START, alarms));
+    TEST_ASSERT_TRUE(isAllowed(Sound::TIMER_START, all));
+    //the interface ticks: one plain square each, pitches of their own
+    Sound ticks[] = {Sound::TIMER_START, Sound::TIMER_STOP, Sound::TIMER_RESET, Sound::TIMER_EDIT, Sound::TIMER_EDIT_DONE};
+    for(int i = 0; i < 5; i++){
+        SoundCue c = cue(ticks[i]);
+        TEST_ASSERT_EQUAL_UINT8(1, c.noteCount);
+        TEST_ASSERT_EQUAL_UINT8(SoundPriority::INTERFACE, c.priority);
+        TEST_ASSERT_TRUE(c.notes[0].kind == SoundNote::Kind::SQUARE);
+        for(int j = 0; j < i; j++) TEST_ASSERT_NOT_EQUAL(cue(ticks[j]).notes[0].hertz, c.notes[0].hertz);
+    }
+}
+
 int main(){
     UNITY_BEGIN();
     RUN_TEST(test_stickguard_holds_from_boot_until_both_centred);
@@ -778,6 +1444,12 @@ int main(){
     RUN_TEST(test_status_changes_sound_once_and_not_at_power_on);
     RUN_TEST(test_player_alarms_are_not_cut_by_lower_priority);
     RUN_TEST(test_player_layers_loop_and_notes_made_at_run_time);
+    RUN_TEST(test_player_back_layer_has_three_voices);
+    RUN_TEST(test_player_plays_cues_of_more_than_255_notes);
+    RUN_TEST(test_player_tempo_keeps_the_place_and_shortens_notes);
+    RUN_TEST(test_sound_kit_pitches_drums_and_sweeps);
+    RUN_TEST(test_tracker_writes_a_tune_in_time_order);
+    RUN_TEST(test_recording_sink_remembers_per_layer);
     RUN_TEST(test_pages_cycle_and_settings_only_at_off);
     RUN_TEST(test_pages_return_to_status_after_10s);
     RUN_TEST(test_status_priority);
@@ -795,5 +1467,16 @@ int main(){
     RUN_TEST(test_calibrated_range_and_deadband);
     RUN_TEST(test_calibration_validity_and_bytes);
     RUN_TEST(test_calibrator_rest_then_circle);
+    RUN_TEST(test_link_path_usb_takes_over_and_gives_back);
+    RUN_TEST(test_link_path_waits_while_driving_over_radio);
+    RUN_TEST(test_stopwatch_start_stop_reset_and_format);
+    RUN_TEST(test_stopwatch_countdown_range_overtime_and_time_up_once);
+    RUN_TEST(test_stopwatch_clicks_start_stop_and_reset);
+    RUN_TEST(test_stopwatch_both_buttons_do_nothing);
+    RUN_TEST(test_stopwatch_nothing_on_other_pages);
+    RUN_TEST(test_stopwatch_runs_across_pages_and_clicks_elsewhere_do_nothing);
+    RUN_TEST(test_stopwatch_edit_mode_set_clear_and_leave);
+    RUN_TEST(test_stopwatch_edit_ignores_a_stick_already_out);
+    RUN_TEST(test_stopwatch_sounds);
     return UNITY_END();
 }

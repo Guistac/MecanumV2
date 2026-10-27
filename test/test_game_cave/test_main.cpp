@@ -1,8 +1,9 @@
-//Host tests of the CAVE game [D-148]: pio test -e native -f test_game_cave
+//Host tests of the CAVE game [D-157]: pio test -e native -f test_game_cave
 #include <unity.h>
 #include <HostGfx.h>
 #include <GameContract.h>
 #include <CaveGame.h>
+#include <RecordingSink.h>
 
 void setUp(){}
 void tearDown(){}
@@ -237,6 +238,133 @@ void test_demo_plays_fair_and_well_at_first(){
     }
 }
 
+//sound [D-157]: the rotor chops while the craft hovers and flies, faster with more thrust, noise ticks on the front
+//layer that yield to a one-shot effect
+void test_rotor_chop_rate_follows_the_thrust(){
+    CaveGame game;
+    RecordingSink sink;
+    game.setSound(&sink);
+    game.reset(3);
+    //hovering in the ready phase: chops at the hover's rate
+    run(game, GameInput(), 50);
+    TEST_ASSERT_TRUE(game.isReady());
+    uint32_t hover = sink.noteCount(SoundLayer::FRONT);
+    TEST_ASSERT_TRUE(hover >= 14 && hover <= 17);
+    const RecordingSink::Play* p = sink.last(SoundLayer::FRONT);
+    TEST_ASSERT_TRUE(p->b_note);
+    TEST_ASSERT_TRUE(p->note.wave == Synth::Wave::NOISE);
+    TEST_ASSERT_EQUAL_UINT8(SoundPriority::GAME, p->priority);
+    TEST_ASSERT_TRUE(p->note.millis < 20);
+    TEST_ASSERT_EQUAL_UINT32(0, sink.count(SoundLayer::BACK));
+
+    //flying 0.8 s with a little thrust, then a new game with full thrust: about twice the chops
+    GameInput little;
+    little.stick[1] = 0.35f;
+    GameInput full;
+    full.held[0] = true;
+    uint32_t counts[2];
+    const GameInput* inputs[2] = {&little, &full};
+    for(int i = 0; i < 2; i++){
+        game.reset(3);
+        start(game);
+        sink.clear();
+        run(game, *inputs[i], 40);
+        TEST_ASSERT_FALSE(game.isCrashed());
+        counts[i] = sink.noteCount(SoundLayer::FRONT);
+    }
+    TEST_ASSERT_TRUE(counts[0] >= 11 && counts[0] <= 13);
+    TEST_ASSERT_TRUE(counts[1] >= 19 && counts[1] <= 21);
+    TEST_ASSERT_TRUE(CaveGame::rotorRate(1.0f) > CaveGame::rotorRate(0.0f));
+    //a one-shot effect playing: the chop waits
+    sink.setPlaying(SoundLayer::FRONT, true);
+    uint32_t before = sink.total();
+    run(game, little, 10);
+    TEST_ASSERT_EQUAL_UINT32(before, sink.total());
+}
+
+//a ping at 100 m, 200 m ...; the crash: a burst of noise and a falling whistle, and the rotor stops
+void test_ping_every_hundred_metres_and_the_crash(){
+    CaveGame game;
+    RecordingSink sink;
+    game.setSound(&sink);
+    game.reset(1);
+    uint32_t pings = 0;
+    bool b_crashSound = false;
+    for(int t = 0; t < 20000 && !game.isOver(); t++){
+        GameInput input;
+        game.demo(input);
+        uint32_t metres = game.score();
+        uint32_t cues = sink.cueCount(SoundLayer::FRONT);
+        bool b_wasCrashed = game.isCrashed();
+        game.update(input);
+        uint32_t played = sink.cueCount(SoundLayer::FRONT) - cues;
+        if(!b_wasCrashed && game.isCrashed()){
+            TEST_ASSERT_EQUAL_UINT32(1, played);
+            TEST_ASSERT_TRUE(sink.last(SoundLayer::FRONT)->cue.notes == game.crashSound().notes);
+            b_crashSound = true;
+        }
+        else if(game.score() / 100 > metres / 100){
+            TEST_ASSERT_EQUAL_UINT32(1, played);
+            //the ping is played first; the rotor's chop of that tick may follow (it yields on the board)
+            bool b_ping = false;
+            for(uint8_t back = 0; back < 2; back++){
+                const RecordingSink::Play* p = sink.last(SoundLayer::FRONT, back);
+                if(p && !p->b_note && p->cue.notes == game.pingSound().notes) b_ping = true;
+            }
+            TEST_ASSERT_TRUE(b_ping);
+            pings++;
+        }
+        else TEST_ASSERT_EQUAL_UINT32(0, played);
+    }
+    TEST_ASSERT_TRUE(game.isOver());
+    TEST_ASSERT_TRUE(b_crashSound);
+    TEST_ASSERT_TRUE(game.score() >= 100);
+    TEST_ASSERT_EQUAL_UINT32(game.score() / 100, pings);
+    //after the crash, nothing more (the debris falls in silence)
+    uint32_t before = sink.total();
+    run(game, GameInput(), 50);
+    TEST_ASSERT_EQUAL_UINT32(before, sink.total());
+
+    //the crash's sound: noise, and a whistle that falls
+    const SoundCue& crash = game.crashSound();
+    bool b_noise = false;
+    uint16_t firstWhistle = 0, lastWhistle = 0;
+    for(uint16_t i = 0; i < crash.noteCount; i++){
+        if(crash.notes[i].wave == Synth::Wave::NOISE) b_noise = true;
+        else{
+            if(!firstWhistle) firstWhistle = crash.notes[i].hertz;
+            lastWhistle = crash.notes[i].hertz;
+        }
+    }
+    TEST_ASSERT_TRUE(b_noise);
+    TEST_ASSERT_TRUE(firstWhistle > 4 * lastWhistle);
+}
+
+//sound never changes the game: the demo plays the same with a sink and without; without one nothing is heard
+void test_sound_leaves_the_demo_deterministic_and_silent_without_a_sink(){
+    CaveGame quiet, loud;
+    RecordingSink sink, detached;
+    loud.setSound(&sink);
+    quiet.setSound(&detached);
+    quiet.setSound(nullptr);
+    for(uint32_t seed = 1; seed <= 3; seed++){
+        quiet.reset(seed);
+        loud.reset(seed);
+        for(int t = 0; t < 6000 && !quiet.isOver(); t++){
+            GameInput a, b;
+            quiet.demo(a);
+            loud.demo(b);
+            quiet.update(a);
+            loud.update(b);
+            TEST_ASSERT_EQUAL_FLOAT(quiet.getCraftY(), loud.getCraftY());
+            TEST_ASSERT_EQUAL_UINT32(quiet.score(), loud.score());
+        }
+        TEST_ASSERT_TRUE(quiet.isOver() == loud.isOver());
+    }
+    TEST_ASSERT_TRUE(sink.total() > 100);
+    TEST_ASSERT_EQUAL_UINT32(0, detached.total());
+}
+
 int main(){
     UNITY_BEGIN();
     RUN_TEST(test_contract);
@@ -250,5 +378,8 @@ int main(){
     RUN_TEST(test_ready_phase_starts_on_click_or_stick_up);
     RUN_TEST(test_full_thrust_from_the_start_takes_a_second_to_the_ceiling);
     RUN_TEST(test_demo_plays_fair_and_well_at_first);
+    RUN_TEST(test_rotor_chop_rate_follows_the_thrust);
+    RUN_TEST(test_ping_every_hundred_metres_and_the_crash);
+    RUN_TEST(test_sound_leaves_the_demo_deterministic_and_silent_without_a_sink);
     return UNITY_END();
 }

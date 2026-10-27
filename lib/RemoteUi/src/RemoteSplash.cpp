@@ -24,10 +24,11 @@ namespace RemoteSplash{
     static constexpr float hopSeconds[2] = {0.27f, 0.18f};
     static constexpr float hopHeight[2] = {0.34f, 0.1f};
     //after the last letter has appeared (and the startup sound's last arpeggio note, arpeggioDelaySeconds later), a
-    //pause, then the shine and with it the sound's bell (StartupScore.h): the pause from that note is 1.65 x what it
-    //was when the shine came as the last letter's first hop ended (0.93 s; 1.5 x, then 10 % more, 2026-10-27)
+    //then the shine and with it the sound's bell (StartupScore.h), as the last letter's first hop ends (0.93 s after
+    //that note). The pause was made 1.5 x, then 10 % longer earlier on 2026-10-27; the owner then asked for the whole
+    //startup a second shorter: back to 1.0 x (with fadeOutStart, RemoteSplash.h)
     static constexpr float lastLetterStart = firstLetterStart + (BerupoLogo::letterCount - 1) * letterStagger;
-    static constexpr float shineBegins = lastLetterStart + arpeggioDelaySeconds + 1.65f * (flightSeconds + slideSeconds + 0.27f);
+    static constexpr float shineBegins = lastLetterStart + arpeggioDelaySeconds + 1.0f * (flightSeconds + slideSeconds + 0.27f);
     static constexpr float shineSeconds = 0.35f;
     static constexpr float shineWidth = 10.0f;          //px, a band leaning right (x + y / 2) that draws the letters half-tone
 

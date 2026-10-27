@@ -63,6 +63,7 @@ int main(int argc, char** argv){
     { ScreenModel m = base(); m.status = {BigMessage::EXT_ESTOP, StatusLine::NORMAL}; m.b_recovery = true; add("09_ext_estop_rst", m); }
     { ScreenModel m = base(); m.status = {BigMessage::RELEASE_LEFT, StatusLine::NORMAL}; add("10_release_left", m); }
     { ScreenModel m = base(); m.status = {BigMessage::DISABLED, StatusLine::THANK_YOU}; m.speedState = 0; add("11_thank_you", m); }
+    { ScreenModel m = base(); m.status = {BigMessage::DISABLED, StatusLine::THANK_YOU}; m.speedState = 1; m.b_worldFrame = true; add("11b_thank_you_slow_world", m); }
     { ScreenModel m = base(); m.status = {BigMessage::BATTERY_CRITICAL, StatusLine::NORMAL}; m.remotePercent = 3; m.remoteBattery = BatteryState::CRITICAL; add("12_battery_critical", m); }
     { ScreenModel m = base(); m.b_hot = true; m.b_safeMode = true; m.status.message = BigMessage::DISABLED; add("13_hot_safe", m); }
     { ScreenModel m = base(); m.b_direct = true; m.status.message = BigMessage::STOPPING; add("14_direct_stopping", m); }
@@ -71,6 +72,38 @@ int main(int argc, char** argv){
     { ScreenModel m = base(); m.status.message = BigMessage::ENABLED; m.remotePercent = 12; m.remoteBattery = BatteryState::LOW_CHARGE; m.speedState = 2; m.b_worldFrame = true; add("17_enabled_battery_low", m); }
     { ScreenModel m = base(); m.status = {BigMessage::RELEASE_BOTH, StatusLine::NORMAL}; m.speedState = 0; add("18_release_both", m); }
     { ScreenModel m = base(); m.status = {BigMessage::ESTOP, StatusLine::NOT_CONNECTED}; m.b_linkUp = false; add("19_estop_not_connected", m); }
+    //the stopwatch [D-160], bottom centre of the Status page
+    auto timer = [](uint32_t setMillis, uint32_t elapsed, Stopwatch::State state){
+        StopwatchView v;
+        v.state = state;
+        v.b_countdown = setMillis > 0;
+        v.setMillis = setMillis;
+        if(!v.b_countdown) v.shownMillis = elapsed;
+        else if(elapsed >= setMillis){ v.b_overtime = true; v.shownMillis = elapsed - setMillis; v.remainingFraction = 0.0f; }
+        else{ v.shownMillis = (setMillis - elapsed + 99) / 100 * 100; v.remainingFraction = float(setMillis - elapsed) / float(setMillis); }
+        return v;
+    };
+    { ScreenModel m = base(); m.status.message = BigMessage::DISABLED; m.speedState = 0; add("01s1_timer_idle", m); }
+    { ScreenModel m = base(); m.stopwatch = timer(0, 133400, Stopwatch::State::RUNNING); add("01s2_timer_counting", m); }
+    { ScreenModel m = base(); m.stopwatch = timer(0, 725000, Stopwatch::State::RUNNING); m.b_worldFrame = true; add("01s3_timer_counting_12min_world", m); }
+    { ScreenModel m = base(); m.stopwatch = timer(0, 133400, Stopwatch::State::STOPPED); m.now = 0; add("01s4_timer_stopped_shown", m); }
+    { ScreenModel m = base(); m.stopwatch = timer(0, 133400, Stopwatch::State::STOPPED); m.now = 1000; add("01s5_timer_stopped_blank", m); }
+    { ScreenModel m = base(); m.stopwatch = timer(150000, 0, Stopwatch::State::IDLE); m.status.message = BigMessage::DISABLED; m.speedState = 0; add("01s6_countdown_idle_2m30_full_bar", m); }
+    { ScreenModel m = base(); m.stopwatch = timer(300000, 150000, Stopwatch::State::RUNNING); add("01s7_countdown_half", m); }
+    { ScreenModel m = base(); m.stopwatch = timer(300000, 50000, Stopwatch::State::RUNNING); m.speedState = 2; m.b_worldFrame = true; add("01s8_countdown_fast_world", m); }
+    { ScreenModel m = base(); m.stopwatch = timer(300000, 285000, Stopwatch::State::RUNNING); m.b_worldFrame = true; add("01s9_countdown_slow_world_nearly", m); }
+    { ScreenModel m = base(); m.stopwatch = timer(300000, 150000, Stopwatch::State::RUNNING); m.status.message = BigMessage::DISABLING; add("01s9b_countdown_half_disabling", m); }
+    { ScreenModel m = base(); m.stopwatch = timer(300000, 305000, Stopwatch::State::RUNNING); m.now = 0; add("01sa_overtime_pill_bar", m); }
+    { ScreenModel m = base(); m.stopwatch = timer(300000, 305000, Stopwatch::State::RUNNING); m.now = 600; add("01sb_overtime_plain_no_bar", m); }
+    { ScreenModel m = base(); m.stopwatch = timer(300000, 372300, Stopwatch::State::STOPPED); m.now = 600; m.b_worldFrame = true; add("01sb2_overtime_stopped_world", m); }
+    { ScreenModel m = base(); m.stopwatch = timer(5999000, 0, Stopwatch::State::IDLE); m.b_worldFrame = true; add("01sc_countdown_99m59_world", m); }
+    { ScreenModel m = base(); m.status = {BigMessage::RELEASE_RIGHT, StatusLine::NORMAL}; m.stopwatch = timer(0, 133400, Stopwatch::State::RUNNING); m.frame = 6; add("01sd_release_alive_dot", m); }
+    { ScreenModel m = base(); m.status = {BigMessage::RELEASE_LEFT, StatusLine::NORMAL}; m.stopwatch = timer(300000, 150000, Stopwatch::State::RUNNING); m.b_worldFrame = true; add("01se_release_countdown_world", m); }
+    { ScreenModel m = base(); m.status = {BigMessage::ESTOP, StatusLine::NORMAL}; m.stopwatch = timer(300000, 150000, Stopwatch::State::RUNNING); add("01se2_alarm_hides_bar", m); }
+    { ScreenModel m = base(); m.status.message = BigMessage::DISABLED; m.speedState = 0; m.stopwatch.b_editing = true; add("01sf_edit_0m00", m); }
+    { ScreenModel m = base(); m.status.message = BigMessage::DISABLED; m.speedState = 0; m.stopwatch = timer(150000, 0, Stopwatch::State::IDLE); m.stopwatch.b_editing = true; add("01sg_edit_2m30", m); }
+    { ScreenModel m = base(); m.status.message = BigMessage::DISABLED; m.speedState = 0; m.b_worldFrame = true; m.stopwatch = timer(5999000, 0, Stopwatch::State::IDLE); m.stopwatch.b_editing = true; add("01sh_edit_99m59_world", m); }
+    { ScreenModel m = base(); m.status.message = BigMessage::DISABLED; m.b_rebooted = true; m.stopwatch = timer(300000, 150000, Stopwatch::State::RUNNING); add("01si_marker_over_timer", m); }
     { ScreenModel m = base(); m.page = Page::LINK; add("20_page_link", m); }
     { ScreenModel m = base(); m.page = Page::LINK; m.b_linkUp = false; m.downDbm = -103; add("20b_page_link_none", m); }
     { ScreenModel m = base(); m.page = Page::RADIO; m.b_radioUp = true; m.recoveries = 2; m.txTimeouts = 1; add("21b_page_radio_up", m); }

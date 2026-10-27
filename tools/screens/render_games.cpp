@@ -35,22 +35,79 @@ static void recordGame(Game& game, const std::string& path, float seconds, uint3
     printf("%s: %d ticks, %d game(s), last score %lu\n", game.name(), ticks, games, (unsigned long)game.score());
 }
 
-//the Arcade as the operator sees it: picker, next game, play (the demo player as input), pause, game over
+//the Arcade as the operator sees it, scripted: the picker, its help and top 3 cards, the sound modes, the next
+//games, Cave played (paused, resumed, let fall), the game over and the name entry, the top 3 card with the new entry,
+//the clear question; the rest of the time the picker. Reacts to the Arcade's mode, so it follows the game's length
 static void recordArcade(const std::string& path, float seconds){
     FILE* f = fopen(path.c_str(), "wb");
     GFXcanvas1 canvas(128, 32);
+    RamArcadeStore store;
     Arcade arcade;
+    arcade.setStore(&store);
     uint32_t now = 1000;
     arcade.enter(now);
     int frames = int(seconds / Game::tickSeconds);
+    Arcade::Mode lastMode = arcade.getMode();
+    int modeFrame = 0;          //frames since the mode changed
+    int phase = 0;              //0 before the game, 1 after it
     for(int i = 0; i < frames; i++){
         now += 20;
         GameInput sticks;
-        bool b_previous = false, b_next = false;
-        if(i == 75 || i == 150) b_next = true;
-        if(arcade.getMode() == Arcade::Mode::PLAYING) arcade.game(arcade.getSelected()).demo(sticks);
-        if(i == 225 || i == 226) sticks.held[0] = true;     //a click: play
-        arcade.update(sticks, b_previous, b_next, now);
+        bool b_previous = false, b_next = false, b_previousHeld = false, b_nextHeld = false;
+        Arcade::Mode mode = arcade.getMode();
+        if(mode != lastMode){
+            static const char* const names[] = {"picker", "playing", "over", "name"};
+            printf("frame %d: %s\n", i, names[uint8_t(mode)]);
+            lastMode = mode;
+            modeFrame = 0;
+        }
+        int t = modeFrame++;
+        auto flick = [&](int at, float x, float y){
+            if(t >= at && t < at + 3){
+                sticks.stick[0] = x;
+                sticks.stick[1] = y;
+            }
+        };
+        switch(mode){
+            case Arcade::Mode::PICKER:
+                if(phase == 0){
+                    flick(50, 1, 0);                        //help card
+                    if(t == 150) b_next = true;             //closes it (the same game)
+                    flick(180, 0, -1);                      //top 3 card (empty)
+                    flick(260, 0, 1);                       //closes it
+                    for(int k = 0; k < 4; k++) flick(300 + 40 * k, 0, 1);  //the sound modes round
+                    if(t == 480 || t == 500) b_next = true; //to Cave
+                    if(t == 540 || t == 541) sticks.held[0] = true;     //play
+                }
+                else{
+                    flick(40, 0, -1);                       //the top 3 card with the new entry
+                    flick(140, 0, 1);
+                    if(t >= 180 && t < 340) b_previousHeld = b_nextHeld = true;     //the clear question after 3 s
+                    if(t == 180) b_previous = true;
+                    if(t == 181) b_next = true;
+                    if(t == 360 || t == 361) sticks.held[1] = true;     //cleared
+                }
+                break;
+            case Arcade::Mode::PLAYING:
+                if(t == 30 || t == 80) b_next = true;       //pause, resume
+                flick(50, 0, 1);                            //the sound mode on the pause screen
+                if(t == 120 || t == 121) sticks.held[0] = true;     //one click of thrust, then it falls
+                break;
+            case Arcade::Mode::OVER:
+                if(phase == 1 && t == 100) b_previous = true;   //after the name: back to the picker
+                break;
+            case Arcade::Mode::NAME:
+                phase = 1;
+                flick(20, 0, 1);                            //B
+                if(t >= 50 && t < 100){                     //held up: C, D, ...
+                    sticks.stick[1] = 1;
+                }
+                flick(120, 1, 0);                           //the next letter
+                flick(150, 0, -1);                          //back to Z... from A
+                if(t == 200 || t == 201) sticks.held[0] = true;     //saved
+                break;
+        }
+        arcade.update(sticks, b_previous, b_next, now, b_previousHeld, b_nextHeld);
         canvas.fillScreen(0);
         arcade.draw(canvas);
         writeFrame(f, canvas);

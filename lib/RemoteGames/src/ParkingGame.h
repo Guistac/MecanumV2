@@ -1,14 +1,18 @@
 #pragma once
 #include "Game.h"
+#include <SoundKit.h>
 
 //PARKING: drive the Mecanum stage vehicle (top view) into the bay of each of twelve stages, nose to the marked side,
 //as fast as possible; from stage 5 on, flats, wagons and a turntable move. Controls as on the real handheld in body
 //frame: left stick Y forward and back, left stick X strafes, right stick X turns (right = clockwise on the screen).
 //The vehicle slides along walls; only an impact (driving in fast) costs 2 s.
+//Sound [D-157]: no music; the motor whines (grains, pitch with the speed, none when still), a wall scrapes while the
+//vehicle slides along it, an impact crunches, a parked stage chimes and the last one plays a fanfare.
 
-//Twelve hand-made stages driven against the clock, holonomic vehicle with ramped speeds like the real one [D-148]
+//Twelve hand-made stages driven against the clock, holonomic vehicle with ramped speeds like the real one [D-157]
 class ParkingGame : public Game{
 public:
+    ParkingGame();
     const char* name() const override { return "PARKING"; }
     void reset(uint32_t seed) override;
     void update(const GameInput& input) override;
@@ -19,6 +23,11 @@ public:
     bool lowerScoreIsBetter() const override { return true; }
     void scoreText(char* out, size_t size, uint32_t value) const override;
     void demo(GameInput& input) override;
+    void helpLines(const char* lines[3]) const override {
+        lines[0] = "L STICK: DRIVE/STRAFE";
+        lines[1] = "R STICK X: TURN";
+        lines[2] = "NOSE TO MARK. HIT +2S";
+    }
 
     enum class Phase : uint8_t { INTRO, DRIVE, PARKED, OVER };
 
@@ -54,6 +63,10 @@ public:
     void place(float px, float py, float headingRad);
     //jumps to a stage's intro (tests)
     void startStage(uint8_t index){ startLevel(index); }
+    //the one-shot sounds (tests compare what was played with these)
+    const SoundCue& impactSound() const { return impactCue; }
+    const SoundCue& chimeSound() const { return chimeCue; }
+    const SoundCue& fanfareSound() const { return fanfareCue; }
 
 private:
     void startLevel(uint8_t index);
@@ -67,6 +80,8 @@ private:
     bool gateOpen(uint8_t waypointIndex) const;
     void corners(float px, float py, float headingRad, float* cx, float* cy) const;
     void drawVehicle(Adafruit_GFX& out, uint16_t color) const;
+    //the motor's whine or the wall's scrape for this tick (sound only, never the game's state)
+    void playGrains();
 
     GameRandom random;
     Phase phase = Phase::INTRO;
@@ -86,4 +101,12 @@ private:
     uint8_t waypoint = 0;
     bool b_demoGo = false;          //the moving piece it waited for is out of the way: go, do not stop halfway
     float demoGain = 3.0f;
+
+    //sound: never read by the game. The speed along a wall while sliding on it this tick (0: not sliding)
+    float scrapeSpeed = 0.0f;
+    SoundKit::Grain motorGrain;
+    SoundKit::NoteList<12> impactNotes;
+    SoundKit::NoteList<6> chimeNotes;
+    SoundKit::NoteList<10> fanfareNotes;
+    SoundCue impactCue, chimeCue, fanfareCue;
 };

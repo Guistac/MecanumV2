@@ -28,7 +28,7 @@ def build():
     binary = OUT / "render_games"
     sources = ["lib/Adafruit-GFX/Adafruit_GFX.cpp", "tools/screens/render_games.cpp"]
     sources += sorted(str(p.relative_to(ROOT)) for p in (ROOT / "lib/RemoteGames/src").glob("*.cpp"))
-    includes = ["tools/screens/host", "lib/Adafruit-GFX", "lib/RemoteGames/src"]
+    includes = ["tools/screens/host", "lib/Adafruit-GFX", "lib/RemoteGames/src", "lib/RemoteAudio/src"]
     command = ["clang++", "-std=c++17", "-O1", "-w", "-DARDUINO=100", "-o", str(binary)]
     command += [f"-I{ROOT / i}" for i in includes] + [str(ROOT / s) for s in sources]
     subprocess.run(command, check=True)

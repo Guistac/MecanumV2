@@ -1,8 +1,9 @@
-//Host tests of the remote's PONG game [D-148]: pio test -e native -f test_game_pong
+//Host tests of the remote's PONG game [D-157]: pio test -e native -f test_game_pong
 #include <unity.h>
 #include <HostGfx.h>
 #include <GameContract.h>
 #include <PongGame.h>
+#include <RecordingSink.h>
 #include <math.h>
 
 void setUp(){}
@@ -195,6 +196,130 @@ void test_demo_only_uses_the_left_stick(){
     }
 }
 
+//the sounds [D-157]: a square blip off a paddle, higher the faster the ball; a lower one off the walls; a longer low
+//tone for a point, higher when the left player scores
+void test_sounds_paddle_rises_with_speed_wall_and_point(){
+    PongGame game;
+    RecordingSink sink;
+    game.setSound(&sink);
+    game.reset(11);
+    int hits = 0, walls = 0, pointsHeard = 0;
+    uint16_t lastPaddle = 0;
+    for(int t = 0; t < 50 * 120 && !game.isOver(); t++){
+        GameInput input;
+        game.demo(input);
+        float speed = game.getBallSpeed();
+        float vy = game.getBallVelocityY();
+        uint8_t won = game.getPoints(0), lost = game.getPoints(1);
+        uint32_t plays = sink.count(SoundLayer::FRONT);
+        game.update(input);
+        const RecordingSink::Play* p = sink.last(SoundLayer::FRONT);
+        if(game.isOver()) break;
+        if(game.getPoints(0) != won || game.getPoints(1) != lost){
+            TEST_ASSERT_NOT_NULL(p);
+            TEST_ASSERT_TRUE(p->b_note);
+            TEST_ASSERT_TRUE(p->note.kind == SoundNote::Kind::SQUARE);
+            TEST_ASSERT_TRUE(p->note.millis >= 200);
+            TEST_ASSERT_EQUAL_UINT16(game.getPoints(0) != won ? PongGame::pointWonHertz : PongGame::pointLostHertz, p->note.hertz);
+            pointsHeard++;
+            lastPaddle = 0;
+        }
+        else if(game.getBallSpeed() > speed){
+            //a wall in the same tick plays first, the paddle's blip last
+            TEST_ASSERT_TRUE(sink.count(SoundLayer::FRONT) > plays);
+            TEST_ASSERT_TRUE(p->note.kind == SoundNote::Kind::SQUARE);
+            TEST_ASSERT_EQUAL_UINT16(PongGame::paddleHertz(game.getBallSpeed()), p->note.hertz);
+            TEST_ASSERT_TRUE(p->note.hertz > lastPaddle);
+            TEST_ASSERT_TRUE(p->note.hertz > PongGame::wallHertz);
+            lastPaddle = p->note.hertz;
+            hits++;
+        }
+        else if(!game.isServing() && game.getBallVelocityY() * vy < 0.0f){
+            TEST_ASSERT_EQUAL_UINT32(plays + 1, sink.count(SoundLayer::FRONT));
+            TEST_ASSERT_EQUAL_UINT16(PongGame::wallHertz, p->note.hertz);
+            walls++;
+        }
+        else TEST_ASSERT_EQUAL_UINT32(plays, sink.count(SoundLayer::FRONT));
+    }
+    TEST_ASSERT_TRUE(hits >= 4);
+    TEST_ASSERT_TRUE(walls >= 2);
+    TEST_ASSERT_TRUE(pointsHeard >= 2);
+    //the slowest and the fastest ball an octave apart; no music in Pong
+    TEST_ASSERT_EQUAL_UINT16(988, PongGame::paddleHertz(0.0f));
+    TEST_ASSERT_EQUAL_UINT16(1976, PongGame::paddleHertz(1000.0f));
+    TEST_ASSERT_EQUAL_UINT32(0, sink.count(SoundLayer::BACK));
+    game.playMusic();
+    TEST_ASSERT_EQUAL_UINT32(0, sink.count(SoundLayer::BACK));
+}
+
+//the end: a falling jingle when the left player loses, a rising one when they win, instead of the point's tone, over
+//before the Arcade's game over phrase (400 ms)
+void test_sounds_win_and_lose_jingles(){
+    TEST_ASSERT_TRUE(PongGame::winJingle().lengthMillis() < 400);
+    TEST_ASSERT_TRUE(PongGame::loseJingle().lengthMillis() < 400);
+    TEST_ASSERT_TRUE(PongGame::winJingle().notes[3].hertz > PongGame::winJingle().notes[0].hertz);
+    TEST_ASSERT_TRUE(PongGame::loseJingle().notes[3].hertz < PongGame::loseJingle().notes[0].hertz);
+
+    PongGame game;
+    RecordingSink sink;
+    game.setSound(&sink);
+    game.reset(5);
+    GameInput hide = leftStick(1.0f);
+    int guard = 0;
+    while(!game.isOver() && guard++ < 40) playPoint(game, hide);
+    TEST_ASSERT_TRUE(game.isOver() && game.getPoints(1) == 7);
+    const RecordingSink::Play* p = sink.last(SoundLayer::FRONT);
+    TEST_ASSERT_FALSE(p->b_note);
+    TEST_ASSERT_TRUE(p->cue.notes == PongGame::loseJingle().notes);
+
+    //a second player who hides at the top: the left player (the demo) wins
+    bool b_won = false;
+    for(uint32_t seed = 1; seed < 20 && !b_won; seed++){
+        sink.clear();
+        game.reset(seed);
+        for(int t = 0; t < 50 * 300 && !game.isOver(); t++){
+            GameInput input;
+            game.demo(input);
+            input.stick[3] = 1.0f;
+            game.update(input);
+        }
+        if(!game.isOver() || game.getPoints(0) != 7) continue;
+        b_won = true;
+        p = sink.last(SoundLayer::FRONT);
+        TEST_ASSERT_FALSE(p->b_note);
+        TEST_ASSERT_TRUE(p->cue.notes == PongGame::winJingle().notes);
+    }
+    TEST_ASSERT_TRUE(b_won);
+}
+
+//sound never changes the game: the demo plays the same with a sink as without one (silent, the picker's demo)
+void test_demo_same_with_and_without_sound(){
+    PongGame silent, heard;
+    RecordingSink sink;
+    heard.setSound(&sink);
+    silent.reset(77);
+    heard.reset(77);
+    for(int t = 0; t < 50 * 90; t++){
+        GameInput a, b;
+        silent.demo(a);
+        heard.demo(b);
+        silent.update(a);
+        heard.update(b);
+        TEST_ASSERT_EQUAL_FLOAT(silent.getBallX(), heard.getBallX());
+        TEST_ASSERT_EQUAL_FLOAT(silent.getBallY(), heard.getBallY());
+        TEST_ASSERT_EQUAL_FLOAT(silent.getPaddleTop(0), heard.getPaddleTop(0));
+        TEST_ASSERT_EQUAL_FLOAT(silent.getPaddleTop(1), heard.getPaddleTop(1));
+        if(silent.isOver()) break;
+    }
+    TEST_ASSERT_EQUAL_UINT8(silent.getPoints(0), heard.getPoints(0));
+    TEST_ASSERT_EQUAL_UINT8(silent.getPoints(1), heard.getPoints(1));
+    TEST_ASSERT_TRUE(sink.count(SoundLayer::FRONT) > 10);
+    //a sink set later hears only what comes after
+    RecordingSink late;
+    silent.setSound(&late);
+    TEST_ASSERT_EQUAL_UINT32(0, late.total());
+}
+
 int main(int argc, char** argv){
     UNITY_BEGIN();
     RUN_TEST(test_contract);
@@ -208,5 +333,8 @@ int main(int argc, char** argv){
     RUN_TEST(test_score_orders_by_points_then_conceded);
     RUN_TEST(test_right_stick_brings_in_a_second_player);
     RUN_TEST(test_demo_only_uses_the_left_stick);
+    RUN_TEST(test_sounds_paddle_rises_with_speed_wall_and_point);
+    RUN_TEST(test_sounds_win_and_lose_jingles);
+    RUN_TEST(test_demo_same_with_and_without_sound);
     return UNITY_END();
 }

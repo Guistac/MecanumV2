@@ -13,9 +13,10 @@ namespace RemoteSplash{
     static constexpr float fillInSeconds = 0.5f;        //the white fill, left to right (as the former animation)
     static constexpr float fadeOutSeconds = 0.25f;       //cleared again from the left
 
-    //when the screen starts to clear: Becker Poels right after the fill, as it always did; BERUPO once the startup
-    //sound's bell (in time with the shine, StartupScore.h) has rung out
-    constexpr float fadeOutStart(Style style){ return style == Style::BERUPO ? 2.96f : fillInSeconds; }
+    //when the screen starts to clear: Becker Poels right after the fill, as it always did; BERUPO 0.6 s after the shine
+    //starts (1.405 s), the shine over and the bell (StartupScore.h) still ringing: it rings on into the main screen.
+    //2.96 s until the owner asked for a startup a second shorter (2026-10-27)
+    constexpr float fadeOutStart(Style style){ return style == Style::BERUPO ? 2.0f : fillInSeconds; }
     constexpr float duration(Style style){ return fadeOutStart(style) + fadeOutSeconds; }
 
     //the startup sound's arpeggio comes this much after each letter appears (as it turns solid)

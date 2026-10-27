@@ -2,6 +2,7 @@
 #include <RobotStates.h>
 #include <LiIonBattery.h>
 #include "Hardware/Watchdog.h"
+#include "RobotBoard/MavLink.h"
 #include <RemoteTransitions.h>
 #include <RemoteSplash.h>
 #include <StartupScore.h>
@@ -29,13 +30,11 @@ void RemoteBoard::fillScreenModel(ScreenModel& m){
     static uint8_t frameCounter = 0;
     m.frame = frameCounter++;
 
-#ifdef REMOTE_DIRECT
-    m.b_direct = true;
+    m.b_direct = linkPath.isUsb();
+    m.b_usbWaiting = linkPath.isUsbWaiting(usbMavlink->b_online, now);
     m.b_dropout = b_simulatedDropout;
-    m.signal = 1.0;
-#else
-    m.signal = LinkMonitor::barFraction(LinkMonitor::weaker(radio.getSignalStrength(), robotProxy.robotRxSignalStrength));
-#endif
+    if(m.b_direct) m.signal = 1.0;
+    else m.signal = LinkMonitor::barFraction(LinkMonitor::weaker(radio.getSignalStrength(), robotProxy.robotRxSignalStrength));
     m.channel = radio.getChannel();
     m.b_linkUp = robotProxy.b_connected;
     m.rxCounter = robotProxy.rxCounter;
@@ -60,6 +59,7 @@ void RemoteBoard::fillScreenModel(ScreenModel& m){
     m.speedState = speedToggle.getState();
     m.b_sticksOffWarning = b_sticksOffWarning;
     m.b_worldFrame = directionToggle.getSwitchState();
+    m.stopwatch = stopwatch.view(now);
 
     m.page = pages.getPage();
     m.pageCount = b_settingsAvailable ? uint8_t(Page::COUNT) : uint8_t(Page::SETTINGS);
@@ -123,7 +123,15 @@ void RemoteBoard::refreshGui(){
     BigMessage messageBefore = previousMessage;
     previousMessage = status.message;
     //status changes and warnings sound once [D-158]
-    if(b_newMessage) playSound(RemoteSounds::forStatusChange(messageBefore, status.message));
+    RemoteSounds::Sound statusSound = b_newMessage ? RemoteSounds::forStatusChange(messageBefore, status.message) : RemoteSounds::Sound::NONE;
+    if(statusSound != RemoteSounds::Sound::NONE) playSound(statusSound);
+    //the ramp's loop: a new alarm sound has replaced it already (playSound); a status without a sound, or the time
+    //limit, ends it here
+    bool b_ramp = status.message == BigMessage::STOPPING || status.message == BigMessage::DISABLING;
+    if(b_disablingLoop && ((b_newMessage && !b_ramp) || now - disablingLoopStartMillis > RemoteSounds::disablingLoopMaxMillis)){
+        soundPlayer.stop(SoundLayer::FRONT);
+        b_disablingLoop = false;
+    }
     if(b_newMessage && b_alarm){
         if(arcade.isActive()) leaveArcade();
         if(menu.isOpen()) closeMenu();

@@ -1,8 +1,10 @@
-//Host tests of the remote's Snake game [D-148]: pio test -e native -f test_game_snake
+//Host tests of the remote's Snake game [D-157] and its sound: pio test -e native -f test_game_snake
 #include <unity.h>
 #include <HostGfx.h>
 #include <GameContract.h>
 #include <SnakeGame.h>
+#include <RecordingSink.h>
+#include <SoundKit.h>
 
 void setUp(){}
 void tearDown(){}
@@ -328,6 +330,216 @@ void test_mouse_runs_and_is_caught(){
     TEST_ASSERT_TRUE(mouseMoves * 2 <= snakeSteps + 4);
 }
 
+//sound [D-157]: every note of the plays a tick added in front is a synth note (no timer square, it would cut the
+//music), unless b_squaresAllowed (the death)
+static void checkNewPlays(const RecordingSink& sink, uint32_t before, bool b_squaresAllowed){
+    uint32_t added = sink.count(SoundLayer::FRONT) - before;
+    for(uint32_t k = 0; k < added && k < RecordingSink::keep; k++){
+        const RecordingSink::Play* p = sink.last(SoundLayer::FRONT, uint8_t(k));
+        TEST_ASSERT_EQUAL_UINT8(SoundPriority::GAME, p->priority);
+        if(b_squaresAllowed) continue;
+        if(p->b_note) TEST_ASSERT_TRUE(p->note.kind == SoundNote::Kind::SYNTH);
+        else for(uint16_t i = 0; i < p->cue.noteCount; i++) TEST_ASSERT_TRUE(p->cue.notes[i].kind == SoundNote::Kind::SYNTH);
+    }
+}
+
+void test_music_starts_in_play_music(){
+    RecordingSink sink;
+    SnakeGame game;
+    game.setSound(&sink);
+    game.reset(3);
+    TEST_ASSERT_EQUAL_UINT32(0, sink.total());
+    game.playMusic();
+    TEST_ASSERT_EQUAL_UINT32(1, sink.cueCount(SoundLayer::BACK));
+    TEST_ASSERT_EQUAL_UINT32(0, sink.count(SoundLayer::FRONT));
+    TEST_ASSERT_EQUAL_UINT16(100, sink.getTempo(SoundLayer::BACK));
+    const SoundCue& cue = sink.last(SoundLayer::BACK)->cue;
+    TEST_ASSERT_EQUAL_UINT16(SnakeGame::tuneSteps * SnakeGame::tuneStepMillis, cue.loopMillis);
+    TEST_ASSERT_TRUE(cue.lengthMillis() <= cue.loopMillis);
+    //melody, bass and drums, in time order
+    bool voices[3] = {false, false, false};
+    for(uint16_t i = 0; i < cue.noteCount; i++){
+        TEST_ASSERT_TRUE(cue.notes[i].voice < 3);
+        voices[cue.notes[i].voice] = true;
+        TEST_ASSERT_TRUE(cue.notes[i].kind == SoundNote::Kind::SYNTH);
+        if(i) TEST_ASSERT_TRUE(cue.notes[i - 1].atMillis <= cue.notes[i].atMillis);
+        //written for the disc: the melody from A5 on a full square, the bass short and no lower than A3
+        if(cue.notes[i].voice == 0) TEST_ASSERT_TRUE(cue.notes[i].hertz >= 880 && cue.notes[i].wave == Synth::Wave::SQUARE);
+        if(cue.notes[i].voice == 1) TEST_ASSERT_TRUE(cue.notes[i].hertz >= 220 && cue.notes[i].millis <= 150);
+    }
+    TEST_ASSERT_TRUE(voices[0] && voices[1] && voices[2]);
+    //every note fits the list (none dropped): 44 of melody, 32 of bass, 4 bars of drums (4 kicks, 2 snares, 5 hats)
+    TEST_ASSERT_EQUAL_UINT16(44 + 32 + 4 * (4 * SoundKit::kickNoteCount + 2 + 5), cue.noteCount);
+}
+
+void test_new_level_jingle_and_faster_music(){
+    TEST_ASSERT_EQUAL_UINT16(100, SnakeGame::musicTempo(1));
+    TEST_ASSERT_EQUAL_UINT16(106, SnakeGame::musicTempo(2));
+    for(uint16_t l = 2; l < 40; l++) TEST_ASSERT_TRUE(SnakeGame::musicTempo(l) >= SnakeGame::musicTempo(uint16_t(l - 1)));
+    TEST_ASSERT_EQUAL_UINT16(160, SnakeGame::musicTempo(11));
+    TEST_ASSERT_EQUAL_UINT16(160, SnakeGame::musicTempo(1000));
+
+    RecordingSink sink;
+    SnakeGame game;
+    game.setSound(&sink);
+    game.reset(11);
+    game.playMusic();
+    playUntil(game, [&]{ return game.getLevel() > 1; });
+    TEST_ASSERT_EQUAL_UINT16(2, game.getLevel());
+    TEST_ASSERT_EQUAL_UINT16(SnakeGame::levelHertz, sink.lastHertz(SoundLayer::FRONT));
+    TEST_ASSERT_EQUAL_UINT16(106, sink.getTempo(SoundLayer::BACK));
+    //the music plays on (no restart), and on resume it starts at the level's tempo
+    TEST_ASSERT_EQUAL_UINT32(1, sink.cueCount(SoundLayer::BACK));
+    sink.clear();
+    game.playMusic();
+    TEST_ASSERT_EQUAL_UINT16(106, sink.getTempo(SoundLayer::BACK));
+    TEST_ASSERT_EQUAL_UINT32(1, sink.cueCount(SoundLayer::BACK));
+}
+
+void test_eat_blips_climb_the_pentatonic(){
+    TEST_ASSERT_EQUAL_UINT16(SnakeGame::eatHertz, SnakeGame::eatPitch(0));
+    TEST_ASSERT_EQUAL_UINT16(587, SnakeGame::eatPitch(1));     //D5
+    TEST_ASSERT_EQUAL_UINT16(659, SnakeGame::eatPitch(2));     //E5
+    TEST_ASSERT_EQUAL_UINT16(784, SnakeGame::eatPitch(3));     //G5
+    TEST_ASSERT_EQUAL_UINT16(SnakeGame::eatPitch(14), SnakeGame::eatPitch(40));
+    RecordingSink sink;
+    SnakeGame game;
+    game.setSound(&sink);
+    game.reset(3);
+    uint16_t lastPitch = 0;
+    int blips = 0;
+    for(int t = 0; t < 50 * 180 && game.getFoodEaten() < 8 && !game.isOver(); t++){
+        GameInput input;
+        game.demo(input);
+        uint16_t eaten = game.getFoodEaten();
+        int16_t bonus = game.getBonus();
+        uint32_t before = sink.count(SoundLayer::FRONT);
+        game.update(input);
+        checkNewPlays(sink, before, game.isDying());
+        if(game.getFoodEaten() == eaten) continue;
+        //a food (not with the diamond in the same step): a single synth blip, higher than the one before
+        if(bonus >= 0 && game.getBonus() < 0) continue;
+        const RecordingSink::Play* p = sink.last(SoundLayer::FRONT);
+        TEST_ASSERT_TRUE(p->b_note);
+        TEST_ASSERT_EQUAL_UINT16(SnakeGame::eatPitch(uint16_t(game.getLength() - SnakeGame::startLength - 1)), p->note.hertz);
+        if(blips == 0) TEST_ASSERT_EQUAL_UINT16(SnakeGame::eatHertz, p->note.hertz);
+        TEST_ASSERT_TRUE(p->note.hertz > lastPitch);
+        TEST_ASSERT_TRUE(p->note.millis < 100);
+        lastPitch = p->note.hertz;
+        blips++;
+    }
+    TEST_ASSERT_TRUE(blips >= 6);
+    //effects never touch the music
+    TEST_ASSERT_EQUAL_UINT32(0, sink.count(SoundLayer::BACK));
+}
+
+void test_diamond_and_mouse_sounds(){
+    //over demo games: the diamond twinkles when it appears, an arpeggio when eaten; the mouse squeaks when caught
+    int twinkles = 0, arpeggios = 0, squeaks = 0;
+    for(uint32_t seed = 1; seed <= 6; seed++){
+        RecordingSink sink;
+        SnakeGame game;
+        game.setSound(&sink);
+        game.reset(seed);
+        game.playMusic();
+        for(int t = 0; t < 50 * 120 && !game.isOver(); t++){
+            GameInput input;
+            game.demo(input);
+            int16_t bonus = game.getBonus();
+            int16_t mouse = game.getMouse();
+            uint32_t points = game.score();
+            uint16_t level = game.getLevel();
+            uint32_t before = sink.count(SoundLayer::FRONT);
+            game.update(input);
+            checkNewPlays(sink, before, game.isDying());
+            if(game.getLevel() != level || game.isDying()) continue;
+            const RecordingSink::Play* p = sink.last(SoundLayer::FRONT);
+            if(bonus >= 0 && game.getBonus() < 0 && game.score() >= points + SnakeGame::bonusPoints){
+                TEST_ASSERT_EQUAL_UINT16(SnakeGame::bonusHertz, p->note.hertz);
+                //up all the way
+                for(uint16_t i = 1; i < p->cue.noteCount; i++) TEST_ASSERT_TRUE(p->cue.notes[i].hertz > p->cue.notes[i - 1].hertz);
+                arpeggios++;
+            }
+            else if(mouse >= 0 && game.getMouse() < 0){
+                TEST_ASSERT_EQUAL_UINT16(SnakeGame::squeakHertz, p->note.hertz);
+                TEST_ASSERT_TRUE(p->cue.lengthMillis() < 150);
+                squeaks++;
+            }
+            else if(bonus < 0 && game.getBonus() >= 0 && game.score() == points){
+                TEST_ASSERT_EQUAL_UINT16(SnakeGame::twinkleHertz, p->note.hertz);
+                twinkles++;
+            }
+        }
+    }
+    TEST_ASSERT_TRUE(twinkles > 0);
+    TEST_ASSERT_TRUE(arpeggios > 0);
+    TEST_ASSERT_TRUE(squeaks > 0);
+}
+
+void test_death_stops_the_music_and_falls(){
+    RecordingSink sink;
+    SnakeGame game;
+    game.setSound(&sink);
+    game.reset(11);
+    game.playMusic();
+    playUntil(game, [&]{ return game.getLevel() > 1; });
+    for(int t = 0; t < 60; t++) game.update(GameInput());
+    TEST_ASSERT_EQUAL_UINT32(0, sink.stopCount(SoundLayer::BACK));
+    stepOnce(game, push(0.0f, 1.0f));      //into the bar above (test_walls_kill)
+    TEST_ASSERT_TRUE(game.isDying());
+    TEST_ASSERT_EQUAL_UINT32(1, sink.stopCount(SoundLayer::BACK));
+    const RecordingSink::Play* p = sink.last(SoundLayer::FRONT);
+    TEST_ASSERT_EQUAL_UINT16(SnakeGame::deathHertz, p->note.hertz);
+    TEST_ASSERT_TRUE(p->note.kind == SoundNote::Kind::SQUARE);
+    for(uint16_t i = 1; i < p->cue.noteCount; i++) TEST_ASSERT_TRUE(p->cue.notes[i].hertz < p->cue.notes[i - 1].hertz);
+    TEST_ASSERT_TRUE(p->cue.lengthMillis() <= 600);
+    //dying and over: no more sound, no music on resume
+    uint32_t total = sink.total();
+    for(int t = 0; t < 100; t++) game.update(GameInput());
+    TEST_ASSERT_TRUE(game.isOver());
+    game.playMusic();
+    TEST_ASSERT_EQUAL_UINT32(total, sink.total());
+}
+
+void test_demo_without_sink_is_silent_and_the_same(){
+    //sound never changes the game: with a recording sink and without, the same seed plays the same frames
+    RecordingSink sink;
+    SnakeGame loud, quiet;
+    loud.setSound(&sink);
+    loud.reset(1234);
+    quiet.reset(1234);
+    loud.playMusic();
+    quiet.playMusic();
+    GFXcanvas1 a(128, 32), b(128, 32);
+    for(int t = 0; t < 50 * 90; t++){
+        GameInput inLoud, inQuiet;
+        loud.demo(inLoud);
+        quiet.demo(inQuiet);
+        loud.update(inLoud);
+        quiet.update(inQuiet);
+        a.fillScreen(0);
+        b.fillScreen(0);
+        loud.draw(a);
+        quiet.draw(b);
+        TEST_ASSERT_EQUAL_UINT32(GameContract::frameHash(a), GameContract::frameHash(b));
+        if(loud.isOver()){
+            loud.reset(uint32_t(t));
+            quiet.reset(uint32_t(t));
+        }
+    }
+    TEST_ASSERT_TRUE(sink.count(SoundLayer::FRONT) > 10);
+    loud.setSound(nullptr);
+    uint32_t total = sink.total();
+    for(int t = 0; t < 50 * 30; t++){
+        GameInput input;
+        loud.demo(input);
+        loud.update(input);
+        if(loud.isOver()) loud.reset(uint32_t(t));
+    }
+    loud.playMusic();
+    TEST_ASSERT_EQUAL_UINT32(total, sink.total());
+}
+
 int main(){
     UNITY_BEGIN();
     RUN_TEST(test_contract);
@@ -343,5 +555,11 @@ int main(){
     RUN_TEST(test_walls_kill);
     RUN_TEST(test_bonus_food);
     RUN_TEST(test_mouse_runs_and_is_caught);
+    RUN_TEST(test_music_starts_in_play_music);
+    RUN_TEST(test_new_level_jingle_and_faster_music);
+    RUN_TEST(test_eat_blips_climb_the_pentatonic);
+    RUN_TEST(test_diamond_and_mouse_sounds);
+    RUN_TEST(test_death_stops_the_music_and_falls);
+    RUN_TEST(test_demo_without_sink_is_silent_and_the_same);
     return UNITY_END();
 }

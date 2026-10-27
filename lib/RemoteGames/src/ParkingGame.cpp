@@ -176,7 +176,40 @@ namespace{
     }
 
     float margined(Kind kind){ return kind == Kind::TURN ? turnMargin : margin; }
+
+    //sound [D-157]: the motor whines in grains of 30 ms every 40 ms, its pitch and level with the speed; sliding
+    //along a wall, a scrape of noise every tick instead (synth noise: softer than the remote's square grind)
+    const uint8_t motorPeriodTicks = 2;
+    const uint16_t motorGrainMillis = 30;
+    const float motorLowHertz = 260.0f;     //barely moving
+    const float motorHighHertz = 1100.0f;   //full speed and a full turn
+    const uint16_t scrapeGrainMillis = 14;
+    const float scrapeMinimumSpeed = 2.0f;  //px/s along the wall: slower is a push, not a slide
 };
+
+ParkingGame::ParkingGame(){
+    using namespace SoundKit;
+    //impact: a crunch of noise over a low buzz that drops
+    impactNotes.burst(0, 1400, 110, 100, 45, 0);
+    impactNotes.sweep(0, 150, 85, 180, 6, Synth::Wave::SQUARE, 95, 1, 60);
+    impactCue = impactNotes.cue();
+    //parked: a bell of three notes, C G C
+    chimeNotes.synth(0, hertz(C6), 260, 85, 90, Synth::Wave::SQUARE, 0);
+    chimeNotes.synth(90, hertz(G6), 280, 75, 110, Synth::Wave::PULSE25, 1);
+    chimeNotes.synth(180, hertz(C7), 380, 85, 150, Synth::Wave::SQUARE, 0);
+    chimeCue = chimeNotes.cue();
+    //all twelve parked: a fanfare climbing the C chord, a second voice under its last two notes; ends after 1 s,
+    //before the arcade's game over phrase
+    fanfareNotes.synth(0, hertz(G5), 80, 85, 0, Synth::Wave::SQUARE, 0);
+    fanfareNotes.synth(100, hertz(C6), 80, 85, 0, Synth::Wave::SQUARE, 0);
+    fanfareNotes.synth(200, hertz(E6), 80, 85, 0, Synth::Wave::SQUARE, 0);
+    fanfareNotes.synth(300, hertz(G6), 160, 90, 0, Synth::Wave::SQUARE, 0);
+    fanfareNotes.synth(300, hertz(C5), 160, 70, 0, Synth::Wave::PULSE25, 1);
+    fanfareNotes.synth(480, hertz(E6), 80, 85, 0, Synth::Wave::SQUARE, 0);
+    fanfareNotes.synth(580, hertz(G6), 420, 90, 200, Synth::Wave::SQUARE, 0);
+    fanfareNotes.synth(580, hertz(E5), 420, 70, 200, Synth::Wave::PULSE25, 1);
+    fanfareCue = fanfareNotes.cue();
+}
 
 void ParkingGame::reset(uint32_t seed){
     random.seed(seed);
@@ -199,6 +232,7 @@ void ParkingGame::startLevel(uint8_t index){
         moverPhase[i] = i < l.moverCount ? uint16_t(random.below(moverCycle(i))) : 0;
         movers[i] = moverAt(i, moverPhase[i]);
     }
+    scrapeSpeed = 0.0f;
     place(l.startX + (random.unit() - 0.5f) * 3.0f, l.startY + (random.unit() - 0.5f) * 2.0f,
           (l.startHeadingDeg + (random.unit() - 0.5f) * 10.0f) * DEG);
     freeTicks = 1000;
@@ -350,6 +384,7 @@ void ParkingGame::moveVehicle(const GameInput& input){
     forwardSpeed = ramp(forwardSpeed, input.stick[1] * maxSpeed, acceleration * dt);
     strafeSpeed = ramp(strafeSpeed, input.stick[0] * maxSpeed, acceleration * dt);
     turnRate = ramp(turnRate, input.stick[2] * maxTurnRate, turnAcceleration * dt);
+    scrapeSpeed = 0.0f;
     if(forwardSpeed == 0.0f && strafeSpeed == 0.0f && turnRate == 0.0f) return;
 
     float c = cosf(heading), s = sinf(heading);
@@ -358,12 +393,14 @@ void ParkingGame::moveVehicle(const GameInput& input){
     float nx = x + vx * dt, ny = y + vy * dt;
     float impact = 0.0f;
     bool b_free = false;
+    bool b_touched = false;
     for(int attempt = 0; attempt < 5; attempt++){
         float depth, ux, uy;
         if(!deepestContact(vehicleAt(nx, ny, nh), depth, ux, uy)){
             b_free = true;
             break;
         }
+        b_touched = true;
         nx += ux * (depth + 0.01f);
         ny += uy * (depth + 0.01f);
         float into = vx * ux + vy * uy;
@@ -389,6 +426,12 @@ void ParkingGame::moveVehicle(const GameInput& input){
         penaltyCount++;
         penaltyShowTicks = 40;
         freeTicks = 0;
+        sound().play(impactCue);
+    }
+    //sliding along what it touches: the scrape (sound only)
+    else if(b_free && b_touched){
+        float along = sqrtf(vx * vx + vy * vy);
+        if(along > scrapeMinimumSpeed) scrapeSpeed = along;
     }
     if(freeTicks < 1000) freeTicks++;
 }
@@ -438,12 +481,34 @@ void ParkingGame::update(const GameInput& input){
             phase = Phase::PARKED;
             phaseTicks = 0;
             forwardSpeed = strafeSpeed = turnRate = 0;
+            sound().play(levelsDone >= levelCount ? fanfareCue : chimeCue);
         }
     }else{
         parkedTicks = 0;
     }
 
     if(getClockTicks() >= timeLimitTicks) phase = Phase::OVER;
+    if(phase == Phase::DRIVE) playGrains();
+}
+
+//the scrape while sliding along a wall (every tick, it matters more), else the motor's whine while anything moves;
+//both skip a tick while the impact, the chime or the fanfare plays
+void ParkingGame::playGrains(){
+    using namespace SoundKit;
+    if(scrapeSpeed > 0.0f){
+        float amount = clampf(scrapeSpeed / maxSpeed, 0.0f, 1.0f);
+        uint16_t brightness = uint16_t(1800 + motorGrain.random.between(0, 2400));
+        motorGrain.play(sound(), noiseBurst(0, brightness, scrapeGrainMillis, uint8_t(55.0f + 20.0f * amount), 8));
+        return;
+    }
+    if(forwardSpeed == 0.0f && strafeSpeed == 0.0f && turnRate == 0.0f) return;
+    if(!motorGrain.due(motorPeriodTicks)) return;
+    float travel = sqrtf(forwardSpeed * forwardSpeed + strafeSpeed * strafeSpeed) / maxSpeed;
+    float amount = clampf(travel + 0.5f * fabsf(turnRate) / maxTurnRate, 0.0f, 1.0f);
+    //a little unsteady, like four wheel motors that never quite agree
+    float wobble = 1.0f + 0.02f * (motorGrain.random.unit() - 0.5f);
+    uint16_t pitch = uint16_t((motorLowHertz + (motorHighHertz - motorLowHertz) * amount) * wobble);
+    motorGrain.play(sound(), synthNote(0, pitch, motorGrainMillis, uint8_t(35.0f + 35.0f * amount), 0, Synth::Wave::PULSE25));
 }
 
 uint32_t ParkingGame::score() const {

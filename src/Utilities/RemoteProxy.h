@@ -3,7 +3,7 @@
 #include <RobotStates.h>
 #include "Utilities/SafetyNumber.h"
 
-//The remote's controls as last received in a remote frame (robot board, and the remote in env:remote_direct)
+//The remote's controls as last received in a remote frame (robot board, and the USB remote [D-159])
 struct RemoteProxy{
     uint32_t lastReceiveTimeMillis = 0;
     bool b_connected = false;

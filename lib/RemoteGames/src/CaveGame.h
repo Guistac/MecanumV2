@@ -1,13 +1,17 @@
 #pragma once
 #include "Game.h"
+#include <SoundKit.h>
 
 //CAVE: a small helicopter flies through a cave that scrolls from right to left, ever faster and narrower, with
 //pillars and stalactites further in. Push a stick up to climb, as much as it is pushed (at rest the craft sinks
 //gently); a stick button held is full thrust. The craft has momentum and hovers until the first click or push up.
 //Touching anything crashes it. Score: the distance flown in metres.
-//[D-148]
+//Sound [D-157]: no music; the rotor chops (noise ticks, faster with more thrust), a ping every 100 m, and the crash:
+//a burst of noise and a falling whistle.
+//[D-157]
 class CaveGame : public Game{
 public:
+    CaveGame();
     const char* name() const override { return "CAVE"; }
     void reset(uint32_t seed) override;
     void update(const GameInput& input) override;
@@ -16,6 +20,11 @@ public:
     uint32_t score() const override { return uint32_t(scrollPx / pixelsPerMetre); }
     void scoreText(char* out, size_t size, uint32_t value) const override;
     void demo(GameInput& input) override;
+    void helpLines(const char* lines[3]) const override {
+        lines[0] = "STICK UP: CLIMB";
+        lines[1] = "CLICK HELD: FULL UP";
+        lines[2] = "TOUCH NOTHING";
+    }
 
     static const int16_t craftX = 36;               //screen column of the craft's left edge
     static const int16_t craftWidth = 8;
@@ -29,6 +38,7 @@ public:
     static const uint8_t readyTicks = 150;          //the craft hovers at most 3 s before it flies on its own
     static const uint8_t spoolTicks = 60;           //thrust and gravity come in over the first 1.2 s of flight
     static const uint8_t crashShowTicks = 25;       //half a second of debris before the game is over
+    static const uint16_t pingMetres = 100;
 
     //for the tests and the demo: the state read from outside
     float getCraftY() const { return craftY; }
@@ -44,6 +54,11 @@ public:
     int16_t floorAt(int16_t screenX) const;
     //the thrust the input asks for, 0..1
     static float thrustFrom(const GameInput& input);
+    //the rotor's chops a second at this thrust (0..1)
+    static float rotorRate(float thrust);
+    //the one-shot sounds (tests compare what was played with these)
+    const SoundCue& pingSound() const { return pingCue; }
+    const SoundCue& crashSound() const { return crashCue; }
 
 private:
     static const uint16_t ringSize = 192;           //cave columns kept: the screen plus the generator's lead
@@ -70,6 +85,8 @@ private:
     void crash();
     uint32_t firstColumn() const { return uint32_t(scrollPx); }
     bool pillarCovers(const Pillar& p, uint32_t column, int16_t row) const;
+    //the rotor's chop for this tick (sound only, never the game's state)
+    void playRotor(float thrust);
 
     GameRandom random;
     GameRandom demoRandom;      //the demo player's mistakes: the cave is the same whoever plays
@@ -103,4 +120,12 @@ private:
     //the demo player: its decisions reach the stick a few ticks late, and its aim wanders more as the cave speeds up
     uint32_t demoQueue = 0;
     float demoAimError = 0.0f;
+
+    //sound: never read by the game
+    float rotorPhase = 0.0f;        //chops due, a chop at each whole one
+    uint32_t pingsPlayed = 0;       //hundreds of metres pinged
+    SoundKit::Grain rotorGrain;
+    SoundKit::NoteList<4> pingNotes;
+    SoundKit::NoteList<24> crashNotes;
+    SoundCue pingCue, crashCue;
 };

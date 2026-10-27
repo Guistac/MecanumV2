@@ -20,6 +20,8 @@ private:
     uint16_t initFailures = 0;          //failed initializations in a row
     uint32_t faultStartMillis = 0;
 
+    bool b_quiet = false;               //no Serial text: the USB carries MAVLink (the USB remote, D-159)
+
     double startFrequency = 869.4;
     double channelSpacing = 0.03;
     double frequencyCompensation = 0.015;
@@ -47,6 +49,8 @@ public:
     }
 
     bool isInitialized(){ return b_initialized; }
+    //true: no diagnostic text on Serial (the remote while its USB carries MAVLink)
+    void setQuiet(bool b){ b_quiet = b; }
     uint16_t getInitFailures(){ return initFailures; }
     //how long the radio has been failing to initialize, 0 while it works
     uint32_t getFaultMillis(){ return b_initialized ? 0 : millis() - faultStartMillis; }
@@ -70,7 +74,7 @@ private:
             }
             tries++;
             if(tries >= maxTries) return false;
-            else Serial.printf("Failed radio init, trying again (%i/%i)\n", tries, maxTries);
+            else if(!b_quiet) Serial.printf("Failed radio init, trying again (%i/%i)\n", tries, maxTries);
         }
         //after init, the radio is not in Rx Mode
         //we need to set this mode immediately else we'll overheat
@@ -152,7 +156,7 @@ public:
         if(!b_initialized){
             if(millis() - lastRecoveryMillis >= 2000){
                 bool b_started = initialize(1);
-                Serial.printf("radio init retry %s (%i failed)\n", b_started ? "ok" : "failed", initFailures);
+                if(!b_quiet) Serial.printf("radio init retry %s (%i failed)\n", b_started ? "ok" : "failed", initFailures);
             }
             return;
         }
@@ -179,7 +183,7 @@ public:
         recoveries++;
         lastRecoveryMillis = millis();
         bool b_restarted = initialize(1);
-        Serial.printf("radio %s, re-init %s (recovery %i)\n", reason, b_restarted ? "ok" : "failed", recoveries);
+        if(!b_quiet) Serial.printf("radio %s, re-init %s (recovery %i)\n", reason, b_restarted ? "ok" : "failed", recoveries);
     }
 
     //number of re-inits after a send timeout or a chip reset

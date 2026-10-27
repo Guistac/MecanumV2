@@ -20,14 +20,15 @@
 #include <StickCalibration.h>
 #include <RemoteScreens.h>
 #include <Arcade.h>
+#include "ArcadeEeprom.h"
 #include "RemoteSound.h"
 #include <SoundPlayer.h>
 #include <RemoteSounds.h>
+#include <Stopwatch.h>
 
-#ifdef REMOTE_DIRECT
+#include <LinkPath.h>
 #include "Utilities/RemoteProxy.h"
 class Mavlink;
-#endif
 
 #define REMOTE_RADIO_SHUTDOWN_PIN 8
 #define REMOTE_RADIO_INTERRUPT_PIN 9
@@ -148,15 +149,18 @@ private:
     uint16_t shownRecoveries = 0;
     uint32_t recoveryMarkerUntilMillis = 0;
 
-#ifdef REMOTE_DIRECT
-    //bench build env:remote_direct: the remote talks MAVLink to Stacato over its own USB, doing the receiver's job,
-    //the radio stays in receive and never transmits. Both pushbuttons together toggle a simulated radio dropout.
-    Mavlink* directMavlink = nullptr;
-    RemoteProxy directProxy;
+    //the USB remote [D-159]: with Stacato's heartbeat on its own USB the remote talks MAVLink to Stacato itself,
+    //doing the receiver's job; the radio then stays in receive and never transmits (LinkPath). In USB mode both
+    //pushbuttons together toggle a simulated radio dropout (not in the games)
+    Mavlink* usbMavlink = nullptr;
+    RemoteProxy usbProxy;
+    LinkPath linkPath;
     bool b_simulatedDropout = false;
     bool b_dropoutChordHeld = false;
-    void directExchange(uint8_t* outgoingFrame);
-#endif
+    bool b_usbFirstFrame = false;
+    bool b_buttonsHeldThroughHandover = false;      //enable or disable held as the path changed: sent released until let go
+    void updateLinkPath(uint32_t now);
+    void usbExchange(uint8_t* outgoingFrame);
 
     //operator logic [D-147] (lib/RemoteLogic, tested with pio test -e native)
     EstopContacts estop;
@@ -170,6 +174,7 @@ private:
     RemoteSettings settings;
     bool b_settingsAvailable = false;
     bool b_joystickZeroCaptured = false;
+    bool b_releasePromptShown = false;      //a stick was held at power on: "thank you" once it is released
     bool b_estopWasReleased = false;
     uint32_t estopReleaseMillis = 0;
     uint32_t thankYouUntilMillis = 0;
@@ -181,10 +186,20 @@ private:
     bool updateMenu(uint32_t now);
     //sounds [D-158]: the player picks the notes, sound drives the disc
     RemoteSound sound{REMOTE_BUZZER_PIN, REMOTE_BUZZER_B_PIN};
-    SoundPlayer soundPlayer;     //any part plays into it (a SoundSink): the interface here, the games later
+    SoundPlayer soundPlayer;     //any part plays into it (a SoundSink): the interface here, the games (Arcade)
     void playSound(RemoteSounds::Sound s){
-        if(RemoteSounds::isAllowed(s, settings.sound)) soundPlayer.play(RemoteSounds::cue(s));
+        if(!RemoteSounds::isAllowed(s, settings.sound)) return;
+        if(!soundPlayer.play(RemoteSounds::cue(s))) return;
+        //an alarm sound replaces the ramp's loop; the loop itself is tracked from its start
+        if(RemoteSounds::isAlarm(s)){
+            b_disablingLoop = s == RemoteSounds::Sound::STATUS_DISABLING;
+            disablingLoopStartMillis = millis();
+        }
     }
+    //the ramp's loop (STATUS_DISABLING) runs until the next alarm sound cuts in; refreshGui ends it on a status
+    //without a sound and after RemoteSounds::disablingLoopMaxMillis
+    bool b_disablingLoop = false;
+    uint32_t disablingLoopStartMillis = 0;
     bool b_enableHeld = false;
     bool b_disableHeld = false;
     bool b_arcadeGateOpen = false;      //the About page offers the games (the header shows it)
@@ -199,9 +214,15 @@ private:
     uint32_t previousSearchPhase = 0;
     void closeMenu();
     void updateLeds();
+    //the rehearsal stopwatch on the Status page [D-160]: display only, the stick buttons start / stop and reset it,
+    //the left one held at OFF edits the countdown (lib/RemoteLogic/src/Stopwatch.h, tested with pio test -e native)
+    StopwatchControl stopwatch;
+    void updateStopwatch(uint32_t now);
 
-    //the games [D-148] (lib/RemoteGames, tested with pio test -e native)
+    //the games [D-157] (lib/RemoteGames, tested with pio test -e native): their top 3s and sound mode in
+    //EEPROM from byte 256, their sounds into the player unless the Sound setting is Off
     Arcade arcade;
+    ArcadeEeprom arcadeStore;
     void updateArcade(bool& b_previous, bool& b_next, uint32_t now);
     void leaveArcade();
     StatusView selectStatus(uint32_t now);

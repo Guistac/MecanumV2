@@ -14,6 +14,43 @@ static const uint16_t bonusHurry = 75;          //the last 1.5 s it blinks fast
 static const uint16_t dyingTicks = 70;
 static const uint16_t far = 0xFFFF;
 
+//the effects with fixed notes (front layer; synth while the music plays, squares only for the death)
+namespace{
+    using W = Synth::Wave;
+    const SoundNote::Kind SY = SoundNote::Kind::SYNTH, SQ = SoundNote::Kind::SQUARE;
+    //the diamond appears: E7 G7 E7 A7, soft and quick
+    const SoundNote twinkleNotes[] = {
+        {0, SY, 0, W::SQUARE, SnakeGame::twinkleHertz, 25, 70, 10},
+        {45, SY, 0, W::SQUARE, 3136, 25, 70, 10},
+        {90, SY, 0, W::SQUARE, 2637, 25, 70, 10},
+        {135, SY, 0, W::SQUARE, 3520, 40, 75, 20},
+    };
+    //the diamond eaten: C6 E6 G6 C7 E7 up, the last one ringing
+    const SoundNote bonusNotes[] = {
+        {0, SY, 0, W::SQUARE, SnakeGame::bonusHertz, 40, 90, 0},
+        {40, SY, 0, W::SQUARE, 1319, 40, 90, 0},
+        {80, SY, 0, W::SQUARE, 1568, 40, 90, 0},
+        {120, SY, 0, W::SQUARE, 2093, 40, 90, 0},
+        {160, SY, 0, W::SQUARE, 2637, 110, 95, 50},
+    };
+    //a new level: G5 C6 E6, then G6 over C6
+    const SoundNote levelNotes[] = {
+        {0, SY, 0, W::PULSE25, SnakeGame::levelHertz, 60, 90, 0},
+        {70, SY, 0, W::PULSE25, 1047, 60, 90, 0},
+        {140, SY, 0, W::PULSE25, 1319, 60, 90, 0},
+        {210, SY, 0, W::PULSE25, 1568, 180, 95, 80},
+        {210, SY, 1, W::SQUARE, 1047, 180, 70, 80},
+    };
+    //the death: G6 D6 A5 E5 C5 falling, squares (the music has stopped)
+    const SoundNote deathNotes[] = {
+        {0, SQ, 0, W::SQUARE, SnakeGame::deathHertz, 70, 0, 0},
+        {80, SQ, 0, W::SQUARE, 1175, 70, 0, 0},
+        {160, SQ, 0, W::SQUARE, 880, 70, 0, 0},
+        {240, SQ, 0, W::SQUARE, 659, 70, 0, 0},
+        {320, SQ, 0, W::SQUARE, 523, 180, 0, 0},
+    };
+};
+
 //The layouts, one string per row ('#' a wall), from open to tighter; level n plays layout (n - 1) % layoutCount.
 //The top right corner (rows 0..2, columns 34..41) stays free for the score, every free cell is reachable (tests)
 static const char* const layouts[SnakeGame::layoutCount - 1][SnakeGame::rows] = {
@@ -374,6 +411,9 @@ void SnakeGame::step(){
     if(kills(next, b_grows)){
         state = State::DYING;
         stateTicks = 0;
+        //the end: the music stops, falling notes
+        sound().stop(SoundLayer::BACK);
+        sound().play(soundCue(deathNotes, SoundPriority::GAME));
         return;
     }
     if(!b_grows){
@@ -401,13 +441,86 @@ void SnakeGame::step(){
         levelFood++;
         if(levelFood >= foodPerLevel){
             startLevel(uint16_t(level + 1));
+            //a jingle, the music a little faster
+            sound().play(soundCue(levelNotes, SoundPriority::GAME));
+            sound().setTempo(SoundLayer::BACK, musicTempo(level));
             return;
         }
         placeFood();
     }
     //the extras come after a number of steps, so a slow player sees as many as a quick one
-    if(bonus < 0 && bonusWait && --bonusWait == 0) placeBonus();
+    bool b_bonusAppears = false;
+    if(bonus < 0 && bonusWait && --bonusWait == 0){
+        placeBonus();
+        b_bonusAppears = bonus >= 0;
+    }
     if(level > 1 && mouse < 0 && mouseWait && --mouseWait == 0) placeMouse();
+
+    //one effect a step, the most telling one
+    if(b_bonus) sound().play(soundCue(bonusNotes, SoundPriority::GAME));
+    else if(b_mouse){
+        //a squeak: two quick chirps up
+        effect.clear();
+        effect.sweep(0, squeakHertz, 3400, 50, 5, Synth::Wave::PULSE25, 85);
+        effect.sweep(70, 2200, 3800, 40, 4, Synth::Wave::PULSE25, 80, 0, 15);
+        sound().play(effect.cue());
+    }
+    else if(b_food){
+        sound().playNote(SoundKit::synthNote(0, eatPitch(uint16_t(length - startLength - 1)), 45, 90, 25),
+                         SoundPriority::GAME);
+    }
+    else if(b_bonusAppears) sound().play(soundCue(twinkleNotes, SoundPriority::GAME));
+}
+
+uint16_t SnakeGame::musicTempo(uint16_t level){
+    //6 % faster a level, at most 160 %
+    uint32_t percent = 100u + 6u * (level > 1 ? level - 1u : 0u);
+    return uint16_t(percent < 160 ? percent : 160);
+}
+
+//the eat blip: one step up the C pentatonic from C5 a segment grown in this level, up to A7
+uint16_t SnakeGame::eatPitch(uint16_t grown){
+    return SoundKit::hertz(SoundKit::pentatonic(SoundKit::C5, uint8_t(grown < 14 ? grown : 14)));
+}
+
+//Our own tune, in C: a hopping melody of short notes over C Am F G, a bass that bounces root, octave, fifth, octave,
+//the drums with a skip (kick on 1 and the "and" of 2, snare on 3).
+//Written for the disc (loud only from about 1 kHz to 5 kHz, nearly silent below 400 Hz): the melody from A5 to D7
+//(880 to 2349 Hz) on a full square, the bass an octave up (A3 to G5) on a narrow pulse, short, quieter than the
+//melody; the synth clips the sum of its voices at 1, so the bass is plucked and the drums sit under both
+void SnakeGame::buildTune(){
+    using namespace SoundKit;
+    //Arduino owns A0 to A17 (the analog pins): the A notes under other names
+    const uint8_t a3 = SoundKit::A3, a4 = SoundKit::A4, a5 = SoundKit::A5, a6 = SoundKit::A6;
+    static const uint8_t melody[64] PROGMEM = {
+        C6, REST, E6, G6,   REST, G6, a6, G6,       //C
+        E6, REST, C6, REST, a5, C6, E6, REST,       //Am
+        F6, REST, a6, C7,   REST, C7, D7, C7,       //F
+        B6, REST, G6, REST, D6, REST, G6, REST,     //G
+        C6, REST, E6, G6,   REST, G6, a6, G6,       //C
+        C7, REST, a6, REST, E6, REST, a6, G6,       //Am
+        F6, a6, C7, a6,     G6, B6, D7, B6,         //F G
+        C7, REST, G6, E6,   C6, REST, REST, REST,   //C
+    };
+    //a quarter an entry
+    static const uint8_t bass[32] PROGMEM = {
+        C4, C5, G4, C5,   a3, a4, E4, a4,   F4, F5, C5, F5,   G4, G5, D5, G5,
+        C4, C5, G4, C5,   a3, a4, E4, a4,   F4, F5, G4, G5,   C4, C5, G4, C5,
+    };
+    tune.clear();
+    Tracker t(tune, tuneStepMillis);
+    t.instrument(0, Synth::Wave::SQUARE, 80, 200).instrument(1, Synth::Wave::PULSE12, 40, 60);
+    t.line(0, melody, 64, 0, 1, 92).line(1, bass, 32, 0, 2, 50);
+    t.drums("K.HKS.H.K.HKS.HH", 0, tuneSteps / 16, 70);
+    music = t.cue(tuneSteps);
+    b_tuneBuilt = true;
+}
+
+void SnakeGame::playMusic(){
+    if(state == State::DYING || state == State::OVER) return;
+    if(!b_tuneBuilt) buildTune();
+    sound().setTempo(SoundLayer::BACK, musicTempo(level));
+    sound().play(music, SoundLayer::BACK);
 }
 
 //walls are hatched (every other pixel, also over the 1 px links between wall cells), so they never read as the snake
