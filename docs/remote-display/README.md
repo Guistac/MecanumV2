@@ -74,7 +74,7 @@ half the frame, B6 is withdrawn.)
 
 ## Tier A: remote only, no protocol change (decided: D-147)
 
-Decided in the interview `docs/architecture/decisions/REVIEW_HANDHELD_DISPLAY.md` (Stacato repo, H1 to H14), transcribed as
+Decided in the interview `docs/architecture/decisions/archive/REVIEW_HANDHELD_DISPLAY.md` (Stacato repo, H1 to H16), transcribed as
 D-147 (drafted as D-146, which another decision took first: commits `f487c58` and `a0f6d01` say "D-146 draft"). Implemented on branch `remote-tier-a`.
 
 What the screens show and how they look: the section Screen design below, and the reference picture
