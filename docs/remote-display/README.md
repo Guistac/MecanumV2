@@ -190,6 +190,17 @@ the controls never wait for it; the Mac renderer uses the same code.
 
 The gap check in `render.py` fails when one connected shape reaches across a layout's gap rows.
 
+Startup (owner's request, 2026-10-27): the BERUPO logo ([berupo_logo.png](berupo_logo.png)) replaces "Becker Poels".
+The screen still fills white from the left and clears from the left as before; in between the black letters follow
+the motion of the Game Boy Color start screen: each comes in three times its size from below left 75 ms after the one
+before, arcs up past its place and drops shrinking, landing closer to the word's centre (0.7 of its distance), slides
+onto its place speeding up (210 ms) and hops there twice (0.34 of its height in 270 ms, then 0.1 in 180 ms, ending at
+rest), the hops running across the word as a wave; slide and hops measured frame by frame on the recorded start
+screen. A half-tone shine crosses the word as the last letter's first hop ends, then it clears. 2.1 s in all, then the
+screen reveals itself as before ([startup.gif](startup.gif)). `tools/screens/logo.py <picture>` regenerates
+`lib/RemoteUi/src/BerupoLogo.h` (each letter at 4x, 24 px tall, gloss marks filled in); `RemoteSplash` draws it.
+Both stick buttons held at power on: the former "Becker Poels" startup instead (0.75 s, unchanged).
+
 ### Checked on the bench (to do)
 
 Directions to confirm on the hardware: stick up = previous menu item (`getYValue()` positive), which speed switch

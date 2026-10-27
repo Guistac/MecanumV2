@@ -3,6 +3,7 @@
 #include <LiIonBattery.h>
 #include "Hardware/Watchdog.h"
 #include <RemoteTransitions.h>
+#include <RemoteSplash.h>
 
 #ifndef FW_VERSION
 #define FW_VERSION "unknown"
@@ -213,57 +214,50 @@ void RemoteBoard::startupAnimation(){
 
     FrequencyTimer frameDrawEvent(200.0);
 
-    auto showStartupGraphic = [this](){
-        display.setTextColor(BLACK);
-        display.setTextSize(3);
-        display.setCursor(22,-1);
-        display.print("B");
-        display.setTextSize(2);
-        display.print("ecker");
-        display.setCursor(42,15);
-        display.setTextSize(3);
-        display.print("P");
-        display.setTextSize(2);
-        display.print("oels");
-    };
+    //both sticks pressed at power on: the former Becker Poels startup instead of BERUPO
+    leftJoystick.updateInputs();
+    rightJoystick.updateInputs();
+    RemoteSplash::Style style = leftJoystick.isPressed() && rightJoystick.isPressed()
+        ? RemoteSplash::Style::BECKER_POELS : RemoteSplash::Style::BERUPO;
+    const float duration = RemoteSplash::duration(style);
+    const float fadeOutStart = RemoteSplash::fadeOutStart(style);
 
-    LengthTimer screenFillTimer(.5);
-    while(!screenFillTimer.hasExpired()){
+    //the letters on the white fill (RemoteSplash); the pushbutton LEDs blink across while the screen fills and
+    //again while it clears, as before
+    LengthTimer splashTimer(duration);
+    while(!splashTimer.hasExpired()){
         Watchdog::feed();
-        float ll;
-        float rl;
-        if(screenFillTimer.getProgress() < 0.5){
-            ll = constrain(map(screenFillTimer.getProgress(), 0.0, 0.25, 1.0, 0.0), 0.0, 1.0);
-            rl = constrain(map(screenFillTimer.getProgress(), 0.25, 0.5, 1.0, 0.0), 0.0, 1.0);
+        float seconds = splashTimer.getProgress() * duration;
+        float ll = 0.0;
+        float rl = 0.0;
+        if(seconds < RemoteSplash::fillInSeconds){
+            float progress = seconds / RemoteSplash::fillInSeconds;
+            if(progress < 0.5){
+                ll = constrain(map(progress, 0.0, 0.25, 1.0, 0.0), 0.0, 1.0);
+                rl = constrain(map(progress, 0.25, 0.5, 1.0, 0.0), 0.0, 1.0);
+            }else{
+                ll = constrain(map(progress, 0.5, 0.75, 0.0, 1.0), 0.0, 1.0);
+                rl = constrain(map(progress, 0.75, 1.0, 0.0, 1.0), 0.0, 1.0);
+            }
+        }else if(seconds >= fadeOutStart){
+            float progress = (seconds - fadeOutStart) / RemoteSplash::fadeOutSeconds;
+            ll = constrain(map(progress, 0.0, 0.5, 1.0, 0.0), 0.0, 1.0);
+            rl = constrain(map(progress, 0.5, 1.0, 1.0, 0.0), 0.0, 1.0);
         }else{
-            ll = constrain(map(screenFillTimer.getProgress(), 0.5, 0.75, 0.0, 1.0), 0.0, 1.0);
-            rl = constrain(map(screenFillTimer.getProgress(), 0.75, 1.0, 0.0, 1.0), 0.0, 1.0);
+            ll = 1.0;
+            rl = 1.0;
         }
         leftLedButton.setBrightness(ll);
         rightLedButton.setBrightness(rl);
         if(frameDrawEvent.shouldTrigger()){
-            display.clearDisplay();
-            int w = easeInOutCubic(screenFillTimer.getProgress()) * 127;
-            display.fillRect(0,0,w,31,WHITE);
-            showStartupGraphic();
+            RemoteSplash::draw(display, seconds, style);
             display.display();
         }
     }
-
-    LengthTimer screenClearTimer(.25);
-    while(!screenClearTimer.hasExpired()){
-        Watchdog::feed();
-        float ll = constrain(map(screenClearTimer.getProgress(), 0.0, 0.5, 1.0, 0.0), 0.0, 1.0);
-        float rl = constrain(map(screenClearTimer.getProgress(), 0.5, 1.0, 1.0, 0.0), 0.0, 1.0);
-        leftLedButton.setBrightness(ll);
-        rightLedButton.setBrightness(rl);
-        if(frameDrawEvent.shouldTrigger()){
-            display.clearDisplay();
-            int w = 127 - easeInOutCubic(screenClearTimer.getProgress()) * 127;
-            display.fillRect(127-w,0,w,31, WHITE);
-            showStartupGraphic();
-            display.display();
-        }
-    }
+    //the last frame drawn in the loop is a little before the end, the wipe one column short: show the cleared screen
+    display.clearDisplay();
+    display.display();
+    leftLedButton.setBrightness(0.0);
+    rightLedButton.setBrightness(0.0);
     display.setTextColor(WHITE);
 }

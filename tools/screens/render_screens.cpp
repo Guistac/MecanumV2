@@ -3,6 +3,7 @@
 #include <Adafruit_GFX.h>
 #include <RemoteScreens.h>
 #include <RemoteTransitions.h>
+#include <RemoteSplash.h>
 #include <stdio.h>
 #include <string>
 #include <vector>
@@ -193,6 +194,17 @@ int main(int argc, char** argv){
             RemoteUi::draw(canvas, m);
             char name[64];
             snprintf(name, sizeof(name), "/g_alive_%s_%d.pbm", page == 0 ? "enabled" : (page == 1 ? "disabled" : "page"), frame);
+            writePbm(canvas, outDir + name);
+        }
+    }
+
+    //the startup animations at 50 Hz (g_splash_<frame>.pbm, g_splash_becker_poels_<frame>.pbm)
+    for(auto style : {RemoteSplash::Style::BERUPO, RemoteSplash::Style::BECKER_POELS}){
+        for(int frame = 0; frame * 0.02f <= RemoteSplash::duration(style); frame++){
+            GFXcanvas1 canvas(128, 32);
+            RemoteSplash::draw(canvas, frame * 0.02f, style);
+            char name[64];
+            snprintf(name, sizeof(name), style == RemoteSplash::Style::BERUPO ? "/g_splash_%d.pbm" : "/g_splash_becker_poels_%d.pbm", frame);
             writePbm(canvas, outDir + name);
         }
     }

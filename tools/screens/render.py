@@ -26,6 +26,7 @@ def build():
         "lib/RemoteLogic/src/StatusView.cpp",
         "lib/RemoteUi/src/RemoteScreens.cpp",
         "lib/RemoteUi/src/RemoteTransitions.cpp",
+        "lib/RemoteUi/src/RemoteSplash.cpp",
         "tools/screens/render_screens.cpp",
     ]
     includes = ["tools/screens/host", "lib/Adafruit-GFX", "lib/RemoteLogic/src", "lib/RemoteUi/src"]
