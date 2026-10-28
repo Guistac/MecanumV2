@@ -93,17 +93,24 @@ What the screens show and how they look: the section Screen design below, and th
 - Markers in the bottom centre, taking turns every second: `RST` 3 s after a radio recovery, `HOT` over 70 C (hint),
   `SAFE` in safe mode, `REBOOT` for 5 s after a watchdog or crash reboot.
 
-Pages: left pushbutton previous, right next, wrapping; back to Status after 10 s without input, except from the two
-main pages Status and Motion (D-161, below) and Motors (D-163, below), which stay open. Status, Motion, Motors, Link (both
-RSSIs, loss, round-trip time), Radio (temperature, recoveries, transmit timeouts, chip resets), Battery (resting and
-instant cell voltage, state, robot pack), Inputs (sticks, buttons, E-stop contacts), About (firmware hash, uptime,
-last reset cause and count), Settings (only while the speed switch is at OFF). The pushbuttons send no command.
+Pages: left pushbutton previous, right next, wrapping; back to Status after 10 s without input, except from the two main
+pages Status and Motion (D-161, below), Motors (D-163, below) and Tracking (below), which stay open. Status, Motion,
+Motors, Tracking (the map round the vehicle), Link (both RSSIs, loss, round-trip time), Radio (temperature, recoveries,
+transmit timeouts, chip resets), Battery (resting and instant cell voltage, state, robot pack), Inputs (sticks, buttons,
+E-stop contacts), About (firmware hash, uptime, last reset cause and count), Settings (only while the speed switch is at
+OFF). The pushbuttons send no command.
 
 Settings menu (speed switch at OFF only, whatever the vehicle state; leaving OFF closes it): opened with a stick to
 the right on the Settings page; up/down selects (Channel, Contrast, Dimming, Sticks, Save, Exit), left/right changes; step at
 60 % deflection, re-armed under 30 %, repeated after 0.5 s then every 0.2 s; both sticks work, the stronger one counts.
 Values are pending until Save is held right for 1 s (only changed bytes written to EEPROM); Exit, leaving OFF, the
 pushbuttons or 10 s without input discard them. Contrast is previewed live.
+
+Radio off (owner, 2026-10-28): the Channel setting runs 0 to F, then Off. Off sends nothing over the radio (the module
+stays powered and listening, never shut down: its amplifier comes on in shutdown; replies are ignored), so the vehicle
+sees the remote gone, as when it is switched off. The Status page says Radio off (a state, not an alarm; only a
+critical remote battery shows above it), the top row RF OFF, both LEDs are dark: the remote is a game console. The
+USB link (D-159) still works. Stored as 16 in the channel byte; kept over a restart, safe mode included.
 
 Joystick calibration (menu item Sticks, H15): "release both" (all axes still for 0.7 s, rest positions averaged),
 then "circle both" (extremes recorded, shown live as two circles); the right pushbutton saves once every axis covers a
@@ -138,15 +145,17 @@ block is recommended (hardware), then that short shows as `WIRING` on a press.
 Radio: one init attempt at boot, then `Radio::update()` retries every 2 s while `RADIO FAULT` shows (both boards); the
 channel set before the chip runs is applied when it comes up.
 
-EEPROM: byte 0 channel (as before; blank reads as 15, as before), 1 contrast, 2 dimming, 4 to 16 reset history, 20 to
-44 stick calibration (marker byte, then low, centre, high per axis). Every value range checked on load.
+EEPROM: byte 0 channel (as before; blank reads as 15, as before), 1 contrast, 2 dimming, 3 sound, 4 to 16 reset
+history, 20 to 44 stick calibration (marker byte, then low, centre, high per axis); 256 to 455 the arcade's scores
+(D-157, `ArcadeScores.h`, its window to 511); 512 to 659 the Tracking page's marks (`MarkStore.h`, see Marks and
+timed targets). Every value range checked on load.
 
 ### Code
 
 | Where | What |
 | --- | --- |
-| `lib/RemoteLogic/src` | hardware-free logic, tested on the host: `StickGuard`, `AxisStepper`, `EstopContacts`, `BatteryMonitor`, `RemoteSettings`, `SettingsMenu`, `PageNavigator`, `StatusView` (big line and line 3), `Dimmer`, `BootGuard` (`ResetHistory`), `UplinkFrame`, `ReplyFrame` (D-161), `LinkMonitor`, `LedPattern`, `StickCalibration` (math, storage, procedure), `Stopwatch` (D-160); `RobotStates.h` and `LiIonBattery.h` moved here |
-| `test/test_remote_logic`, `test/test_reply_frame` | the host tests: `pio test -e native` |
+| `lib/RemoteLogic/src` | hardware-free logic, tested on the host: `StickGuard`, `AxisStepper`, `EstopContacts`, `BatteryMonitor`, `RemoteSettings`, `SettingsMenu`, `PageNavigator`, `StatusView` (big line and line 3), `Dimmer`, `BootGuard` (`ResetHistory`), `UplinkFrame`, `ReplyFrame` (D-161), `LinkMonitor`, `LedPattern`, `StickCalibration` (math, storage, procedure), `Stopwatch` (D-160), `PoseZero`, `TrackingMap`, `MarkStore`, `TrackingControl`, `StickClick`, `StickRepeater`, `TimedTarget`, `TripMeter`, `LinkHistory` (Marks and timed targets); `RobotStates.h` and `LiIonBattery.h` moved here |
+| `test/test_remote_logic`, `test/test_reply_frame`, `test/test_tracking_marks`, `test/test_remote_pages` | the host tests: `pio test -e native` |
 | `src/RemoteBoard/RemoteBoard.cpp` | the loop: inputs, logic, LEDs, radio, frame, reply, screen |
 | `lib/RemoteUi/src` | the screens: `RemoteScreens` draws a `ScreenModel` with Adafruit GFX (fonts, shapes, small icon bitmaps) |
 | `src/RemoteBoard/RemoteGui.cpp` | fills the `ScreenModel` every frame, draws it off screen, the transitions, dimming |
@@ -284,7 +293,15 @@ game with its rules, drawing and a built-in demo player; the `Arcade` runs them)
   back to the picker. The best result of each game is kept until the remote is switched off (RAM only: the EEPROM is
   written only on SAVE).
 - Out: both stick buttons held 2 s again, 2 minutes without input, the speed switch leaving OFF, the own E-stop or a
-  new alarm (the status screen then shows at once).
+  new alarm (the status screen then shows at once). A radio fault or no link (a radio reset clears itself) leaves the
+  game running unless it lasts 5 s (owner, 2026-10-28).
+- Parking (owner, 2026-10-28): every bay leaves the vehicle 1.5 px each way; from stage 3 the vehicle starts 15 to
+  30 degrees askew; the nose is pointed (the heading at any angle); stage 16 turns round in the open start and
+  reverses under a piston into a slot. Score: the stages left unparked first, then the time (`412.3s` all parked,
+  `17/22 412s`, `WRECKED 17/22`); older Parking entries read wrong, clear its top 3 once.
+- Cave (owner, 2026-10-28): a stick pushed right fires (every 0.4 s held). From about 65 m bats hover now and then
+  where the cave is wide, always with 9 rows open beside them; a bat shot is +10 m, a free pillar broken +5 m;
+  walls and stalactites stop a shot.
 - Safety: while a game runs nothing of the sticks is sent (held neutral like in the menu, their buttons masked); after
   leaving, the sticks are sent again only once both have been released. The radio, the watchdog, enable, disable and
   the E-stop are untouched; a game never sees them or the speed switch.
@@ -547,6 +564,202 @@ it shows no timer (`isMainPage` keeps the stopwatch on Status and Motion, `stays
   the vehicle at a glance and each wheel's numbers sit on its own side of the screen; in A the left and right wheels'
   values meet in the middle 7 px apart and read as one row (`+45% -20%`).
 
+### Tracking page
+
+Right after Motors (agreed with the owner 2026-10-28): a top-down map round the vehicle. It stays open like Motion and
+Motors (no return to Status after 10 s; a new alarm still switches to Status) but is not a main page: the stopwatch's
+controls do nothing here (`isMainPage`; `staysOpen` adds Tracking, `lib/RemoteLogic/src/PageNavigator.h`). No title,
+no page dots. Pictures: `tools/screens/out/sheet.png`, cases `8*`.
+
+- The rover stays at the screen's centre as a filled 5 x 7 arrowhead pointing up, its forward (x 62 to 66, rows 13
+  to 19, centre column x 64). The map moves and turns round it.
+- The map frame is the Motion page's zero when one is kept (the frame switch from BODY to WORLD zeroes both pages,
+  `PoseZero`: x to the right of the vehicle at the zero, y its forward, heading counter-clockwise since); before any
+  zero it is Stacato's world pose as received (x stage right, y upstage, heading counter-clockwise, 0 upstage). A
+  point p seen from the rover at c with heading h: `right = dx * cos(h) + dy * sin(h)`, `forward = -dx * sin(h) +
+  dy * cos(h)` with `(dx, dy) = p - c`; on the screen `x = 64 + right * scale`, `y = 16 - forward * scale`
+  (`TrackingMap::toScreen`).
+- The grid in metres turns with the heading: a solid line every 5 m, a dotted line every 1 m from 4 px per m (at
+  2 px per m it would be noise). The dots are 4 px apart and fixed in the map: at 4 px per m they sit on the metre
+  crossings, at 8 px per m every half metre. Denser dots (every 2 px) were rendered first and read as noise, worse
+  when turned.
+- The frame's origin (the zero, or the stage origin before one): a small x of 2 px arms along the map's diagonals,
+  turning with the map, on a dark disc of radius 3 (the 5 m lines cross there).
+- The trail: the last 10 s of the path, a sample every 200 ms into a fixed ring of 50 (no allocation), kept in the
+  map frame. Drawn from the newest back as 2 x 2 dots at least 3 px apart, each on a dark 1 px halo, so it reads
+  apart from the 1 px grid. Sampled whatever page is shown, only from a live pose (no pose: no sample).
+- Zoom: 3, 6, 12, 24 px per m (start 6), stepped by the left click in drive mode (Marks and timed targets). The scale bottom
+  left on a dark margin: a bar of 1 m (5 m at 3 px per m) along row 30 with end ticks, then `1m` or `5m` in the 5 x 7
+  font; hidden during a run.
+- The trail is cleared by the left hold in edit mode (no question) and by a new zero or snap (the frame changed). The
+  stick buttons still go out on the uplink as before; this page only reads them (`TrackingControl`).
+- Zeroed: the delta in the bottom right corner (x 121 to 125, rows 25 to 31), as on the Motion page. The alive dot
+  in the top right corner (x 124 to 126, rows 0 to 2).
+- No map without a pose: one centred plain line in the top row, `no link`, `no motion data` (nothing fresh from
+  Stacato) or `no position` (live, but no pose), and the rover.
+- Gaps: a dark ring of 1 px round the rover, the scale label, the delta, the alive dot and the text line keeps the grid
+  and the trail off them; `render.py` checks those rings for the `8*` cases.
+
+Code: `lib/RemoteLogic/src/TrackingMap.h` (the transform, the zoom steps, the trail ring; host tested,
+`test/test_remote_logic`), driven from `RemoteBoard::fillScreenModel` (the trail, after the display correction) and
+`RemoteBoard::updateTracking` (the controls, `TrackingControl`); `RemoteScreens` only draws from the `ScreenModel`
+(`test/test_remote_pages`).
+
+To check on the hardware: the map's turn against the vehicle's (turning left turns the grid right), forward driving
+moves the grid down, the zero mark where the frame switch was turned, the trail behind the rover, the zoom click and
+that the stopwatch's own clicks do not act on this page. The marks and the run: Marks and timed targets below.
+
+### Marks and timed targets (owner, 2026-10-28)
+
+Handheld only, display only: nothing of it is sent and nothing drives; no wire change. The goal: mark places on the
+stage from the handheld, snap the display to them to cancel drift, and drive by hand to one mark at a time in a given
+time, seeing at a glance whether the vehicle is on time, too fast or too slow. This replaces the ordered route of the
+first version (owner, 2026-10-28): no route polyline, no via marks, no route order, no closest-point window; every
+mark is an independent target. Pictures: `tools/screens/out/sheet.png`, cases `8m_*` (marks, questions, refusals,
+the drive arrow), `8r_*` (a timed run and its arrival), `9l_*` (the mark list), `9t_*` (the trip), `9e_*` (the
+editor).
+
+**The display frame and its correction.** The Motion and Tracking pages show Stacato's pose through a display
+correction, `displayed = R(-a) * (p - o)` and `heading - a` (`PoseZero`). Two actions set it:
+
+- ZERO (the frame switch from BODY to WORLD, as before): the pose now reads 0, 0, 0; the marks read relative to it.
+- SNAP to mark k ("I am physically on mark k"): the correction is solved so the pose now reads exactly as mark k's x,
+  y and heading; a mark without a heading snaps the place only and keeps the heading shown. Snapping to Z is a zero.
+  The marks stay where they are in the display frame, so a snap cancels the drift since the last zero or snap. The
+  next zero (the switch) replaces a snap. A snap or zero clears the trail and restarts the trip.
+
+**Marks.** Z (the zero, always 0, 0, 0, no duration, never stored or edited) and 1 to 9: x, y in m, a heading in deg
+(counter-clockwise, may be blank: a place only), a TIME that is a DURATION: how long the move there should take (may be
+blank: no timed run to it). Kept as mm, tenths of a degree and tenths of a second, in the display frame, in EEPROM
+from byte 512 (148 bytes, 512 to 659: marker `0x4B`, version 1, two spare bytes, then 16 bytes per mark: flags, x and
+y as int32 mm, heading int16 tenths, duration uint16 tenths, a check byte (sum of the 13 bytes xor `0xA5`), two
+spare). The layout is unchanged from the route version, so a stored arrival time now reads as a duration. Written only
+after a confirmed change, after the frame, only the bytes that differ. A blank or foreign block reads as no marks; a
+record whose check or values are wrong reads as that mark empty (`MarkStore.h`).
+
+**Controls** (`TrackingControl.h`), on the Tracking page only, with its controls allowed (no menu, games or
+calibration, sticks zeroed). A click acts on its release (before 1 s), a hold once at 1 s; only a press that starts in
+the mode counts.
+
+| Edit mode: speed OFF (the vehicle cannot move) | |
+| --- | --- |
+| left stick up / down | select the mark: none, Z, 1 to 9 (wrapping) |
+| left stick left / right | the view: map, mark list, trip readout |
+| left click | SNAP to the selected mark: `AT 3? HOLD L`, confirmed only by holding the left click 1 s within 3 s |
+| left hold 1 s | clear the trail (no question) |
+| right click | STORE the pose here into the selected mark: `SAVE 3? R` (an empty mark: a right click within 3 s confirms), or `OVERWRITE 3? HOLD R` (blinking; only a 1 s hold of the right click confirms, the press starting within 3 s; the pill fills with the hold). The stopwatch running: the mark takes its elapsed time as its duration (teach-in: how long the drive took since the stopwatch last started from 0:00; a stopped stopwatch, for example after an arrival, gives no duration) |
+| right hold 1 s | the NUMBER EDITOR for the selected mark (not Z, not none) |
+| in the editor | left stick up / down: the field (x, y, h, t = the duration); left stick left: blank h or t; right stick up / down: +-1 cm, 1 deg, 0.1 s (first step on the push, repeats after 400 ms every 150 ms, every 80 ms after 1.5 s); right stick left / right: +-1 m, 10 deg, 1 s (every 200 ms, every 80 ms after 1.5 s held); right click saves; left click leaves without saving; left hold 1 s asks `CLEAR 3? HOLD L`, a second 1 s hold clears the mark. An empty mark opens on the pose here |
+| cancels | a pushbutton (spent: no page change), the other stick button, a stick flicked, or 3 s without the answer cancel a question; a pushbutton in the editor leaves it without saving; leaving OFF or the page cancels everything |
+
+| Drive mode: SLOW / FAST (the sticks drive: only the stick buttons act) | |
+| --- | --- |
+| right click, no run | PLAY: a timed run from the pose now to the selected mark (below), or refused |
+| right click, during a run | PAUSE / RESUME (the stopwatch stops / starts, timed at the press; the plan's time pauses with it) |
+| left hold 1 s | REWIND: the run cancelled (back to idle), the stopwatch reset (0:00, or its set countdown); the next play plans again from the pose then |
+| left click | zoom |
+| right hold 1 s | select the next stored mark (empty ones skipped, wrapping to Z); during a run the selection is the run's target and the hold does nothing; it works again as soon as the run ended |
+
+**The timed run** (`TimedTarget.h`: `TargetPlan`, `TargetRun`, `Pace`).
+
+- PLAY with a selected mark that has a duration T and a known pose: the pose now is the start; the plan is a straight
+  move start -> mark over T: the position along the straight line, the heading from the start's to the mark's by the
+  shortest turn (a blank heading keeps the start's). The speed is a trapezoid: constant acceleration for 1 s, constant
+  speed, constant deceleration for the last 1 s; with T below 2 s a triangle (T / 2 each way). The heading follows the
+  same profile. The stopwatch restarts from 0:00 at the play (count up; a countdown set on Status stays set).
+- Refused (the REFUSED sound and the pill above, nothing else changes; a stopwatch running from Status keeps running):
+  no mark selected or an empty one (`SELECT A MARK`), Z (`ZERO HAS NO TIME`), a mark without a duration or with 0.0 s
+  (`3 HAS NO TIME`), no pose (`NO POSITION`), the rover already within 0.15 m and, unless the mark's heading is blank,
+  within 5 deg of it (`ALREADY AT 3`). Within 0.15 m but turned further, the run is a turn on the spot: its progress is
+  the heading turned so far, it arrives within 5 deg of the mark's heading (or past it).
+- PACE: the rover's position projected on the start -> target line as a fraction (clamped 0 to 1), the planned time
+  for that fraction from the inverse of the profile, `delta = elapsed - planned` (late positive). Exact on the straight
+  leg. While paused the reading stays. Only the pace decides what the bottom row says (no cross-track or turn hint:
+  the operator drives by eye on the stage, owner 2026-10-28).
+- ARRIVAL: within 0.15 m of the mark, or past the line through it square to the leg within 1 m; the heading does not
+  count (but for a turn on the spot). The run ends there: the stopwatch stops at that moment and shows the run's time,
+  the TIMER_STOP tick plays, the split `+0.4s` (arrival minus T) shows for 3 s, then the plain map (the stopwatch
+  stays stopped). The arrival is over at the next action: a play, a rewind, a mark selected, or the stopwatch reset or
+  started again on Status. Nothing selects the next mark by itself.
+- The plan is frozen at the play: editing or clearing its mark during the run, a snap or a zero change nothing until the
+  next play (the plan is in the display frame, the pace then reads against the new display pose).
+- The stopwatch interplay: the run's time is the one stopwatch the Status and Motion pages show. Its own controls there
+  act on it as before: stopping it pauses the run, starting it resumes, resetting it (left click, or editing the
+  countdown, which resets) cancels the run. With no run they only run the stopwatch: starting it on Status never starts
+  a run; a run starts only by play on the Tracking page with a selected timed mark.
+
+**On the map during a run** (drive or edit mode), kept simple for 128 x 32 (owner, 2026-10-28: the operator drives
+by eye and only needs to drive in time): the GHOST, where the plan is now: a 1 px ring of radius 6 with a 2 px tick
+outside its rim along the planned heading, on a dark disc. On time the rover's arrowhead sits inside the ring pointing
+at the tick; the ghost ahead of the rover means slow, behind it fast. A dotted line (every other pixel) from the pose
+at the play to the target, under the trail, the marks and the ghost's dark disc; the target drawn as the selected
+mark. No top line during a run (the ghost is never hidden), no scale label, no mark pill, no compass. Bottom row:
+the time left bottom left in plain digits (`4.2`, rounded up to the tenth below 10 s, whole seconds from there, `0.0`
+once over); nothing more within +-0.3 s; outside it a small filled pill `FASTER` (late) or `SLOWER` (early), no
+numbers, centred between the time left and the corner, taking turns with plain text every 0.5 s past 2 s; `PAUSED` in
+plain text in the pill's place while paused. After the arrival only the split in a filled pill (`+0.4s` late, `-0.6s`
+early) for 3 s, then the plain map. Each on a dark 1 px margin. The Motion page shows nothing of the run (owner,
+2026-10-28).
+
+**Marks on the map.** Every stored mark at its place as its plain digit on a dark 1 px margin; the selected one
+negative in a 9 x 9 pill (Z as `Z` at the zero) with a 2 x 2 dot 8 px out along its heading. With a mark selected and
+no run (nor an arrival shown), a pill bottom centre between the scale label and the corner: its number, the distance from the rover, the
+bearing (a triangle to the side it lies, the angle off the rover's forward) and the turn to its heading (a half circle
+arrow, left or right): `3 2.92m ►32° ↻100°`, shortened to fit (the turn, then the bearing go first).
+
+**Questions** show top centre in a pill over a dark margin (the compass hidden): `AT 3? HOLD L`, `SAVE 3? R`,
+`OVERWRITE 3? HOLD R` (blinking until the hold starts, then filling left to right with the hold). A refused play
+shows the same way for 1.5 s, filled: `3 HAS NO TIME`, `ZERO HAS NO TIME` (spelt out: Z and 2 look alike in the
+font), `SELECT A MARK`, `NO POSITION`, `ALREADY AT 3`.
+
+**Mark list** (edit mode, left stick right from the map): three lines in rows 0 to 8, 11 to 19 and 22 to 30, a window
+round the selected mark, its line in a pill: the number, x and y in m (1 decimal, whole metres from 10 m; the editor
+has the mm), the heading in whole deg, the time in s with tenths (m:ss from 100 s); `--` for blank, an empty mark `--`
+only. The alive dot top right.
+
+**Trip readout** (edit mode, the view after the list): since the last zero or snap, `DIST 12.35m`, `TURN 245°` (all
+turning added up), `TOP 0.85/s` (body speed), `MOVE 1:42` (time with the body speed above 0.02 m/s or the turn rate
+above 2 deg/s), and `SINCE ZERO`, `SINCE SNAP 3` or `SINCE POWER ON`. Standstill jitter does not add up: the distance
+grows only past 2 cm from the last point counted, the turn past 1 deg (`TripMeter.h`).
+
+**Number editor** (edit mode, right hold): the title `MARK 3` with the keys (`R SAVE L BACK`), the four fields in two
+rows of pills (rows 10 to 18, 21 to 29), the field being changed filled: `x 1.500`, `y 3.500` (m, 3 decimals),
+`h -90.0°` (or `h --`), `t 0:08.0`, the duration (or `t --`). `CLEAR 3? HOLD L` replaces the title while asked.
+
+**Drive-frame arrow** (bottom right, x 118 to 127, rows 22 to 31, on a dark disc): only with the frame switch at
+WORLD, which way the stick forward pushes the vehicle: Stacato's upstage seen from Stacato's own heading (not the
+display correction, which may differ after a zero or snap). Hidden at BODY.
+
+Not built (owner's choice or left open): a sound when leaving the +-0.3 s band (it needs a new setting in the settings
+menu and an EEPROM byte; left out), a recorded reference path; the cross-track, turn and detail texts of the first
+timed version (removed: too busy for 128 x 32).
+
+Code: `lib/RemoteLogic/src`: `PoseZero` (the correction and `snap`), `MarkStore` (marks, EEPROM image),
+`TrackingControl` (both modes, questions, editor), `StickClick` (click or hold), `StickRepeater` (the editor's and the
+stopwatch's stick stepping), `TimedTarget` (`TargetPlan`: the profile, its inverse, the ghost, the pace fix, the
+arrival; `TargetRun`: play, pause, rewind, refusals, the stopwatch; `Pace`: the pill word, the split, the time left,
+the refusal texts), `TripMeter`, `LinkHistory`;
+`StopwatchControl` gains `playPause`, `restart`, `stop` and `rewind`. Host tests `test/test_tracking_marks` (all of
+the above), `test/test_remote_pages` (the drawing), `test/test_remote_logic` (the zoom and page gates). Board:
+`RemoteBoard::updateTracking` (the controls, before the page change so a cancelling pushbutton is spent; play, pause,
+rewind and the acknowledgement of an arrival), `RemoteBoard::updateRun` (the pace and the arrival every refresh),
+`loadMarks` / `writeMarks`.
+
+To check on the hardware: a snap reads the mark exactly and the marks stay put on the map; the overwrite needs the
+hold; the editor's repeat speed; the ghost ring round the rover on a timed run at the planned pace (ramps of 1 s at
+both ends); the arrival split and the stopwatch stopping there; the refusals; the next mark selected by the right hold
+after an arrival; Status's stopwatch pausing and cancelling a run; the drive arrow against the stick's forward at WORLD
+after a zero and after a snap; the marks surviving a power cycle.
+
+### Link page history (owner, 2026-10-28)
+
+The last 60 s on the left (x 0 to 59, rows 9 to 31, one column a second, the newest on the right, filling from the
+right; `LinkHistory`, a fixed ring, sampled once a second in `fillScreenModel`): the loss as bars from the bottom (100 %
+the full height, at least 1 px for any loss) and the signal, the weaker of what the remote and the receiver hear
+(-110 dBm at the bottom to -40 dBm at the top), as a line, drawn dark where it crosses a bar; no line without a link
+(and none in USB mode). On the right (x 64 to 126) the numbers as before: `remote -62` and `recv -58` (dBm), the loss
+and the delay (`2%`, `8ms`). Cases `20*`.
+
 ### Status: the vehicle's finer state (D-163)
 
 The big state word uses the vehicle state from the reply's byte 12 where it says more than the 3 bit state; every
@@ -624,3 +837,18 @@ Tier C after the show, or with B.
 
 1. B7 (uplink 8 to 7 bytes): include or skip, with Tier B.
 2. Tier C detail byte: Stacato O-19.
+
+## Future features (owner, 2026-10-28; not planned yet)
+
+1. Stopping ghosts on the Tracking page: where the vehicle would stop if the sticks were released now, and where on
+   an E-stop, drawn live while driving. The handheld has the body velocity (20 Hz) and the pose; it lacks the braking:
+   Stacato's effective jog braking (linear and angular, from `jogBrakeLinear_mps2` / `jogBrakeAngular_radps2` capped
+   by the speed mode's acceleration, the E-stop deceleration and the rated limits; constant deceleration, no jerk
+   limit) and the E-stop deceleration. Preferred: Stacato sends the three effective values (they change only with the
+   speed mode or a setting), in a rarely sent page slot; the remote then integrates the stop (v^2 / 2a plus the link
+   delay, the turn the same way). Alternative without a wire change: the remote learns the deceleration from the
+   velocity stream at each release (the first stop after power on is a guess, the E-stop value only after an E-stop).
+   Simpler still (found 2026-10-28): Stacato's RT already computes a stopping envelope and publishes it in
+   `OdometryFeedback` (`stoppingDistLinear_m`, `stoppingTravelAngle_rad`, `stoppingAngleYaw_rad`,
+   `MecanumRuntimeRT.h`): sending those three values would show exactly what the RT plans, with no braking model on
+   the remote. Needs a D-nn, a Stacato package and both boards.

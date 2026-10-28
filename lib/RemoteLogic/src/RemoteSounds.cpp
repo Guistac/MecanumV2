@@ -33,7 +33,8 @@ namespace RemoteSounds{
             {0, SQ, 0, W::SQUARE, 2093, 50, 0, 0},
             {60, SQ, 0, W::SQUARE, 1568, 50, 0, 0},
         };
-        //pages: C6 D6 E6 G6 A6 C7 D7 E7 (a pentatonic run, Status lowest; Motion [D-161] took D6, the rest moved up one)
+        //pages: C6 D6 E6 G6 A6 C7 D7 E7 G7 A7 (a pentatonic run, Status lowest; Motion [D-161] took D6, the rest moved up
+        //one, and again for Motors and Tracking)
         const SoundNote pageNotes[] = {
             {0, SQ, 0, W::SQUARE, 1047, 40, 0, 0},
             {0, SQ, 0, W::SQUARE, 1175, 40, 0, 0},
@@ -44,6 +45,7 @@ namespace RemoteSounds{
             {0, SQ, 0, W::SQUARE, 2349, 40, 0, 0},
             {0, SQ, 0, W::SQUARE, 2637, 40, 0, 0},
             {0, SQ, 0, W::SQUARE, 3136, 40, 0, 0},
+            {0, SQ, 0, W::SQUARE, 3520, 40, 0, 0},
         };
 
         //the arcade's way in: eight major chords climbing C5 to C6, 262 ms each, every chord arpeggiated twice

@@ -22,6 +22,9 @@
 #include <StickCalibration.h>
 #include <LinkPath.h>
 #include <Stopwatch.h>
+#include <PoseZero.h>
+#include <TrackingMap.h>
+#include <TrackingControl.h>
 
 void setUp(){}
 void tearDown(){}
@@ -137,8 +140,45 @@ void test_settings_validated_on_load(){
     TEST_ASSERT_EQUAL_UINT8(3, stored.channel);
     TEST_ASSERT_EQUAL_UINT8(2, stored.contrast);
     TEST_ASSERT_EQUAL_UINT8(0, stored.dimming);
-    RemoteSettings bad = RemoteSettings::fromStored(16, 4, 3);
+    RemoteSettings bad = RemoteSettings::fromStored(17, 4, 3);
     TEST_ASSERT_TRUE(bad == RemoteSettings());
+    //[owner 2026-10-28] 16 is the radio switched off
+    RemoteSettings off = RemoteSettings::fromStored(16, 1, 2);
+    TEST_ASSERT_TRUE(off.isRadioOff());
+    TEST_ASSERT_FALSE(blank.isRadioOff());
+}
+
+//the radio off: Radio off on the Status page whatever the link and the own E-stop, not an alarm; only a critical
+//battery says more. Both LEDs dark
+void test_radio_off_is_a_quiet_state(){
+    StatusInputs in;
+    in.b_radioOff = true;
+    in.estop = EstopState::PRESSED;
+    in.b_radioFault = true;
+    StatusView v = Status::select(in);
+    TEST_ASSERT_TRUE(v.message == BigMessage::RADIO_OFF);
+    TEST_ASSERT_FALSE(Status::isAlarm(v.message));
+    TEST_ASSERT_EQUAL_STRING("Radio off", Status::text(v.message));
+    in.battery = BatteryState::CRITICAL;
+    TEST_ASSERT_TRUE(Status::select(in).message == BigMessage::BATTERY_CRITICAL);
+    LedInputs leds;
+    leds.b_radioOff = true;
+    leds.b_radioFault = true;
+    leds.b_localEstop = true;
+    for(uint32_t t = 0; t < 3000; t += 37){
+        LedOutput out = Leds::pattern(leds, t);
+        TEST_ASSERT_FALSE(out.b_left || out.b_right);
+    }
+}
+
+//a radio reset in the games: the link alarms wait gamesLinkGraceMillis, the others not
+void test_link_alarms_are_the_radio_fault_and_no_link(){
+    TEST_ASSERT_TRUE(Status::isLinkAlarm(BigMessage::RADIO_FAULT));
+    TEST_ASSERT_TRUE(Status::isLinkAlarm(BigMessage::NO_LINK));
+    TEST_ASSERT_FALSE(Status::isLinkAlarm(BigMessage::ESTOP));
+    TEST_ASSERT_FALSE(Status::isLinkAlarm(BigMessage::EXT_ESTOP));
+    TEST_ASSERT_FALSE(Status::isLinkAlarm(BigMessage::BATTERY_CRITICAL));
+    TEST_ASSERT_FALSE(Status::isLinkAlarm(BigMessage::STOPPING));
 }
 
 //——— SettingsMenu ———
@@ -149,7 +189,10 @@ void test_menu_changes_are_pending_until_save_held(){
     menu.open(saved);
     TEST_ASSERT_TRUE(menu.getItem() == SettingsMenu::Item::CHANNEL);
     menu.update(0, 1, 0);
-    TEST_ASSERT_EQUAL_UINT8(0, menu.getPending().channel);   //wraps 15 to 0
+    TEST_ASSERT_TRUE(menu.getPending().isRadioOff());        //after F: Off
+    menu.update(0, 1, 0);
+    TEST_ASSERT_EQUAL_UINT8(0, menu.getPending().channel);   //then 0
+    menu.update(0, -1, 0);
     menu.update(0, -1, 0);
     menu.update(0, -1, 0);
     TEST_ASSERT_EQUAL_UINT8(14, menu.getPending().channel);
@@ -718,6 +761,8 @@ void test_pages_return_to_status_after_10s(){
     TEST_ASSERT_TRUE(pages.getPage() == Page::MOTION);          //right after Status [D-161]
     pages.update(false, true, false, false, 995);
     TEST_ASSERT_TRUE(pages.getPage() == Page::MOTORS);          //right after Motion [D-163]
+    pages.update(false, true, false, false, 997);
+    TEST_ASSERT_TRUE(pages.getPage() == Page::TRACKING);        //right after Motors
     pages.update(false, true, false, false, 1000);
     TEST_ASSERT_TRUE(pages.getPage() == Page::LINK);
     pages.update(false, false, false, true, 9000);              //menu activity keeps it
@@ -739,15 +784,19 @@ void test_pages_motion_is_a_main_page_without_return(){
     pages.update(false, false, false, false, 11001);
     pages.update(false, false, false, false, 600000);
     TEST_ASSERT_TRUE(pages.getPage() == Page::MOTION);
-    //Motors after it stays too [D-163]; the pages after that still return; a new alarm still brings Status (the board
-    //calls showStatus)
+    //Motors after it stays too [D-163], and Tracking after that; the pages after those still return; a new alarm still
+    //brings Status (the board calls showStatus)
     pages.update(false, true, false, false, 600005);
     TEST_ASSERT_TRUE(pages.getPage() == Page::MOTORS);
-    pages.update(false, true, false, false, 600010);
+    pages.update(false, true, false, false, 600007);
+    TEST_ASSERT_TRUE(pages.getPage() == Page::TRACKING);
+    pages.update(false, false, false, false, 900000);
+    TEST_ASSERT_TRUE(pages.getPage() == Page::TRACKING);
+    pages.update(false, true, false, false, 900010);
     TEST_ASSERT_TRUE(pages.getPage() == Page::LINK);
-    pages.update(false, false, false, false, 610011);
+    pages.update(false, false, false, false, 910011);
     TEST_ASSERT_TRUE(pages.getPage() == Page::STATUS);
-    pages.update(false, true, false, false, 610020);
+    pages.update(false, true, false, false, 910020);
     pages.showStatus();
     TEST_ASSERT_TRUE(pages.getPage() == Page::STATUS);
 }
@@ -759,6 +808,57 @@ static StatusInputs linkUpEnabled(){
     in.b_linkUp = true;
     in.reportedState = uint8_t(RobotState::ENABLED);
     return in;
+}
+
+//[D-163] the frame switch to WORLD zeroes the Motion page's pose, then shown in the vehicle's frame at that moment
+void test_pose_zero_on_the_frame_switch(){
+    PoseZero z;
+    float x = 3.0f, y = 4.0f, h = 0.0f;
+    //at WORLD from power on: no edge, nothing zeroed
+    z.update(true, x, y, h);
+    TEST_ASSERT_FALSE(z.isActive());
+    z.update(false, x, y, h);
+    //no pose at the edge: nothing
+    z.update(true, NAN, NAN, NAN);
+    TEST_ASSERT_FALSE(z.isActive());
+    z.update(false, x, y, h);
+    //facing stage left (heading 90, counter-clockwise from upstage), zeroed at (3, 4)
+    z.update(true, 3.0f, 4.0f, 90.0f);
+    TEST_ASSERT_TRUE(z.isActive());
+    float rx = 3.0f, ry = 4.0f, rh = 90.0f;
+    z.apply(rx, ry, rh);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 0.0f, rx);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 0.0f, ry);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 0.0f, rh);
+    //1 m forward (toward stage left, world x - 1): y 1, x 0
+    rx = 2.0f; ry = 4.0f; rh = 90.0f;
+    z.apply(rx, ry, rh);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 0.0f, rx);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 1.0f, ry);
+    //1 m to its right (upstage, world y + 1): x 1
+    rx = 3.0f; ry = 5.0f; rh = 90.0f;
+    z.apply(rx, ry, rh);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 1.0f, rx);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 0.0f, ry);
+    //turned on to -170: 100 more counter-clockwise, wrapped
+    rx = 3.0f; ry = 4.0f; rh = -170.0f;
+    z.apply(rx, ry, rh);
+    TEST_ASSERT_FLOAT_WITHIN(1e-3f, 100.0f, rh);
+    //NaN stays NaN
+    rx = NAN; ry = NAN; rh = NAN;
+    z.apply(rx, ry, rh);
+    TEST_ASSERT_TRUE(isnan(rx) && isnan(ry) && isnan(rh));
+    //held at WORLD: no new zero; the next edge zeroes again
+    z.update(true, 9.0f, 9.0f, 0.0f);
+    rx = 9.0f; ry = 9.0f; rh = 0.0f;
+    z.apply(rx, ry, rh);
+    TEST_ASSERT_FALSE(fabsf(rx) < 1e-3f && fabsf(ry) < 1e-3f);
+    z.update(false, 9.0f, 9.0f, 0.0f);
+    z.update(true, 9.0f, 9.0f, 0.0f);
+    rx = 9.0f; ry = 10.0f; rh = 0.0f;
+    z.apply(rx, ry, rh);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 0.0f, rx);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 1.0f, ry);
 }
 
 void test_status_priority(){
@@ -817,6 +917,16 @@ void test_status_estop_with_link_and_ext_estop(){
         TEST_ASSERT_TRUE(Status::select(in).message == BigMessage::NOT_RUNNING);
         TEST_ASSERT_FALSE(Status::isAlarm(BigMessage::NOT_RUNNING));
     }
+    //no Stacato: the receiver reports its own leftover state (E-stopped at first): No Stacato, never the E-stop alarm
+    in.vehicle = Reply::VehicleState::NO_STACATO;
+    in.reportedState = uint8_t(RobotState::EMERGENCY_STOPPED);
+    TEST_ASSERT_TRUE(Status::select(in).message == BigMessage::NOT_RUNNING);
+    in.reportedState = uint8_t(RobotState::DISABLED);
+    TEST_ASSERT_TRUE(Status::select(in).message == BigMessage::NOT_RUNNING);
+    in.estop = EstopState::PRESSED;                                 //the own E-stop still comes first
+    TEST_ASSERT_TRUE(Status::select(in).message == BigMessage::ESTOP);
+    in.estop = EstopState::CLEAR;
+    in.reportedState = uint8_t(RobotState::EMERGENCY_STOPPING);
     in.vehicle = Reply::VehicleState::UNKNOWN;
     in.reportedState = 0;
     TEST_ASSERT_TRUE(Status::select(in).message == BigMessage::UNKNOWN);
@@ -955,6 +1065,52 @@ void test_led_patterns(){
     LedOutput out = Leds::pattern(in, 0);
     TEST_ASSERT_FALSE(out.b_left);
     TEST_ASSERT_TRUE(out.b_right);
+    //enabling: the right button flashes 60 ms on, 60 off
+    in.reportedState = uint8_t(RobotState::ENABLING);
+    TEST_ASSERT_TRUE(!Leds::pattern(in, 0).b_left && Leds::pattern(in, 0).b_right);
+    TEST_ASSERT_FALSE(Leds::pattern(in, 60).b_right);
+    TEST_ASSERT_TRUE(Leds::pattern(in, 120).b_right);
+    //[D-163] Stacato's disable ramp arrives as the 3 bit E-stopping: with the vehicle DISABLING the left button
+    //flashes as for disabling; an E-stop ramp keeps both on
+    in.reportedState = uint8_t(RobotState::EMERGENCY_STOPPING);
+    in.vehicle = Reply::VehicleState::DISABLING;
+    TEST_ASSERT_TRUE(Leds::pattern(in, 0).b_left && !Leds::pattern(in, 0).b_right);
+    TEST_ASSERT_FALSE(Leds::pattern(in, 60).b_left);
+    //owner 2026-10-28: E-stop ramp both very fast together; E-stopped both slowly together with the banner (800/500);
+    //axis fault alternating 2 Hz; bus off a dim slow breathing; vehicle off dark; bus start both fast; no Stacato the
+    //standby breathing in turn
+    in.vehicle = Reply::VehicleState::E_STOPPING;
+    TEST_ASSERT_TRUE(Leds::pattern(in, 0).b_left && Leds::pattern(in, 0).b_right);
+    TEST_ASSERT_FALSE(Leds::pattern(in, 40).b_left || Leds::pattern(in, 40).b_right);
+    in.reportedState = uint8_t(RobotState::EMERGENCY_STOPPED);
+    in.vehicle = Reply::VehicleState::E_STOP;
+    TEST_ASSERT_TRUE(Leds::pattern(in, 499).b_left && Leds::pattern(in, 499).b_right);
+    TEST_ASSERT_FALSE(Leds::pattern(in, 500).b_left || Leds::pattern(in, 500).b_right);
+    in.vehicle = Reply::VehicleState::AXIS_FAULT;
+    TEST_ASSERT_TRUE(Leds::pattern(in, 0).b_left && !Leds::pattern(in, 0).b_right);
+    TEST_ASSERT_TRUE(!Leds::pattern(in, 250).b_left && Leds::pattern(in, 250).b_right);
+    in.reportedState = uint8_t(RobotState::EMERGENCY_STOPPING);
+    in.vehicle = Reply::VehicleState::BUS_OFF;
+    LedOutput dim = Leds::pattern(in, 1500);
+    TEST_ASSERT_TRUE(dim.b_left && dim.b_right && dim.leftLevel <= 0.31f && dim.leftLevel > 0.2f);
+    TEST_ASSERT_TRUE(Leds::pattern(in, 0).leftLevel < 0.05f);
+    in.vehicle = Reply::VehicleState::VEHICLE_OFF;
+    TEST_ASSERT_FALSE(Leds::pattern(in, 1500).b_left || Leds::pattern(in, 1500).b_right);
+    in.vehicle = Reply::VehicleState::BUS_START;
+    TEST_ASSERT_TRUE(Leds::pattern(in, 0).b_left && Leds::pattern(in, 0).b_right);
+    TEST_ASSERT_FALSE(Leds::pattern(in, 60).b_left || Leds::pattern(in, 60).b_right);
+    in.vehicle = Reply::VehicleState::NO_STACATO;
+    LedOutput a = Leds::pattern(in, 1000), b = Leds::pattern(in, 0);      //the left at its peak, then the right
+    TEST_ASSERT_TRUE(a.leftLevel > 0.9f && a.rightLevel < 0.1f);
+    TEST_ASSERT_TRUE(b.leftLevel < 0.1f && b.rightLevel > 0.9f);
+    //own E-stop: together, slowly
+    in.b_localEstop = true;
+    TEST_ASSERT_TRUE(Leds::pattern(in, 100).b_left && Leds::pattern(in, 100).b_right);
+    TEST_ASSERT_FALSE(Leds::pattern(in, 600).b_left || Leds::pattern(in, 600).b_right);
+    in.b_localEstop = false;
+    in.vehicle = Reply::VehicleState::UNKNOWN;
+    in.reportedState = uint8_t(RobotState::DISABLING);
+    TEST_ASSERT_TRUE(Leds::pattern(in, 0).b_left && !Leds::pattern(in, 60).b_left);
     in.reportedState = 0;
     out = Leds::pattern(in, 0);
     TEST_ASSERT_FALSE(out.b_left || out.b_right);           //unknown: both off
@@ -1376,10 +1532,15 @@ void test_stopwatch_one_timer_shared_by_status_and_motion(){
     r.in.b_rightHeld = true; r.at(5000);
     TEST_ASSERT_EQUAL_UINT16(StopwatchControl::STOPPED, r.at(5050));
     r.in.b_rightHeld = false; r.at(5100);
-    //on to Motors and Link [D-163]: a click there does nothing, and Link returns to Status after 10 s, Motion never did
+    //on to Motors, Tracking and Link [D-163]: a click there does nothing, and Link returns to Status after 10 s, Motion
+    //never did
     pages.update(false, true, false, false, 30000);
     gate();
     TEST_ASSERT_TRUE(pages.getPage() == Page::MOTORS);
+    TEST_ASSERT_FALSE(r.in.b_active);
+    pages.update(false, true, false, false, 30000);
+    gate();
+    TEST_ASSERT_TRUE(pages.getPage() == Page::TRACKING);
     TEST_ASSERT_FALSE(r.in.b_active);
     pages.update(false, true, false, false, 30000);
     gate();
@@ -1568,8 +1729,284 @@ void test_stopwatch_sounds(){
     }
 }
 
+//——— the Tracking page's map ———
+
+//the rover at the screen's centre (x 64, y 16) pointing up: ahead is up, its right is right
+void test_tracking_transform_ahead_right_and_turned(){
+    float sx, sy, right, forward;
+    //heading 0 (facing +y, upstage): 1 m ahead is 4 px up, 1 m to the right (+x) 4 px right
+    TrackingMap::toScreen(0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 4.0f, sx, sy);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 64.0f, sx);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 12.0f, sy);
+    TrackingMap::toScreen(1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 4.0f, sx, sy);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 68.0f, sx);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 16.0f, sy);
+    //the rover elsewhere: only the difference counts; behind it is down
+    TrackingMap::toScreen(2.0f, 1.0f, 2.0f, 3.0f, 0.0f, 8.0f, sx, sy);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 64.0f, sx);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 32.0f, sy);
+    //turned 90 counter-clockwise (facing -x, stage left): -x is ahead, +y (upstage) on its right
+    TrackingMap::toRover(-1.0f, 0.0f, 0.0f, 0.0f, 90.0f, right, forward);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 0.0f, right);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 1.0f, forward);
+    TrackingMap::toRover(0.0f, 1.0f, 0.0f, 0.0f, 90.0f, right, forward);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 1.0f, right);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 0.0f, forward);
+    //turned 30: a point 2 m ahead along the heading stays straight up
+    float t = 30.0f * 0.017453293f;
+    TrackingMap::toScreen(1.0f - 2.0f * sinf(t), 1.0f + 2.0f * cosf(t), 1.0f, 1.0f, 30.0f, 4.0f, sx, sy);
+    TEST_ASSERT_FLOAT_WITHIN(1e-3f, 64.0f, sx);
+    TEST_ASSERT_FLOAT_WITHIN(1e-3f, 8.0f, sy);
+    //wrap: 270 is -90, 450 is 90, 180 is -180
+    float r1, f1, r2, f2;
+    TrackingMap::toRover(0.3f, 0.7f, 0.0f, 0.0f, 270.0f, r1, f1);
+    TrackingMap::toRover(0.3f, 0.7f, 0.0f, 0.0f, -90.0f, r2, f2);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, r2, r1);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, f2, f1);
+    TrackingMap::toRover(0.3f, 0.7f, 0.0f, 0.0f, 450.0f, r1, f1);
+    TrackingMap::toRover(0.3f, 0.7f, 0.0f, 0.0f, 90.0f, r2, f2);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, r2, r1);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, f2, f1);
+    TrackingMap::toRover(0.3f, 0.7f, 0.0f, 0.0f, 180.0f, r1, f1);
+    TrackingMap::toRover(0.3f, 0.7f, 0.0f, 0.0f, -180.0f, r2, f2);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, r2, r1);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, f2, f1);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, -0.3f, r1);         //facing -y: +x is on its left
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, -0.7f, f1);
+}
+
+//the map frame after a zero is PoseZero's: the vehicle driven 1 m forward from the zero sees the zero mark (the
+//origin) 1 m behind it, straight down on the screen
+void test_tracking_transform_matches_pose_zero(){
+    PoseZero z;
+    z.update(false, 3.0f, 4.0f, 90.0f);
+    TEST_ASSERT_TRUE(z.update(true, 3.0f, 4.0f, 90.0f));
+    float x = 2.0f, y = 4.0f, h = 90.0f;        //1 m on toward stage left
+    z.apply(x, y, h);
+    float sx, sy;
+    TrackingMap::toScreen(0.0f, 0.0f, x, y, h, 4.0f, sx, sy);
+    TEST_ASSERT_FLOAT_WITHIN(1e-3f, 64.0f, sx);
+    TEST_ASSERT_FLOAT_WITHIN(1e-3f, 20.0f, sy);
+    //then turned 90 to the right (clockwise) on the spot: the zero, behind it before, is now on its right
+    x = 2.0f; y = 4.0f; h = 0.0f;
+    z.apply(x, y, h);
+    TrackingMap::toScreen(0.0f, 0.0f, x, y, h, 4.0f, sx, sy);
+    TEST_ASSERT_FLOAT_WITHIN(1e-3f, 68.0f, sx);
+    TEST_ASSERT_FLOAT_WITHIN(1e-3f, 16.0f, sy);
+    //held at WORLD: no new zero
+    TEST_ASSERT_FALSE(z.update(true, 0.0f, 0.0f, 0.0f));
+}
+
+//the map is drawn at a steadied pose: it moves only past 0.75 px on the screen or 0.5 deg, NaN forgets it
+void test_tracking_dead_band_steadies_the_map(){
+    TrackingMap map;
+    TrackingView v;
+    map.view(v);
+    TEST_ASSERT_TRUE(isnan(v.mapX));                               //none yet
+    map.follow(1.0f, 2.0f, 10.0f, 6.0f);
+    map.view(v);
+    TEST_ASSERT_EQUAL_FLOAT(1.0f, v.mapX);
+    TEST_ASSERT_EQUAL_FLOAT(10.0f, v.mapHeading);
+    //jitter: 0.1 m at 6 px per m = 0.6 px, 0.4 deg: held
+    map.follow(1.1f, 2.0f, 10.4f, 6.0f);
+    map.view(v);
+    TEST_ASSERT_EQUAL_FLOAT(1.0f, v.mapX);
+    TEST_ASSERT_EQUAL_FLOAT(10.0f, v.mapHeading);
+    //a creep past 0.75 px: it jumps to the pose
+    map.follow(1.15f, 2.0f, 10.6f, 6.0f);
+    map.view(v);
+    TEST_ASSERT_EQUAL_FLOAT(1.15f, v.mapX);
+    TEST_ASSERT_EQUAL_FLOAT(10.6f, v.mapHeading);
+    //the same 0.1 m at 24 px per m is 2.4 px: it follows
+    map.follow(1.25f, 2.0f, 10.6f, 24.0f);
+    map.view(v);
+    TEST_ASSERT_EQUAL_FLOAT(1.25f, v.mapX);
+    //the heading across the wrap: 179.8 to -179.9 is 0.3 deg, held
+    map.follow(1.25f, 2.0f, 179.8f, 24.0f);
+    map.follow(1.25f, 2.0f, -179.9f, 24.0f);
+    map.view(v);
+    TEST_ASSERT_EQUAL_FLOAT(179.8f, v.mapHeading);
+    //no pose: forgotten, the next is taken at once
+    map.follow(NAN, NAN, NAN, 24.0f);
+    map.view(v);
+    TEST_ASSERT_TRUE(isnan(v.mapX));
+    map.follow(1.26f, 2.0f, 0.1f, 24.0f);
+    map.view(v);
+    TEST_ASSERT_EQUAL_FLOAT(1.26f, v.mapX);
+    TEST_ASSERT_EQUAL_FLOAT(0.1f, v.mapHeading);
+}
+
+void test_tracking_zoom_steps_and_wraps_on_the_left_click(){
+    //the steps (TrackingControl gives the left click in drive mode: test_tracking_marks)
+    TrackingMap map;
+    TEST_ASSERT_EQUAL_UINT8(6, map.scale());                     //starts at 6 px per m
+    map.zoom();
+    TEST_ASSERT_EQUAL_UINT8(12, map.scale());
+    map.zoom();
+    TEST_ASSERT_EQUAL_UINT8(24, map.scale());                    //the closest
+    map.zoom();
+    TEST_ASSERT_EQUAL_UINT8(3, map.scale());                     //wraps
+    map.zoom();
+    TEST_ASSERT_EQUAL_UINT8(6, map.scale());
+    TEST_ASSERT_EQUAL_UINT8(3, TrackingMap::zoomStep(0));
+    TEST_ASSERT_EQUAL_UINT8(24, TrackingMap::zoomStep(3));
+    TEST_ASSERT_EQUAL_UINT8(3, TrackingMap::zoomStep(4));
+    //the glide: half a second from the shown scale to the step, eased, monotonic, settled after
+    TrackingMap glide;
+    glide.zoom(1000);                                             //6 -> 12 from t 1000
+    TEST_ASSERT_FLOAT_WITHIN(1e-3f, 6.0f, glide.scaleAt(1000));
+    float previous = 6.0f;
+    for(uint32_t t = 1050; t < 1500; t += 50){
+        float v = glide.scaleAt(t);
+        TEST_ASSERT_TRUE(v > previous && v < 12.0f);
+        previous = v;
+    }
+    TEST_ASSERT_FLOAT_WITHIN(0.3f, sqrtf(72.0f), glide.scaleAt(1250));   //halfway: the geometric middle
+    TEST_ASSERT_FLOAT_WITHIN(1e-3f, 12.0f, glide.scaleAt(1500));
+    TEST_ASSERT_FLOAT_WITHIN(1e-3f, 12.0f, glide.scaleAt(9000));
+    //a click during a glide turns round from where it is
+    float at = glide.scaleAt(1100);
+    glide.zoom(1100);                                             //12 -> 24
+    TEST_ASSERT_FLOAT_WITHIN(1e-3f, at, glide.scaleAt(1100));
+    TEST_ASSERT_FLOAT_WITHIN(1e-3f, 24.0f, glide.scaleAt(1600));
+    TrackingView v;
+    glide.view(v, 1350);
+    TEST_ASSERT_FLOAT_WITHIN(1e-3f, glide.scaleAt(1350), v.scale);
+}
+
+void test_tracking_trail_samples_every_200ms_only_with_a_pose(){
+    TrackingMap map;
+    //no pose: no samples
+    for(uint32_t t = 0; t < 2000; t += 20) map.update(NAN, NAN, false, t);
+    TEST_ASSERT_EQUAL_UINT8(0, map.trailCount());
+    map.update(1.0f, NAN, false, 2000);
+    TEST_ASSERT_EQUAL_UINT8(0, map.trailCount());
+    //the first pose at once, then one every 200 ms (refreshes every 20 ms)
+    for(uint32_t t = 2020; t <= 3020; t += 20) map.update(float(t) / 1000.0f, 0.5f, false, t);
+    TEST_ASSERT_EQUAL_UINT8(6, map.trailCount());
+    float x, y;
+    map.trailAt(0, x, y);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 2.02f, x);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 0.5f, y);
+    map.trailAt(5, x, y);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 3.02f, x);
+    //a gap without a pose takes nothing, the samples stay
+    for(uint32_t t = 3040; t < 4000; t += 20) map.update(NAN, NAN, false, t);
+    TEST_ASSERT_EQUAL_UINT8(6, map.trailCount());
+}
+
+void test_tracking_trail_keeps_the_last_10s_oldest_first(){
+    TrackingMap map;
+    TEST_ASSERT_EQUAL_UINT8(50, TrackingMap::trailCapacity);
+    TEST_ASSERT_EQUAL_UINT32(10000, uint32_t(TrackingMap::trailCapacity) * TrackingMap::sampleMillis);
+    for(uint32_t i = 0; i < 130; i++) map.update(float(i), -float(i), false, i * 200);
+    TEST_ASSERT_EQUAL_UINT8(50, map.trailCount());
+    float x, y;
+    map.trailAt(0, x, y);
+    TEST_ASSERT_EQUAL_FLOAT(80.0f, x);
+    TEST_ASSERT_EQUAL_FLOAT(-80.0f, y);
+    map.trailAt(49, x, y);
+    TEST_ASSERT_EQUAL_FLOAT(129.0f, x);
+    //the view for the screen: the same, oldest first, with the scale
+    TrackingView v;
+    map.view(v);
+    TEST_ASSERT_EQUAL_UINT8(50, v.trailCount);
+    TEST_ASSERT_FLOAT_WITHIN(1e-3f, 6.0f, v.scale);
+    for(uint8_t i = 0; i < 50; i++) TEST_ASSERT_EQUAL_FLOAT(float(80 + i), v.trailX[i]);
+}
+
+void test_tracking_trail_cleared_by_hand_and_a_new_zero(){
+    TrackingMap map;
+    for(uint32_t i = 0; i < 10; i++) map.update(float(i), 0.0f, false, i * 200);
+    TEST_ASSERT_EQUAL_UINT8(10, map.trailCount());
+    //by hand (the left hold in edit mode): cleared, the zoom kept; the next sample comes at once
+    map.clearTrail();
+    TEST_ASSERT_EQUAL_UINT8(0, map.trailCount());
+    TEST_ASSERT_EQUAL_UINT8(6, map.scale());
+    map.update(5.0f, 5.0f, false, 2010);
+    TEST_ASSERT_EQUAL_UINT8(1, map.trailCount());
+    map.clearTrail();
+    map.update(1.0f, 1.0f, false, 2400);
+    map.update(1.0f, 1.0f, false, 2600);
+    TEST_ASSERT_EQUAL_UINT8(2, map.trailCount());
+    //a new zero: the frame changed, the old samples go; the new zero's own pose is the first sample
+    map.update(0.0f, 0.0f, true, 2620);
+    TEST_ASSERT_EQUAL_UINT8(1, map.trailCount());
+    float x, y;
+    map.trailAt(0, x, y);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, x);
+    //a new zero without a pose: cleared, nothing taken
+    map.update(NAN, NAN, true, 3000);
+    TEST_ASSERT_EQUAL_UINT8(0, map.trailCount());
+}
+
+//the stick clicks: on Tracking (drive mode) the left click zooms, the right click plays the run, and the stopwatch's
+//own controls do nothing; on Motion the stopwatch starts and the map is untouched (the board's gates: isMainPage for
+//the stopwatch, controlsPage for TrackingControl)
+void test_tracking_clicks_only_on_its_page_stopwatch_not_there(){
+    PageNavigator pages;
+    StopwatchRig r;
+    TrackingMap map;
+    MarkStore marks;
+    TrackingControl control(marks);
+    TrackingControl::Inputs t;
+    auto loop = [&](uint32_t now){
+        r.in.b_active = isMainPage(pages.getPage());
+        uint16_t watch = r.at(now);
+        t.b_active = TrackingMap::controlsPage(pages.getPage());
+        t.b_leftHeld = r.in.b_leftHeld;
+        t.b_rightHeld = r.in.b_rightHeld;
+        t.now = now;
+        uint32_t events = control.update(t);
+        if(events & TrackingControl::ZOOM) map.zoom(now);
+        return uint64_t(watch) << 32 | events;
+    };
+    for(uint32_t i = 0; i < 5; i++) map.update(float(i), 0.0f, false, i * 200);
+    pages.update(false, true, false, false, 1000);      //Motion
+    pages.update(false, true, false, false, 1000);      //Motors
+    pages.update(false, true, false, false, 1000);      //Tracking
+    TEST_ASSERT_TRUE(pages.getPage() == Page::TRACKING);
+    TEST_ASSERT_FALSE(isMainPage(Page::TRACKING));
+    TEST_ASSERT_TRUE(TrackingMap::controlsPage(Page::TRACKING));
+    loop(1000);
+    //left click: zoom on its release; the stopwatch nothing
+    r.in.b_leftHeld = true;
+    TEST_ASSERT_TRUE(loop(1100) == 0);
+    r.in.b_leftHeld = false;
+    TEST_ASSERT_TRUE(loop(1300) == TrackingControl::ZOOM);
+    TEST_ASSERT_EQUAL_UINT8(12, map.scale());
+    //right click: play (the board starts the stopwatch from it); the stopwatch's own control stays out of it
+    r.in.b_rightHeld = true;
+    TEST_ASSERT_TRUE(loop(1400) == 0);
+    r.in.b_rightHeld = false;
+    TEST_ASSERT_TRUE(loop(1600) == TrackingControl::PLAY_PAUSE);
+    TEST_ASSERT_EQUAL_UINT32(1400, control.pressMillis());
+    TEST_ASSERT_EQUAL_UINT8(5, map.trailCount());
+    TEST_ASSERT_TRUE(r.c.stopwatch().getState() == Stopwatch::State::IDLE);
+    //back to Motion: the right click starts the stopwatch, the map keeps its zoom
+    pages.update(true, false, false, false, 1700);
+    pages.update(true, false, false, false, 1700);
+    TEST_ASSERT_TRUE(pages.getPage() == Page::MOTION);
+    loop(1700);
+    r.in.b_rightHeld = true;
+    loop(2000);
+    TEST_ASSERT_TRUE(loop(2050) == uint64_t(StopwatchControl::STARTED) << 32);
+    r.in.b_rightHeld = false;
+    TEST_ASSERT_TRUE(loop(2100) == 0);
+    TEST_ASSERT_TRUE(r.c.stopwatch().isRunning());
+    //the left click is the stopwatch's (reset), not the zoom's
+    r.in.b_leftHeld = true;
+    loop(2200);
+    r.in.b_leftHeld = false;
+    TEST_ASSERT_EQUAL_UINT32(0, uint32_t(loop(2300)));
+    TEST_ASSERT_EQUAL_UINT8(12, map.scale());
+    //only Tracking takes the clicks
+    for(uint8_t i = 0; i < uint8_t(Page::COUNT); i++) TEST_ASSERT_EQUAL(Page(i) == Page::TRACKING, TrackingMap::controlsPage(Page(i)));
+}
+
 int main(){
     UNITY_BEGIN();
+    RUN_TEST(test_pose_zero_on_the_frame_switch);
     RUN_TEST(test_stickguard_holds_from_boot_until_both_centred);
     RUN_TEST(test_stickguard_holds_in_menu_and_after_until_centred);
     RUN_TEST(test_axisstepper_steps_rearms_and_repeats);
@@ -1577,6 +2014,8 @@ int main(){
     RUN_TEST(test_estop_clear_pressed_and_wiring);
     RUN_TEST(test_battery_thresholds_with_hysteresis);
     RUN_TEST(test_settings_validated_on_load);
+    RUN_TEST(test_radio_off_is_a_quiet_state);
+    RUN_TEST(test_link_alarms_are_the_radio_fault_and_no_link);
     RUN_TEST(test_menu_changes_are_pending_until_save_held);
     RUN_TEST(test_menu_exit_and_item_bounds);
     RUN_TEST(test_synth_rests_ramps_and_sounds);
@@ -1622,6 +2061,14 @@ int main(){
     RUN_TEST(test_stopwatch_runs_across_pages_and_clicks_elsewhere_do_nothing);
     RUN_TEST(test_stopwatch_controls_on_status_and_motion_only);
     RUN_TEST(test_stopwatch_one_timer_shared_by_status_and_motion);
+    RUN_TEST(test_tracking_transform_ahead_right_and_turned);
+    RUN_TEST(test_tracking_transform_matches_pose_zero);
+    RUN_TEST(test_tracking_dead_band_steadies_the_map);
+    RUN_TEST(test_tracking_zoom_steps_and_wraps_on_the_left_click);
+    RUN_TEST(test_tracking_trail_samples_every_200ms_only_with_a_pose);
+    RUN_TEST(test_tracking_trail_keeps_the_last_10s_oldest_first);
+    RUN_TEST(test_tracking_trail_cleared_by_hand_and_a_new_zero);
+    RUN_TEST(test_tracking_clicks_only_on_its_page_stopwatch_not_there);
     RUN_TEST(test_stopwatch_edit_mode_set_clear_and_leave);
     RUN_TEST(test_stopwatch_edit_ignores_a_stick_already_out);
     RUN_TEST(test_stopwatch_sounds);

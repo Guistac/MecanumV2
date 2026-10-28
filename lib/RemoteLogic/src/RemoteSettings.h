@@ -6,13 +6,19 @@
 //default; only changed bytes are written, once, when the operator confirms
 struct RemoteSettings{
 
-    //EEPROM layout: byte 0 is the channel as before, history of abnormal resets from byte 4 (BootGuard)
+    //EEPROM layout: byte 0 is the channel as before, 1 contrast, 2 dimming, 3 sound, history of abnormal resets from
+    //byte 4 (BootGuard), stick calibration 20..44 (StickCalibration); the arcade's block from 256 (ArcadeScores), the
+    //Tracking page's marks 512..659 (MarkStore)
     static constexpr uint8_t channelAddress = 0;
     static constexpr uint8_t contrastAddress = 1;
     static constexpr uint8_t dimmingAddress = 2;
     static constexpr uint8_t soundAddress = 3;      //[D-158]
 
     static constexpr uint8_t channelCount = 16;
+    //[owner 2026-10-28] after channel F the channel setting has Off: the radio sends nothing (it stays powered and
+    //listening, never shut down: its amplifier comes on in shutdown) and the Status page says Radio off, LEDs dark;
+    //the remote is a game console then. The USB link (D-159) still works. Stored as 16 in the channel byte
+    static constexpr uint8_t radioOffChannel = channelCount;
     static constexpr uint8_t contrastLevels = 4;
     static constexpr uint8_t dimmingOptions = 3;
 
@@ -31,12 +37,14 @@ struct RemoteSettings{
     static RemoteSettings fromStored(uint8_t storedChannel, uint8_t storedContrast, uint8_t storedDimming,
                                      uint8_t storedSound = 0xFF){
         RemoteSettings settings;
-        if(storedChannel < channelCount) settings.channel = storedChannel;
+        if(storedChannel <= radioOffChannel) settings.channel = storedChannel;
         if(storedContrast < contrastLevels) settings.contrast = storedContrast;
         if(storedDimming < dimmingOptions) settings.dimming = storedDimming;
         if(storedSound < RemoteSounds::levelCount) settings.sound = storedSound;
         return settings;
     }
+
+    bool isRadioOff() const { return channel == radioOffChannel; }
 
     bool operator==(const RemoteSettings& other) const {
         return channel == other.channel && contrast == other.contrast && dimming == other.dimming && sound == other.sound;

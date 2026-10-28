@@ -2,19 +2,19 @@
 #include <stdint.h>
 
 //Motion right after Status: the vehicle's velocities and pose [D-161, D-163]; Motors right after Motion: the four
-//wheels [D-163]
-enum class Page : uint8_t{ STATUS, MOTION, MOTORS, LINK, RADIO, BATTERY, INPUTS, ABOUT, SETTINGS, COUNT };
+//wheels [D-163]; Tracking right after Motors: the top-down map round the vehicle (TrackingMap)
+enum class Page : uint8_t{ STATUS, MOTION, MOTORS, TRACKING, LINK, RADIO, BATTERY, INPUTS, ABOUT, SETTINGS, COUNT };
 
 //The two main pages, Status and Motion: the stopwatch's controls work on them and they show its timer [D-160]
 inline bool isMainPage(Page page){ return page == Page::STATUS || page == Page::MOTION; }
 
-//The pages that stay open without input and have no page dots: the main pages and Motors [D-163] (the stopwatch's
-//controls do not work on Motors: isMainPage)
-inline bool staysOpen(Page page){ return isMainPage(page) || page == Page::MOTORS; }
+//The pages that stay open without input and have no page dots: the main pages, Motors [D-163] and Tracking (the
+//stopwatch's controls do not work on Motors and Tracking: isMainPage)
+inline bool staysOpen(Page page){ return isMainPage(page) || page == Page::MOTORS || page == Page::TRACKING; }
 
 //Remote pages: left pushbutton previous, right pushbutton next, wrapping. The settings page is in the cycle only while
-//settings are available (speed switch at OFF). Any page but those that stay open (Status, Motion, Motors) returns to
-//Status after 10 s without input [D-147 point 1]
+//settings are available (speed switch at OFF). Any page but those that stay open (Status, Motion, Motors, Tracking)
+//returns to Status after 10 s without input [D-147 point 1]
 class PageNavigator{
 public:
 

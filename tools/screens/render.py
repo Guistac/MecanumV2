@@ -30,7 +30,7 @@ def build():
         "lib/RemoteUi/src/RemoteSplash.cpp",
         "tools/screens/render_screens.cpp",
     ]
-    includes = ["tools/screens/host", "lib/Adafruit-GFX", "lib/RemoteLogic/src", "lib/RemoteUi/src", "lib/RemoteAudio/src"]
+    includes = ["tools/screens/host", "lib/Adafruit-GFX", "lib/RemoteLogic/src", "lib/RemoteUi/src", "lib/RemoteAudio/src", "lib/RemoteGames/src"]
     command = ["clang++", "-std=c++17", "-O1", "-w", "-DARDUINO=100", "-o", str(binary)]
     command += [f"-I{ROOT / i}" for i in includes] + [str(ROOT / s) for s in sources]
     subprocess.run(command, check=True)
@@ -44,7 +44,8 @@ def read_rows(pbm):
 
 # Rows that must stay empty, so nothing touches (docs: 1 px gap between elements). By file name prefix:
 # 0/1 status screen, 2 page, 3 menu, 4 calibration, 5 the Motion page live, 6 the Motion page's text lines, 7 the
-# Motors page. x 127 is the firmware alive dot.
+# Motors page, 8 the Tracking page (dark rings, check_tracking_margins; its compass sits on its own dark disc top
+# right). x 127 is the firmware alive dot.
 def components(rows):
     """Connected shapes (8-connected lit pixels): returns a label per pixel and each label's lowest and highest row."""
     labels = [[0] * 128 for _ in range(32)]
@@ -98,16 +99,106 @@ def check_gaps(name, rows):
         gaps = [(16, 0, 127, 15, 17)]
         for x0, x1 in [(0, 48), (78, 126)]:
             gaps += [(7, x0, x1, 6, 8), (24, x0, x1, 23, 25)]
+    if name.startswith("20"):
+        # the Link page: the title line; the history graph (x 0..59, rows 9..31) runs through the rows, the numbers'
+        # column (x 64..126) has its three lines from rows 9, 17 and 25
+        gaps = [(7, 0, 126, 6, 9), (16, 64, 126, 15, 17), (24, 64, 126, 23, 25)]
+    elif kind == "9":
+        # the Tracking page's views (owner, 2026-10-28): 9l the mark list (pill lines rows 0..8, 11..19, 22..30),
+        # 9t the trip (text rows 0, 9, 18), 9e the editor (title rows 0..8, field pills 10..18 and 21..29)
+        if name.startswith("9l"):
+            gaps = [(9, 0, 127, 8, 11), (20, 0, 127, 19, 22)]
+        elif name.startswith("9t"):
+            gaps = [(8, 0, 127, 7, 9), (17, 0, 127, 16, 18)]
+        elif name.startswith("9e"):
+            gaps = [(9, 0, 127, 8, 10), (20, 0, 127, 19, 21)]
     if name.startswith("24e"):
         # the games' loading screen: title pill rows 0..8, blocks 11..19, text from row 24
         gaps = [(10, 0, 126, 9, 11), (22, 0, 126, 21, 24)]
     problems = []
+    if kind == "8":
+        problems += check_tracking_margins(rows, name.startswith("8r"))
     for y, x0, x1, above, below in gaps:
         for x in range(x0, x1 + 1):
             label = labels[y][x]
             if label and spans[label][0] <= above and spans[label][1] >= below:
                 problems.append(f"row {y}: a shape joins the rows above and below at x {x}")
                 break
+    return problems
+
+
+def ring_lit(rows, x0, y0, x1, y1):
+    """The lit pixels on the 1 px ring round the box x0..x1, y0..y1 (inside the screen)."""
+    lit = []
+    for y in range(y0 - 1, y1 + 2):
+        for x in range(x0 - 1, x1 + 2):
+            inside = x0 <= x <= x1 and y0 <= y <= y1
+            if not inside and 0 <= x < 128 and 0 <= y < 32 and rows[y][x]:
+                lit.append((x, y))
+    return lit
+
+
+def run_bottom_boxes(rows):
+    """The run's bottom row (8r): the time left's glyphs (shapes of two or more pixels within rows 24..30 from x 0, the
+    digits and their dots within 2 px of each other) and a filled pill (a shape spanning rows 23..31 with at least 30
+    pixels: the pace word or the split), or plain words in its place (PAUSED, a blinking pill's off phase: shapes
+    within rows 24..30 further right)."""
+    labels, spans = components(rows)
+    sizes = {}
+    for y in range(32):
+        for x in range(128):
+            if labels[y][x]:
+                sizes[labels[y][x]] = sizes.get(labels[y][x], 0) + 1
+    glyphs = {}
+    for y in range(23, 32):
+        for x in range(0, 128):     # the full width: the turn pill reaches the right edge (the drive arrow is its own shape)
+            l = labels[y][x]
+            if not l:
+                continue
+            top, bottom = spans[l]
+            if (top >= 24 and bottom <= 30 and sizes[l] >= 2) or (top == 23 and bottom == 31 and sizes[l] >= 30):
+                glyphs.setdefault(l, []).append(x)
+    # group the shapes into runs of columns no more than 2 px apart
+    columns = sorted({x for xs in glyphs.values() for x in xs})
+    boxes = []
+    start = None
+    for i, x in enumerate(columns):
+        if start is None:
+            start = x
+        if i + 1 == len(columns) or columns[i + 1] - x > 3:
+            boxes.append(("run bottom text", start, 24 if not any(rows[23][c] for c in range(start, x + 1)) else 23, x,
+                          30 if not any(rows[31][c] for c in range(start, x + 1)) else 31))
+            start = None
+    return boxes
+
+
+def check_tracking_margins(rows, b_run=False):
+    """The Tracking page: the grid, the trail and the origin must not touch the rover (x 62..66, rows 13..19), the
+    alive dot (x 0..2, rows 0..2), the scale label (bottom left: the bar
+    from x 0 along row 30, then "1m" / "5m" 3 px after its end) or the top line's text: a dark ring of 1 px round
+    each."""
+    problems = []
+    boxes = [("rover", 62, 13, 66, 19), ("alive dot", 0, 0, 2, 2)]
+    if rows[30][0] and rows[28][0]:
+        length = 0
+        while length + 1 < 128 and rows[30][length + 1]:
+            length += 1
+        boxes.append(("scale label", 0, 24, length + 3 + 11 - 1, 31))
+    else:
+        # no map: the top line's text, if any (x 4..114: clear of the alive dot and the compass). A timed run or its
+        # arrival (8r) has no scale label, no compass and no top line (owner, 2026-10-28): its bottom row is checked
+        # instead, the time left (plain digits from x 0) and the pace, PAUSED or split pill; each on a dark 1 px
+        # ring. A refused play (8m_refused_*) is a pill in the compass's place, checked like a question
+        if b_run:
+            boxes += run_bottom_boxes(rows)
+        else:
+            columns = [x for x in range(4, 115) if any(rows[y][x] for y in range(0, 8))]
+            if columns:
+                boxes.append(("text line", columns[0], 0, columns[-1], 7))
+    for label, x0, y0, x1, y1 in boxes:
+        lit = ring_lit(rows, x0, y0, x1, y1)
+        if lit:
+            problems.append(f"{label}: something touches it at {lit[0]}")
     return problems
 
 

@@ -36,6 +36,7 @@ void RemoteBoard::fillScreenModel(ScreenModel& m){
     if(m.b_direct) m.signal = 1.0;
     else m.signal = LinkMonitor::barFraction(LinkMonitor::weaker(radio.getSignalStrength(), robotProxy.robotRxSignalStrength));
     m.channel = radio.getChannel();
+    m.b_radioOff = isRadioOff();
     m.b_linkUp = robotProxy.b_connected;
     m.rxCounter = robotProxy.rxCounter;
     m.loss = link.lossPercent();
@@ -63,7 +64,44 @@ void RemoteBoard::fillScreenModel(ScreenModel& m){
 
     m.reportedState = robotProxy.status;
     m.motion = robotProxy.motion;
+    //the frame switch to WORLD zeroes the Motion page's pose: shown from then on relative to that moment [D-163]; a
+    //snap to a mark (updateTracking) changes the frame the same way
+    bool b_newZero = poseZero.update(m.b_worldFrame, robotProxy.motion.poseX, robotProxy.motion.poseY, robotProxy.motion.heading);
+    if(b_newZero) tripSince = 0;
+    b_newZero = b_newZero || b_frameChanged;
+    b_frameChanged = false;
+    //the drive-frame arrow: which way the stick forward pushes at WORLD (Stacato's upstage seen from its own heading)
+    m.driveHeading = m.b_worldFrame && robotProxy.b_connected ? robotProxy.motion.heading : NAN;
+    poseZero.apply(m.motion.poseX, m.motion.poseY, m.motion.heading);
     m.motionAvailability = Reply::availability(robotProxy.b_connected, robotProxy.motion);
+    //the Tracking page's trail, in the same frame as the Motion page's pose (a new zero clears it); only a live pose
+    //is sampled
+    bool b_livePose = m.motionAvailability == Reply::MotionAvailability::LIVE && !isnan(m.motion.heading);
+    trackingMap.update(b_livePose ? m.motion.poseX : NAN, b_livePose ? m.motion.poseY : NAN, b_newZero, now);
+    trackingMap.follow(b_livePose ? m.motion.poseX : NAN, b_livePose ? m.motion.poseY : NAN,
+                       b_livePose ? m.motion.heading : NAN, trackingMap.scaleAt(now));
+    trackingMap.view(m.tracking, now);
+    //the compass: the map frame's +y, from the heading with the zero applied
+    m.tracking.compassHeading = b_livePose ? m.motion.heading : NAN;
+    //the trip since the last zero or snap: the body speed and turn rate from the reply
+    if(b_newZero) trip.reset();
+    float speed = robotProxy.motion.b_velocityLive ? hypotf(robotProxy.motion.vx, robotProxy.motion.vy) : NAN;
+    float turnRate = robotProxy.motion.b_velocityLive ? robotProxy.motion.vr * 57.29578f : NAN;
+    trip.update(b_livePose ? m.motion.poseX : NAN, b_livePose ? m.motion.poseY : NAN, b_livePose ? m.motion.heading : NAN,
+                b_livePose ? speed : NAN, b_livePose ? turnRate : NAN, now);
+    m.trip.distance = trip.distance();
+    m.trip.turned = trip.turned();
+    m.trip.top = trip.topSpeed();
+    m.trip.movingMillis = trip.movingMillis();
+    m.trip.since = tripSince;
+    //the marks, the controls and the run
+    m.marks = marks;
+    m.trackingControl = trackingControl.view(now);
+    updateRun(now);
+    timedRun.view(m.run, now);
+    //the Link page's history, once a second
+    linkHistory.update(now, m.loss, LinkMonitor::weaker(m.downDbm, m.upDbm), m.b_linkUp && !m.b_direct);
+    linkHistory.view(m.linkHistory);
     //the Motors page's rollers scroll with each wheel's velocity [D-163]; nothing scrolls without a link
     static float wheelPhase[4] = {0, 0, 0, 0};
     static uint32_t previousFrameMillis = now;
@@ -146,7 +184,17 @@ void RemoteBoard::refreshGui(){
         soundPlayer.stop(SoundLayer::FRONT);
         b_disablingLoop = false;
     }
-    if(b_newMessage && b_alarm){
+    //[owner 2026-10-28] a radio fault or no link while the games run (a radio reset clears itself): the game goes on;
+    //lasting gamesLinkGraceMillis, it is shown like any alarm
+    bool b_linkAlarm = Status::isLinkAlarm(status.message);
+    if(!b_linkAlarm || !arcade.isActive()) b_gamesLinkAlarm = false;
+    else if(b_newMessage && !b_gamesLinkAlarm){
+        b_gamesLinkAlarm = true;
+        gamesLinkAlarmMillis = now;
+    }
+    bool b_lastedInGames = b_gamesLinkAlarm && now - gamesLinkAlarmMillis >= Status::gamesLinkGraceMillis;
+    if((b_newMessage && b_alarm && !b_gamesLinkAlarm) || b_lastedInGames){
+        b_gamesLinkAlarm = false;
         if(arcade.isActive()) leaveArcade();
         if(menu.isOpen()) closeMenu();
         b_calibrationResult = false;

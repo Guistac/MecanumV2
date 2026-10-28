@@ -218,11 +218,54 @@ void test_time_limit_ends_the_game_and_unparked_stages_cost(){
     for(int i = 0; i < 40000 && !game.isOver(); i++) game.update(GameInput());
     TEST_ASSERT_TRUE(game.isOver());
     TEST_ASSERT_FALSE(game.isWrecked());
-    //10 min plus 60 s for each of the 22 stages
-    TEST_ASSERT_EQUAL_UINT32(6000 + 22 * 600, game.score());
-    char text[10];
+    //[owner 2026-10-28] the stages left unparked rank first, then the time: 22 left, 10 min
+    TEST_ASSERT_EQUAL_UINT32(22 * ParkingGame::stageWeight + 6000, game.score());
+    char text[12];
     game.scoreText(text, sizeof(text), 483);
     TEST_ASSERT_EQUAL_STRING("48.3s", text);
+    game.scoreText(text, sizeof(text), 5 * ParkingGame::stageWeight + 4123);
+    TEST_ASSERT_EQUAL_STRING("17/22 412s", text);
+    //more stages always beat a faster time
+    TEST_ASSERT_TRUE(4 * ParkingGame::stageWeight + 5999 < 5 * ParkingGame::stageWeight + 100);
+}
+
+//every bay leaves the vehicle 1.5 px each way, and that room is free: parked at the bay's centre or pushed 1.4 px to
+//any side along and across it, the vehicle counts as parked and touches nothing [owner 2026-10-28]
+void test_every_bay_has_room(){
+    ParkingGame game;
+    game.reset(4);
+    for(uint8_t stage = 0; stage < ParkingGame::levelCount; stage++){
+        game.startStage(stage);
+        float cx, cy, headingDeg, along, across;
+        game.getBay(cx, cy, headingDeg, along, across);
+        char message[24];
+        snprintf(message, sizeof(message), "stage %u", unsigned(stage + 1));
+        TEST_ASSERT_TRUE_MESSAGE(along >= 1.5f && across >= 1.5f, message);
+        float c = cosf(headingDeg * 3.14159265f / 180.0f), s = sinf(headingDeg * 3.14159265f / 180.0f);
+        const float offsets[5][2] = {{0, 0}, {1.4f, 0}, {-1.4f, 0}, {0, 1.4f}, {0, -1.4f}};
+        for(int k = 0; k < 5; k++){
+            float a = offsets[k][0], b = offsets[k][1];
+            game.place(cx + a * c - b * s, cy + a * s + b * c, headingDeg * 3.14159265f / 180.0f);
+            TEST_ASSERT_TRUE_MESSAGE(game.isParkedNow(), message);
+            //a moving piece may stand in a bay's way at times (stage 16's slot is not on its track): set pieces only
+            if(game.getMoverCount() == 0 || stage == 15) TEST_ASSERT_FALSE_MESSAGE(game.overlapsNow(), message);
+        }
+    }
+}
+
+//stages 3 on start askew: for several seeds the start heading is 7.5 degrees or more off its mark on most of them
+void test_later_stages_start_askew(){
+    ParkingGame game;
+    game.reset(2);
+    int askew = 0;
+    for(uint8_t stage = 2; stage < ParkingGame::levelCount; stage++){
+        game.startStage(stage);
+        game.update(GameInput());
+        if(fabsf(game.getHeading() * 180.0f / 3.14159265f) > 7.4f
+           && fabsf(fabsf(game.getHeading() * 180.0f / 3.14159265f) - 90.0f) > 7.4f
+           && fabsf(fabsf(game.getHeading() * 180.0f / 3.14159265f) - 80.0f) > 7.4f) askew++;
+    }
+    TEST_ASSERT_TRUE(askew >= 10);
 }
 
 //every stage can be parked, proven by driving it: the demo player without its lapses (a scripted path through the
@@ -409,15 +452,15 @@ void test_wreck_ends_the_run(){
     run(game, GameInput(), 1);
     TEST_ASSERT_TRUE(game.isOver());
     TEST_ASSERT_EQUAL_UINT32(clock, game.getClockTicks());
-    //stage 1 not parked: all 22 cost their 60 s
-    TEST_ASSERT_EQUAL_UINT32(clock / 5 + 22 * 600, game.score());
+    //stage 1 not parked: 22 stages left, then the time
+    TEST_ASSERT_EQUAL_UINT32(22 * ParkingGame::stageWeight + clock / 5, game.score());
     char text[16];
     game.overText(text, sizeof(text), game.score());
     TEST_ASSERT_EQUAL_STRING_LEN("WRECKED ", text, 8);
     TEST_ASSERT_TRUE(strlen(text) <= 15);
-    //the worst wrecked score still fits: WRECKED and 7 characters
-    game.overText(text, sizeof(text), 6000 + 22 * 600);
-    TEST_ASSERT_EQUAL_STRING("WRECKED 1920.0s", text);
+    //the wreck says how far it got
+    game.overText(text, sizeof(text), 5 * ParkingGame::stageWeight + 6000);
+    TEST_ASSERT_EQUAL_STRING("WRECKED 17/22", text);
     //the wreck: a long crash of noise and a low falling buzz, over before the game is
     const SoundCue& crash = game.wreckSound();
     bool b_noise = false, b_low = false;
@@ -637,6 +680,8 @@ int main(int argc, char** argv){
     RUN_TEST(test_moving_flat_pushes_never_crushes);
     RUN_TEST(test_every_stage_starts_free);
     RUN_TEST(test_time_limit_ends_the_game_and_unparked_stages_cost);
+    RUN_TEST(test_every_bay_has_room);
+    RUN_TEST(test_later_stages_start_askew);
     RUN_TEST(test_every_stage_is_solvable);
     RUN_TEST(test_demo_without_lapses_parks_all_stages_fairly);
     RUN_TEST(test_demo_lapses_wreck_the_attract_run);

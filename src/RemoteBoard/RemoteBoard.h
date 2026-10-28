@@ -12,6 +12,13 @@
 #include <StickGuard.h>
 #include <AxisStepper.h>
 #include <SettingsMenu.h>
+#include <PoseZero.h>
+#include <TrackingMap.h>
+#include <MarkStore.h>
+#include <TrackingControl.h>
+#include <TimedTarget.h>
+#include <TripMeter.h>
+#include <LinkHistory.h>
 #include <PageNavigator.h>
 #include <StatusView.h>
 #include <Dimmer.h>
@@ -226,7 +233,30 @@ private:
     //the rehearsal stopwatch on the main pages, Status and Motion [D-160]: display only, the stick buttons start / stop and reset it,
     //the left one held at OFF edits the countdown (lib/RemoteLogic/src/Stopwatch.h, tested with pio test -e native)
     StopwatchControl stopwatch;
+    PoseZero poseZero;              //the Motion page's own zero, the frame switch to WORLD [D-163]
     void updateStopwatch(uint32_t now);
+    //the Tracking page (owner, 2026-10-28): the map (lib/RemoteLogic/src/TrackingMap.h, the trail sampled in
+    //fillScreenModel, cleared by a new zero or snap), the marks (MarkStore, EEPROM from byte 512), the controls in
+    //edit mode (OFF) and drive mode (SLOW / FAST, TrackingControl), the timed run to a mark with its ghost, pace and
+    //arrival (TargetRun, TimedTarget.h; its time is the stopwatch), the trip readout (TripMeter). Display only: nothing
+    //of it is sent. Main thread
+    TrackingMap trackingMap;
+    MarkStore marks;
+    TrackingControl trackingControl{marks};
+    TargetRun timedRun{stopwatch};
+    TripMeter trip;
+    bool b_frameChanged = false;        //a snap this loop: the trail and the trip start over (fillScreenModel)
+    uint8_t tripSince = 0xFF;           //what the trip counts from: 0 the zero, 1..9 a snap to that mark, 0xFF power on
+    bool b_marksDirty = false;          //a confirmed change: written after the frame (update)
+    //the Tracking page's sticks; the pushbuttons cancel a question or leave the editor there (then no page change)
+    void updateTracking(bool& b_previous, bool& b_next, uint32_t now);
+    //the pose as the pages show it (Stacato's through the display correction); false without a live pose
+    bool displayPose(float& x, float& y, float& heading);
+    void updateRun(uint32_t now);
+    void loadMarks();
+    void writeMarks();
+    //the Link page's last 60 s (LinkHistory), sampled in fillScreenModel
+    LinkHistory linkHistory;
 
     //the games [D-157] (lib/RemoteGames, tested with pio test -e native): their top 3s and sound mode in
     //EEPROM from byte 256, their sounds into the player unless the Sound setting is Off
@@ -234,6 +264,11 @@ private:
     ArcadeEeprom arcadeStore;
     void updateArcade(bool& b_previous, bool& b_next, uint32_t now);
     void leaveArcade();
+    //the channel setting is Off and no USB link carries the remote [owner 2026-10-28]
+    bool isRadioOff() const { return settings.isRadioOff() && !linkPath.isUsb(); }
+    //a link alarm shown while the games run: they go on unless it lasts Status::gamesLinkGraceMillis
+    bool b_gamesLinkAlarm = false;
+    uint32_t gamesLinkAlarmMillis = 0;
     StatusView selectStatus(uint32_t now);
     void loadSettings();
     void saveSettings(const RemoteSettings& newSettings);

@@ -9,6 +9,22 @@
 #include <RobotStates.h>
 #include <Stopwatch.h>
 #include <ReplyFrame.h>
+#include <TrackingMap.h>
+#include <MarkStore.h>
+#include <TrackingControl.h>
+#include <TimedTarget.h>
+#include <LinkHistory.h>
+
+//The Tracking page's timed run: TrackingRunView in TimedTarget.h (TargetRun::view)
+
+//the trip view (TripMeter)
+struct TripView{
+    float distance = 0.0f;              //m
+    float turned = 0.0f;                //deg
+    float top = 0.0f;                   //m/s
+    uint32_t movingMillis = 0;
+    uint8_t since = 0xFF;               //0 the zero, 1..9 a snap to that mark, 0xFF since power on
+};
 
 //Everything the remote's screens show, filled by RemoteBoard once per frame. The drawing below only reads it, so the
 //same code draws on the OLED and, on the Mac, into a canvas saved as a picture (tools/screens)
@@ -22,6 +38,7 @@ struct ScreenModel{
                                         //alternate until it is disabled
     bool b_dropout = false;
     uint8_t channel = 0;
+    bool b_radioOff = false;            //the channel setting is Off [owner 2026-10-28]
     bool b_linkUp = false;
     float signal = 0.0f;                //0..1, the weaker direction
     uint8_t rxCounter = 0;
@@ -53,7 +70,7 @@ struct ScreenModel{
 
     //pages
     Page page = Page::STATUS;
-    uint8_t pageCount = 7;
+    uint8_t pageCount = 9;          //without Settings
     //transitions that animate the header itself: a title shown instead of the page's own, and the active page dot
     //between two positions (-1: on the page's own dot)
     const char* titleOverride = nullptr;
@@ -67,6 +84,18 @@ struct ScreenModel{
     //the rollers' scroll per wheel (FL, FR, RL, RR), px along the wheel, advanced by RemoteBoard from the frame time
     //and the wheel velocity (RemoteUi::advanceWheelPhase); a picture is set here directly
     float wheelPhase[4] = {0, 0, 0, 0};
+    //the Tracking page: the zoom and the trail in the map frame (TrackingMap); the rover's pose is motion's (zeroed
+    //with the Motion page's zero)
+    TrackingView tracking;
+    //the marks, the controls' state (edit mode, the question, the editor), the run and the trip [owner, 2026-10-28]
+    MarkStore marks;
+    TrackingControlView trackingControl;
+    TrackingRunView run;
+    TripView trip;
+    //the drive-frame arrow: Stacato's own heading (not the display correction) at WORLD, NaN at BODY or without one
+    float driveHeading = NAN;
+    //the Link page's last 60 s
+    LinkHistoryView linkHistory;
 
     //radio page
     bool b_radioUp = false;

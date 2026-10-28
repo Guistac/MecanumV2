@@ -5,6 +5,7 @@
 #include <RemoteTransitions.h>
 #include <RemoteSplash.h>
 #include <stdio.h>
+#include <math.h>
 #include <string>
 #include <vector>
 #include <initializer_list>
@@ -73,6 +74,7 @@ int main(int argc, char** argv){
     { ScreenModel m = base(); m.status.message = BigMessage::ENABLED; m.remotePercent = 12; m.remoteBattery = BatteryState::LOW_CHARGE; m.speedState = 2; m.b_worldFrame = true; add("17_enabled_battery_low", m); }
     { ScreenModel m = base(); m.status = {BigMessage::RELEASE_BOTH, StatusLine::NORMAL}; m.speedState = 0; add("18_release_both", m); }
     { ScreenModel m = base(); m.status = {BigMessage::ESTOP, StatusLine::NOT_CONNECTED}; m.b_linkUp = false; add("19_estop_not_connected", m); }
+    { ScreenModel m = base(); m.b_linkUp = false; m.speedState = 0; m.b_radioOff = true; m.status = {BigMessage::RADIO_OFF, StatusLine::NORMAL}; add("19b_radio_off", m); }
     //the stopwatch [D-160], bottom centre of the Status page
     auto timer = [](uint32_t setMillis, uint32_t elapsed, Stopwatch::State state){
         StopwatchView v;
@@ -117,7 +119,7 @@ int main(int argc, char** argv){
     { ScreenModel m = base(); m.page = Page::ABOUT; m.b_arcadeReady = true; m.now = 0; add("24c_page_about_play_up", m); }
     { ScreenModel m = base(); m.page = Page::ABOUT; m.b_arcadeReady = true; m.now = 100; add("24d_page_about_play_pressed", m); }
     { ScreenModel m = base(); m.page = Page::ABOUT; m.arcadeLoading = 0.45f; m.now = 500; add("24e_arcade_loading", m); }
-    { ScreenModel m = base(); m.page = Page::SETTINGS; m.pageCount = 8; m.speedState = 0; add("25_page_settings", m); }
+    { ScreenModel m = base(); m.page = Page::SETTINGS; m.pageCount = 10; m.speedState = 0; add("25_page_settings", m); }
     //the Motion page [D-161, D-163], a main page with the timer [D-160]: two columns on the text lines from row 9 (5x
     //live, 6x without motion data or editing; render.py)
     using VS = Reply::VehicleState;
@@ -189,6 +191,8 @@ int main(int argc, char** argv){
     { ScreenModel m = live(VS::VEHICLE_OFF, RobotState::EMERGENCY_STOPPING, atRest); m.page = Page::STATUS; m.b_worldFrame = true; m.speedState = 2;
       m.stopwatch = timer(300000, 150000, Stopwatch::State::RUNNING); add("0v_status_vehicle_off_countdown_world", m); }
     { ScreenModel m = live(VS::NO_STACATO, RobotState::DISABLED, atRest); m.page = Page::STATUS; m.b_worldFrame = true; add("0v_status_no_stacato_world", m); }
+    //without Stacato the receiver's own state starts E-stopped: still No Stacato, not the E-stop banner
+    { ScreenModel m = live(VS::NO_STACATO, RobotState::EMERGENCY_STOPPED, atRest); m.page = Page::STATUS; add("0v_status_no_stacato_receiver_estopped", m); }
     //Motion: every vehicle state in the title (5v_)
     for(const StateCase& c : states){
         ScreenModel m = live(c.state, c.reported, driving);
@@ -219,6 +223,8 @@ int main(int argc, char** argv){
     { ScreenModel m = live(VS::E_STOPPING, RobotState::EMERGENCY_STOPPING, driving); m.stopwatch = timer(60000, 814500, Stopwatch::State::RUNNING); m.now = 0; add("58e_motion_widest_title_e_stopping", m); }
     { ScreenModel m = live(VS::E_STOP, RobotState::EMERGENCY_STOPPED, atRest); m.stopwatch = timer(300000, 150000, Stopwatch::State::RUNNING); add("59_motion_estop_countdown", m); }
     { ScreenModel m = live(VS::DISABLED, RobotState::DISABLED, driving); m.speedState = 0; m.stopwatch = timer(150000, 0, Stopwatch::State::IDLE); m.stopwatch.b_editing = true; add("63_motion_edit_2m30", m); }
+    { ScreenModel m = live(VS::ENABLED, RobotState::ENABLED, driving); m.b_worldFrame = true;
+      m.motion.poseX = 0.12f; m.motion.poseY = 2.5f; m.motion.heading = -12.3f; add("56c_motion_pose_zeroed", m); }
     { ScreenModel m = live(VS::DISABLED, RobotState::DISABLED, driving); m.speedState = 0; m.stopwatch.b_editing = true; add("63b_motion_edit_0m00", m); }
     //the Motors page [D-163] (7x; render.py): every wheel state, values, animation phases
     auto motors = [&](VS state, RobotState reported, Reply::MotionView v){
@@ -254,7 +260,207 @@ int main(int argc, char** argv){
             add((p + "phase_" + std::to_string(frame)).c_str(), m);
         }
     }
+    //the Tracking page (8x; render.py): the map round the rover at the three zoom steps, turned, zeroed, a trail
+    auto tracking = [&](float x, float y, float heading, uint8_t zoomClicks){
+        ScreenModel m = live(VS::ENABLED, RobotState::ENABLED, driving);
+        m.page = Page::TRACKING;
+        m.motion.poseX = x;
+        m.motion.poseY = y;
+        m.motion.heading = heading;
+        TrackingMap map;
+        for(uint8_t i = 0; i < zoomClicks; i++) map.zoom();
+        map.view(m.tracking);
+        m.tracking.compassHeading = heading;              //not zeroed: the compass from the same heading
+        return m;
+    };
+    {
+        std::string p = "8_tracking_";
+        add((p + "zoom6_start").c_str(), tracking(1.3f, 2.4f, 0.0f, 0));
+        add((p + "zoom12").c_str(), tracking(1.3f, 2.4f, 0.0f, 1));
+        add((p + "zoom24").c_str(), tracking(1.3f, 2.4f, 0.0f, 2));
+        add((p + "zoom3").c_str(), tracking(1.3f, 2.4f, 0.0f, 3));
+        add((p + "turned_20_zoom6").c_str(), tracking(1.3f, 2.4f, 20.0f, 0));
+        add((p + "turned_20_zoom24").c_str(), tracking(1.3f, 2.4f, 20.0f, 2));
+        add((p + "turned_30").c_str(), tracking(1.3f, 2.4f, 30.0f, 0));
+        add((p + "turned_135_zoom12").c_str(), tracking(0.6f, -0.4f, 135.0f, 1));
+        { ScreenModel m = tracking(0.4f, 1.1f, -20.0f, 0); m.tracking.compassHeading = 70.0f; add((p + "zeroed").c_str(), m); }
+        //the glide between 6 and 12 px per m, a quarter and halfway
+        { ScreenModel m = tracking(1.3f, 2.4f, 0.0f, 0); TrackingMap g; g.zoom(0); g.view(m.tracking, 125);
+          m.tracking.compassHeading = 0.0f; add((p + "glide_125ms").c_str(), m); }
+        { ScreenModel m = tracking(1.3f, 2.4f, 0.0f, 0); TrackingMap g; g.zoom(0); g.view(m.tracking, 250);
+          m.tracking.compassHeading = 0.0f; add((p + "glide_250ms").c_str(), m); }
+        //a trail: 12 s on a circle of about 1.9 m (0.5 m/s, turning left 15 deg/s; samples every 200 ms, the last 10 s kept)
+        {
+            TrackingMap map;
+            float x = 0.0f, y = 0.0f, heading = 0.0f;
+            for(uint32_t t = 0; t <= 12000; t += 20){
+                map.update(x, y, false, t);
+                float r = heading * 0.017453293f;
+                x += -sinf(r) * 0.5f * 0.02f;
+                y += cosf(r) * 0.5f * 0.02f;
+                heading += 15.0f * 0.02f;
+            }
+            ScreenModel m = tracking(x, y, heading, 0);
+            map.view(m.tracking);
+            m.tracking.compassHeading = heading;
+            add((p + "trail").c_str(), m);
+            map.zoom();
+            ScreenModel m8 = tracking(x, y, heading, 1);
+            map.view(m8.tracking);
+            m8.tracking.compassHeading = heading;
+            add((p + "trail_zoom12").c_str(), m8);
+        }
+        { ScreenModel m = tracking(NAN, NAN, NAN, 0); add((p + "no_position").c_str(), m); }
+                { ScreenModel m = tracking(1.0f, 1.0f, 0.0f, 0); m.motionAvailability = Reply::MotionAvailability::NO_DATA; add((p + "no_motion_data").c_str(), m); }
+        { ScreenModel m = tracking(1.0f, 1.0f, 0.0f, 0); m.b_linkUp = false; m.motionAvailability = Reply::MotionAvailability::NO_LINK; add((p + "no_link").c_str(), m); }
+        { ScreenModel m = tracking(1.3f, 2.4f, 0.0f, 0); m.frame = 6; add((p + "alive_step").c_str(), m); }
+    }
+    //the marks and timed targets (owner, 2026-10-28): 8m_ the map with marks, questions, refusals and the drive arrow,
+    //8r_ a timed run (the ghost, the pace, the arrival), 9l_ the mark list, 9t_ the trip, 9e_ the number editor
+    //(render.py: their gaps)
+    {
+        MarkStore marks;
+        marks.set(1, Mark::fromPose(0.0f, 0.0f, 0.0f, 0));
+        marks.set(2, Mark::fromPose(0.0f, 2.0f, NAN));
+        marks.set(3, Mark::fromPose(1.5f, 3.5f, -90.0f, 8000));
+        marks.set(4, Mark::fromPose(3.5f, 2.0f, 180.0f, 12500));
+        marks.set(6, Mark::fromPose(-2.25f, -1.0f, 45.0f));
+        auto marked = [&](float x, float y, float heading, int8_t selected, bool b_edit){
+            ScreenModel m = tracking(x, y, heading, 0);
+            m.marks = marks;
+            m.trackingControl.selected = selected;
+            m.trackingControl.b_editMode = b_edit;
+            m.speedState = b_edit ? 0 : 1;
+            return m;
+        };
+        //a timed run to mark k (3: 8 s, 4: 12.5 s) from (0, 0) facing 0, as RemoteBoard drives TargetRun: elapsed s
+        //into the run, the rover where the plan was at planned s, cross m to the right of the line and turned by turn
+        //deg against the plan there; paused: the stopwatch stopped at elapsed
+        auto running = [&](float elapsed, float planned, float cross, float turn, bool b_paused, uint8_t k = 3){
+            StopwatchControl watch;
+            TargetRun run{watch};
+            run.click(marks, int8_t(k), true, 0.0f, 0.0f, 0.0f, 1000, 1000);
+            const TargetPlan& p = run.getPlan();
+            float gx, gy, gh;
+            p.ghostAt(planned, gx, gy, gh);
+            //the line's right: (dy, -dx) of its direction
+            float lx = marks.get(k).x(), ly = marks.get(k).y(), length = hypotf(lx, ly);
+            float x = gx + cross * ly / length, y = gy - cross * lx / length, heading = gh - turn;
+            uint32_t now = 1000 + uint32_t(lroundf(elapsed * 1000.0f));
+            run.update(true, x, y, heading, now);
+            if(b_paused) run.click(marks, int8_t(k), true, x, y, heading, now, now);
+            ScreenModel m = marked(x, y, heading, int8_t(k), false);
+            run.view(m.run, now);
+            return m;
+        };
+        //arrived at mark 3 after seconds (its duration 8 s)
+        auto arrived = [&](float seconds){
+            StopwatchControl watch;
+            TargetRun run{watch};
+            run.click(marks, 3, true, 0.0f, 0.0f, 0.0f, 1000, 1000);
+            uint32_t now = 1000 + uint32_t(lroundf(seconds * 1000.0f));
+            run.update(true, 1.45f, 3.42f, -86.0f, now);
+            ScreenModel m = marked(1.45f, 3.42f, -86.0f, 3, false);
+            run.view(m.run, now + 500);
+            return m;
+        };
+        //a refused play with mark k selected (the pill shows 1.5 s)
+        auto refused = [&](int8_t k, float x, float y, float heading, bool b_pose){
+            StopwatchControl watch;
+            TargetRun run{watch};
+            run.click(marks, k, b_pose, x, y, heading, 1000, 1000);
+            ScreenModel m = marked(x, y, heading, k, false);
+            run.view(m.run, 1200);
+            return m;
+        };
+        add("8m_marks_drive_none_selected", marked(0.4f, 0.8f, 10.0f, -1, false));
+        add("8m_marks_drive_selected_3", marked(0.4f, 0.8f, 10.0f, 3, false));
+        add("8m_marks_drive_selected_z", marked(0.4f, 0.8f, 10.0f, 0, false));
+        { ScreenModel m = marked(0.4f, 0.8f, 10.0f, 4, false); m.b_worldFrame = true; m.driveHeading = 35.0f; add("8m_marks_world_drive_arrow", m); }
+        { ScreenModel m = marked(0.4f, 0.8f, 10.0f, 4, false); m.b_worldFrame = true; m.driveHeading = 35.0f;
+          TrackingMap z; z.zoom(); z.zoom(); z.view(m.tracking); m.tracking.compassHeading = 10.0f; add("8m_marks_zoom24_pill_shortened", m); }
+        { ScreenModel m = marked(0.4f, 0.8f, 10.0f, 6, false); m.b_worldFrame = true; m.driveHeading = -120.0f; add("8m_marks_selected_6_arrow_back", m); }
+        add("8m_edit_selected_2", marked(0.4f, 0.8f, 10.0f, 2, true));
+        add("8m_edit_selected_empty_5", marked(0.4f, 0.8f, 10.0f, 5, true));
+        add("8m_edit_none_no_marks", marked(0.4f, 0.8f, 10.0f, -1, true));
+        { ScreenModel m = marked(0.4f, 0.8f, 10.0f, 3, true); m.trackingControl.view = TrackingControlView::View::LIST;
+          m.trackingControl.question = TrackingControlView::Question::CLEAR_ALL; add("9l_list_clear_all", m); }
+        using Q = TrackingControlView::Question;
+        { ScreenModel m = marked(0.4f, 0.8f, 10.0f, 3, true); m.trackingControl.question = Q::AT; m.trackingControl.questionMark = 3; add("8m_question_at_3", m); }
+        { ScreenModel m = marked(0.4f, 0.8f, 10.0f, 0, true); m.trackingControl.question = Q::AT; m.trackingControl.questionMark = 0; add("8m_question_at_z", m); }
+        { ScreenModel m = marked(0.4f, 0.8f, 10.0f, 5, true); m.trackingControl.question = Q::SAVE; m.trackingControl.questionMark = 5; add("8m_question_save_5", m); }
+        { ScreenModel m = marked(0.4f, 0.8f, 10.0f, 3, true); m.trackingControl.question = Q::OVERWRITE; m.trackingControl.questionMark = 3;
+          m.now = 100; add("8m_question_overwrite_shown", m);
+          m.now = 400; add("8m_question_overwrite_blank", m);
+          m.trackingControl.holdProgress = 0.55f; add("8m_question_overwrite_holding", m); }
+        add("8r_run_on_time_no_text", running(4.0f, 4.0f, 0.0f, 0.0f, false));
+        add("8r_run_on_time_offset", running(4.1f, 4.0f, 0.3f, 15.0f, false));
+        add("8r_run_late_faster", running(5.0f, 4.2f, 0.0f, 0.0f, false));
+        add("8r_run_early_slower", running(3.0f, 3.5f, 0.0f, 0.0f, false));
+        { ScreenModel m = running(6.5f, 4.0f, 0.0f, 0.0f, false); m.now = 100; add("8r_run_far_behind_filled", m);
+          m.now = 600; add("8r_run_far_behind_plain", m); }
+        add("8r_run_time_left_whole_seconds", running(1.5f, 1.0f, 0.0f, 0.0f, false, 4));
+        add("8r_run_paused", running(3.0f, 3.0f, 0.0f, 0.0f, true));
+        //the turn tracked apart: on time but the heading 25 deg behind the plan (turn more left), and late while turned
+        //20 deg too far (turn back right)
+        add("8r_run_turn_lag_on_time", running(4.0f, 4.0f, 0.0f, 25.0f, false));
+        add("8r_run_turn_ahead_late", running(5.0f, 4.2f, 0.0f, -20.0f, false));
+        { ScreenModel m = running(5.0f, 4.2f, 0.0f, 25.0f, false); m.b_worldFrame = true; m.driveHeading = -100.0f; add("8r_run_turn_world_arrow", m); }
+        { ScreenModel m = running(5.0f, 4.2f, -0.25f, 15.0f, false); m.b_worldFrame = true; m.driveHeading = -100.0f; add("8r_run_world_arrow", m); }
+        add("8r_arrived_late", arrived(8.4f));
+        add("8r_arrived_early", arrived(7.4f));
+        add("8m_refused_no_time_2", refused(2, 0.4f, 0.8f, 10.0f, true));
+        add("8m_refused_z", refused(0, 0.4f, 0.8f, 10.0f, true));
+        add("8m_refused_select_a_mark", refused(-1, 0.4f, 0.8f, 10.0f, true));
+        add("8m_refused_already_at_3", refused(3, 1.45f, 3.45f, -88.0f, true));
+        //the views
+        { ScreenModel m = marked(0.4f, 0.8f, 10.0f, 3, true); m.trackingControl.view = TrackingControlView::View::LIST; add("9l_list_selected_3", m); }
+        { ScreenModel m = marked(0.4f, 0.8f, 10.0f, 0, true); m.trackingControl.view = TrackingControlView::View::LIST; add("9l_list_selected_z", m); }
+        { ScreenModel m = marked(0.4f, 0.8f, 10.0f, 9, true); m.trackingControl.view = TrackingControlView::View::LIST;
+          m.marks.set(9, Mark::fromPose(-12.34f, -15.5f, -179.0f, 512300)); add("9l_list_widest_9", m); }
+        { ScreenModel m = marked(0.4f, 0.8f, 10.0f, 3, true); m.trackingControl.view = TrackingControlView::View::LIST;
+          m.trackingControl.question = Q::AT; m.trackingControl.questionMark = 3; add("9l_list_question", m); }
+        { ScreenModel m = marked(0.4f, 0.8f, 10.0f, 3, true); m.trackingControl.view = TrackingControlView::View::TRIP;
+          m.trip.distance = 12.35f; m.trip.turned = 245.0f; m.trip.top = 0.85f; m.trip.movingMillis = 102000; m.trip.since = 3; add("9t_trip_since_snap", m); }
+        { ScreenModel m = marked(0.4f, 0.8f, 10.0f, 3, true); m.trackingControl.view = TrackingControlView::View::TRIP; m.trip.since = 0; add("9t_trip_zero", m); }
+        auto editing = [&](uint8_t k, TrackingControlView::Field field){
+            ScreenModel m = marked(0.4f, 0.8f, 10.0f, int8_t(k), true);
+            m.trackingControl.b_editing = true;
+            m.trackingControl.editMark = k;
+            m.trackingControl.draft = marks.get(k);
+            m.trackingControl.field = field;
+            return m;
+        };
+        add("9e_editor_x", editing(3, TrackingControlView::Field::X));
+        add("9e_editor_t", editing(3, TrackingControlView::Field::T));
+        add("9e_editor_h_blank", editing(2, TrackingControlView::Field::H));
+        { ScreenModel m = editing(4, TrackingControlView::Field::Y); m.trackingControl.draft = Mark::fromPose(-12.345f, -99.999f, -179.9f, 5999900); add("9e_editor_widest", m); }
+        { ScreenModel m = editing(3, TrackingControlView::Field::X); m.trackingControl.question = Q::CLEAR; m.trackingControl.questionMark = 3; m.now = 100; add("9e_editor_clear_question", m);
+          m.trackingControl.holdProgress = 0.4f; add("9e_editor_clear_holding", m); }
+    }
+    //the Link page's history: a minute with a fade and two dropouts
+    {
+        ScreenModel m = base();
+        m.page = Page::LINK;
+        LinkHistory h;
+        for(int i = 0; i < 60; i++){
+            uint8_t loss = (i >= 20 && i < 24) ? uint8_t(10 + 20 * (i - 20)) : (i == 41 ? 100 : (i % 13 == 0 ? 5 : 0));
+            int dbm = -60 - int(25.0f * sinf(float(i) * 0.12f)) - (i >= 20 && i < 24 ? 15 : 0);
+            h.update(uint32_t(i) * 1000, loss, int16_t(dbm), i != 41);
+        }
+        h.view(m.linkHistory);
+        add("20c_page_link_history", m);
+        LinkHistory s;
+        for(int i = 0; i < 12; i++) s.update(uint32_t(i) * 1000, 0, int16_t(-58 - i), true);
+        s.view(m.linkHistory);
+        add("20d_page_link_history_first_12s", m);
+        m.b_linkUp = false;
+        s.update(12000, 100, 0, false);
+        s.view(m.linkHistory);
+        add("20e_page_link_history_lost", m);
+    }
     { ScreenModel m = base(); m.b_menuOpen = true; m.speedState = 0; m.pending.channel = 5; add("30_menu_channel", m); }
+    { ScreenModel m = base(); m.b_menuOpen = true; m.speedState = 0; m.pending.channel = RemoteSettings::radioOffChannel; add("30b_menu_radio_off", m); }
     { ScreenModel m = base(); m.b_menuOpen = true; m.speedState = 0; m.menuItem = SettingsMenu::Item::STICKS; add("31_menu_sticks", m); }
     { ScreenModel m = base(); m.b_menuOpen = true; m.speedState = 0; m.menuItem = SettingsMenu::Item::SAVE; m.pending.contrast = 2; m.saveProgress = 0.6f; add("32_menu_save", m); }
     { ScreenModel m = base(); m.b_menuOpen = true; m.speedState = 0; m.menuItem = SettingsMenu::Item::DIMMING; m.pending.dimming = 1; add("33_menu_dimming", m); }

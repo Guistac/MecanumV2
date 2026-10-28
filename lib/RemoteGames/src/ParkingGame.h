@@ -5,7 +5,7 @@
 //PARKING: drive the Mecanum stage vehicle (top view) into the bay of each of 22 stages, nose to the marked side, as
 //fast as possible; from stage 5 on, flats, wagons and turntables move; stages 13 to 22 force the Mecanum moves: crab
 //along corridors too low to turn in, turn on the spot between slots, strafe sideways into a slot, slanted bays and
-//timed machinery. Controls as on the real handheld in body frame: left stick Y forward and back, left stick X
+//timed machinery. From stage 3 on the vehicle starts askew. Every bay leaves at least 1.5 px each way. Controls as on the real handheld in body frame: left stick Y forward and back, left stick X
 //strafes, right stick X turns (right = clockwise on the screen).
 //The vehicle slides along walls; only an impact (driving in fast) costs 2 s and damages the vehicle by the impact's
 //speed (the meter under the time; grazes stay free). Damage carries over from stage to stage, each parked stage
@@ -22,17 +22,19 @@ public:
     void update(const GameInput& input) override;
     void draw(Adafruit_GFX& out) const override;
     bool isOver() const override { return phase == Phase::OVER; }
-    //total time in tenths of a second, penalties included; a stage left unparked at the time limit adds 60 s
+    //[owner 2026-10-28] the stages left unparked times stageWeight, plus the time in tenths of a second, penalties
+    //included: the most stages first, then the fastest. Shown as 412.3s (all parked) or 17/22 412s
     uint32_t score() const override;
+    static const uint32_t stageWeight = 100000;
     bool lowerScoreIsBetter() const override { return true; }
     void scoreText(char* out, size_t size, uint32_t value) const override;
     //WRECKED and the score when the vehicle was wrecked
     void overText(char* out, size_t size, uint32_t value) const override;
     void demo(GameInput& input) override;
     void helpLines(const char* lines[3]) const override {
-        lines[0] = "L stick: drive/strafe";
-        lines[1] = "R stick x: turn";
-        lines[2] = "Hit: +2 s and damage";
+        lines[0] = "L: move  R x: turn";
+        lines[1] = "Hit: +2 s and damage";
+        lines[2] = "Score: stages + time";
     }
 
     enum class Phase : uint8_t { INTRO, DRIVE, PARKED, WRECKED, OVER };
@@ -82,6 +84,8 @@ public:
     //a moving piece's shape now, without the contact margin
     Obb getMover(uint8_t index) const { return movers[index]; }
     bool isParkedNow() const;
+    //the stage's bay (tests): its centre, its marked side, and the room the vehicle has in it each way (px)
+    void getBay(float& cx, float& cy, float& headingDeg, float& alongRoom, float& acrossRoom) const;
     //true when the vehicle overlaps a piece, a moving piece, the clock's corner or leaves the stage (never in play)
     bool overlapsNow() const;
     //places the vehicle (tests): stopped, at the pose given

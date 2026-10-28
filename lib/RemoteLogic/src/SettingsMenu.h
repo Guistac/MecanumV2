@@ -35,7 +35,8 @@ public:
 
         switch(item){
             case Item::CHANNEL:
-                pending.channel = (pending.channel + RemoteSettings::channelCount + valueStep) % RemoteSettings::channelCount;
+                //0..F, then Off, then 0 again
+                pending.channel = (pending.channel + RemoteSettings::channelCount + 1 + valueStep) % (RemoteSettings::channelCount + 1);
                 break;
             case Item::CONTRAST:
                 pending.contrast = stepClamped(pending.contrast, valueStep, RemoteSettings::contrastLevels);

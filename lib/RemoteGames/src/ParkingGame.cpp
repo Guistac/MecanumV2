@@ -101,7 +101,7 @@ namespace{
             4, {{28, 16, 0}, {62, 16, 0, 1, {38, 8, 14, 16}, 70}, {98, 21.5f, 0, 2, {74, 8, 14, 16}, 70},
                 {111.5f, 21.5f, 0}}},
         //8: tight: over the piano, a quarter turn under the flat, down into a narrow pocket
-        {12, 6, 0, {61, 18, 11, 14}, 90,
+        {12, 6, 0, {61, 17, 11, 15}, 90,
             4, {{28, 13, 16, 9}, {62, 0, 12, 2}, {54, 18, 6, 14}, {73, 18, 6, 14}},
             0, {},
             4, {{46, 7.5f, 0}, {51, 8, 90}, {66, 9, 90}, {66, 25, 90}}},
@@ -128,12 +128,12 @@ namespace{
             4, {{20, 16, 0}, {47, 26, 0, 1, {29, 6, 12, 26}, 60}, {88, 26, 0, 2, {52, 20, 28, 12}, 60},
                 {113, 22, -90}}},
         //13: crab walk: facing up in a corridor too low to turn in, sideways all the way and down the step
-        {10, 16, -90, {104, 13, 12, 14}, -90,
+        {10, 16, -90, {104, 13, 12, 15}, -90,
             4, {{0, 7, 58, 3}, {0, 23, 48, 3}, {58, 12, 36, 3}, {48, 28, 80, 3}},
             0, {},
             5, {{30, 16, -90}, {52.5f, 16, -90}, {52.5f, 21.2f, -90, S}, {80, 21, -90, S}, {109.5f, 19.5f, -90}}},
         //14: three pivots: along the top slot, turn, down through the gap, turn, along the bottom, turn, up into the bay
-        {10, 5.2f, 0, {79, 1, 11, 13}, -90,
+        {10, 5.2f, 0, {79, 0, 11, 15}, -90,
             9, {{0, 11, 30, 2}, {0, 15, 34, 2}, {43, 15, 5, 2}, {46, 0, 2, 15}, {48, 20, 28, 2}, {76, 15, 4, 2},
                 {89, 15, 6, 2}, {93, 17, 2, 15}, {72, 0, 2, 15}},
             0, {},
@@ -144,13 +144,14 @@ namespace{
             3, {{30, 20, 26, 3, -45}, {71, 24, 15, 3, 45}, {83, 12, 15, 3, 45}},
             0, {},
             5, {{22, 5, 0}, {60, 5, 0}, {72, 7, 0, S}, {72, 7, 45, S}, {84, 19, 45, S}}},
-        //16: parallel parking: along the lane under the flat, turn round at its end, back under the flat and sideways
-        //up into the slot, nose to the left
-        {12, 25.8f, 0, {41, 10, 14, 10}, 180,
-            6, {{0, 20, 38, 2}, {38, 7, 2, 15}, {40, 7, 16, 2}, {56, 7, 2, 15}, {58, 20, 7, 2}, {73, 20, 9, 2}},
-            1, {{Kind::SLIDE, {66, 7, 6, 13}, 0, 12, 60, 90}},
-            7, {{52, 25.8f, 0}, {88, 25.8f, 0, 1, {62, 21, 14, 11}, 70}, {100, 21.5f, 0, S}, {100, 21.5f, 180, S},
-                {84, 25.8f, 180, S}, {47.5f, 25.8f, 180, 1, {62, 21, 14, 11}, 70}, {47.5f, 14.5f, 180, S}}},
+        //16: parallel parking past the piston: the lane is too low to turn in and the slot only just takes the vehicle,
+        //so it turns round in the open start, reverses along the lane under the piston and strafes up into the slot,
+        //nose to the left
+        {14, 12, 0, {78, 9, 15, 11}, 180,
+            5, {{34, 18, 19, 4}, {57, 18, 18, 4}, {75, 6, 2, 16}, {77, 6, 16, 2}, {93, 12, 35, 10}},
+            1, {{Kind::SLIDE, {53, 6, 4, 14}, 0, 12, 45, 70}},
+            6, {{16, 12, 180}, {16, 26.6f, 180}, {42, 26.6f, 180}, {72, 26.6f, 180, 1, {46, 21, 18, 11}, 70},
+                {85, 26.6f, 180, S}, {85, 14, 180, S}}},
         //17: twin turntables turning against each other: over the first, under the second, down into the bay
         {10, 16, 0, {106, 13, 11, 17}, 90,
             0, {},
@@ -165,7 +166,7 @@ namespace{
             6, {{26, 25.5f, 0}, {52, 25.5f, 0, 1, {33, 20, 12, 12}, 60}, {52, 5.5f, 0, S}, {76, 5.5f, 0, 2, {59, 0, 12, 12}, 60},
                 {76, 25.5f, 0, S}, {110, 22.5f, 0, 3, {83, 20, 12, 12}, 60}}},
         //19: slanted gates: each lets the vehicle through only lined up with it, a quarter turn between them
-        {10, 12, 0, {100, 17, 13, 11}, -45,
+        {10, 12, 0, {99, 17, 15, 11}, -45,
             8, {{27, 20, 7, 3, 45}, {37, 10, 7, 3, 45}, {31, 23, 3, 9}, {37, 0, 3, 9},
                 {56, 10, 7, 3, -45}, {66, 20, 7, 3, -45}, {60, 0, 3, 9}, {66, 23, 3, 9}},
             0, {},
@@ -173,19 +174,19 @@ namespace{
                 {49.5f, 22, -45, S}, {56.6f, 23.4f, -45, S}, {72.5f, 7.5f, -45, S}, {80, 10, -45, S}, {84, 18, -45, S},
                 {106, 22, -45, S}}},
         //20: crab under the pistons: facing down in a corridor too low to turn in, sideways past two drops
-        {8, 24.8f, 90, {108, 19, 12, 13}, 90,
+        {8, 24.8f, 90, {108, 17, 12, 15}, 90,
             3, {{0, 17, 36, 2}, {42, 17, 30, 2}, {78, 17, 24, 2}},
             2, {{Kind::SLIDE, {37, 4, 4, 12}, 0, 15, 40, 50}, {Kind::SLIDE, {73, 4, 4, 12}, 0, 15, 35, 70}},
             4, {{26, 24.8f, 90}, {55, 24.8f, 90, 1, {30, 18, 18, 14}, 50}, {91, 24.8f, 90, 2, {66, 18, 18, 14}, 50},
                 {113.5f, 25, 90, S}}},
         //21: slanted crab: sideways down the slanted corridor, too narrow to turn in, out into the slanted bay
-        {30, 9, -80, {98, 18, 13, 9}, -80,
+        {30, 9, -80, {97, 17, 15, 11}, -80,
             2, {{17, 3, 71, 3, 10}, {13, 20, 71, 3, 10}},
             0, {},
             3, {{55, 13.4f, -80}, {80, 17.8f, -80}, {104, 22, -80, S}}},
         //22: all of it: along the top slot, turn, down through the gap, sideways under two pistons, turn round, into
         //the slanted bay
-        {10, 5.2f, 0, {106, 17, 13, 11}, -45,
+        {10, 5.2f, 0, {105, 17, 15, 11}, -45,
             6, {{0, 11, 30, 2}, {0, 17, 34, 2}, {46, 0, 2, 17}, {43, 17, 15, 2}, {64, 17, 16, 2}, {86, 17, 10, 2}},
             2, {{Kind::SLIDE, {59, 3, 4, 12}, 0, 16, 35, 45}, {Kind::SLIDE, {81, 3, 4, 12}, 0, 16, 30, 60}},
             10, {{24, 5.2f, 0}, {38, 7, 0}, {38, 8.2f, 90, S}, {38, 24.8f, 90, S}, {50, 24.8f, 90, S},
@@ -348,9 +349,16 @@ void ParkingGame::startLevel(uint8_t index){
         movers[i] = moverAt(i, moverPhase[i]);
     }
     scrapeSpeed = 0.0f;
-    place(l.startX + (random.unit() - 0.5f) * 3.0f, l.startY + (random.unit() - 0.5f) * 2.0f,
-          (l.startHeadingDeg + (random.unit() - 0.5f) * 10.0f) * DEG);
-    //a tight start (a corridor too low to turn in): on its mark exactly
+    //from stage 3 on the vehicle starts askew, 15 to 30 degrees off its mark either way [owner 2026-10-28]; where that
+    //does not fit, half of it, and a tight start (a corridor too low to turn in) on its mark exactly
+    float skew = (random.unit() - 0.5f) * 10.0f;
+    if(index >= 2){
+        float amount = 15.0f + 15.0f * random.unit();
+        skew = random.below(2) ? amount : -amount;
+    }
+    float startX = l.startX + (random.unit() - 0.5f) * 3.0f, startY = l.startY + (random.unit() - 0.5f) * 2.0f;
+    place(startX, startY, (l.startHeadingDeg + skew) * DEG);
+    if(overlapsNow()) place(startX, startY, (l.startHeadingDeg + 0.5f * skew) * DEG);
     if(overlapsNow()) place(l.startX, l.startY, l.startHeadingDeg * DEG);
     freeTicks = 1000;
     parkedTicks = 0;
@@ -592,6 +600,17 @@ void ParkingGame::bump(float impactSpeed){
     sound().play(wreckCue);
 }
 
+void ParkingGame::getBay(float& cx, float& cy, float& headingDeg, float& alongRoom, float& acrossRoom) const {
+    const Level& l = levels[level];
+    cx = l.bay.x + (l.bay.w - 1) * 0.5f;
+    cy = l.bay.y + (l.bay.h - 1) * 0.5f;
+    headingDeg = l.bayHeadingDeg;
+    bool b_across = !isSlanted(l.bayHeadingDeg) && (l.bayHeadingDeg == 90 || l.bayHeadingDeg == -90);
+    float length = b_across ? l.bay.h : l.bay.w, width = b_across ? l.bay.w : l.bay.h;
+    alongRoom = (length - 1) * 0.5f - halfLength;
+    acrossRoom = (width - 1) * 0.5f - halfWidth;
+}
+
 bool ParkingGame::isParkedNow() const {
     const Level& l = levels[level];
     float cx[4], cy[4];
@@ -685,12 +704,19 @@ void ParkingGame::playGrains(){
 }
 
 uint32_t ParkingGame::score() const {
-    //ticks of 20 ms to tenths of a second
-    return getClockTicks() / 5 + uint32_t(levelCount - levelsDone) * 600;
+    //the stages left unparked first, then the time in tenths of a second (ticks of 20 ms; at most 10 min, under
+    //stageWeight): more stages always rank higher, the time decides between runs that got as far
+    return uint32_t(levelCount - levelsDone) * stageWeight + getClockTicks() / 5;
 }
 
 void ParkingGame::scoreText(char* out, size_t size, uint32_t value) const {
-    snprintf(out, size, "%lu.%lus", (unsigned long)(value / 10), (unsigned long)(value % 10));
+    uint32_t left = value / stageWeight, tenths = value % stageWeight;
+    //all parked: the time to the tenth; else the stages parked and the time in whole seconds
+    if(left == 0) snprintf(out, size, "%lu.%lus", (unsigned long)(tenths / 10), (unsigned long)(tenths % 10));
+    else{
+        unsigned parked = left > levelCount ? 0u : unsigned(levelCount - left);
+        snprintf(out, size, "%u/%u %lus", parked, unsigned(levelCount), (unsigned long)(tenths / 10));
+    }
 }
 
 void ParkingGame::overText(char* out, size_t size, uint32_t value) const {
@@ -698,27 +724,32 @@ void ParkingGame::overText(char* out, size_t size, uint32_t value) const {
         scoreText(out, size, value);
         return;
     }
-    char text[12];
-    scoreText(text, sizeof(text), value);
-    snprintf(out, size, "WRECKED %s", text);
+    uint32_t left = value / stageWeight;
+    unsigned parked = left > levelCount ? 0u : unsigned(levelCount - left);
+    snprintf(out, size, "WRECKED %u/%u", parked, unsigned(levelCount));
 }
 
 void ParkingGame::drawVehicle(Adafruit_GFX& out, uint16_t color) const {
-    float cx[4], cy[4];
-    corners(x, y, heading, cx, cy);
-    int16_t px[4], py[4];
-    for(int i = 0; i < 4; i++){
-        px[i] = int16_t(lroundf(cx[i]));
-        py[i] = int16_t(lroundf(cy[i]));
-    }
-    out.fillTriangle(px[0], py[0], px[1], py[1], px[2], py[2], color);
-    out.fillTriangle(px[0], py[0], px[2], py[2], px[3], py[3], color);
-    //the front: a dark windscreen line across the body, 2 px behind the nose
+    //every pixel whose centre lies in the body, as the slanted pieces (an even outline at any angle). The heading
+    //[owner 2026-10-28]: the nose is pointed (its front 4 px taper to a tip) and a dark line runs from the back to
+    //the taper, an arrow at any angle. Collisions keep the full rectangle
+    uint16_t ink = color == GameDraw::ON ? GameDraw::OFF : GameDraw::ON;
     float c = cosf(heading), s = sinf(heading);
-    float along = halfLength - 2.0f, across = halfWidth - 1.5f;
-    int16_t ax = int16_t(lroundf(x + along * c + across * s)), ay = int16_t(lroundf(y + along * s - across * c));
-    int16_t bx = int16_t(lroundf(x + along * c - across * s)), by = int16_t(lroundf(y + along * s + across * c));
-    out.drawLine(ax, ay, bx, by, color == GameDraw::ON ? GameDraw::OFF : GameDraw::ON);
+    const float edgeLength = halfLength - 0.1f, edgeWidth = halfWidth - 0.1f;
+    const float taper = 4.0f, tipWidth = 0.6f;
+    const float shaftFrom = -halfLength + 1.5f, shaftTo = edgeLength - taper;
+    float reach = halfLength + 1.0f;
+    for(int16_t py = int16_t(floorf(y - reach)); py <= int16_t(ceilf(y + reach)); py++){
+        for(int16_t px = int16_t(floorf(x - reach)); px <= int16_t(ceilf(x + reach)); px++){
+            float dx = px - x, dy = py - y;
+            float a = dx * c + dy * s, b = fabsf(-dx * s + dy * c);
+            if(fabsf(a) > edgeLength || b > edgeWidth) continue;
+            float into = a - (edgeLength - taper);
+            if(into > 0.0f && b > edgeWidth - into * (edgeWidth - tipWidth) / taper) continue;
+            bool b_line = b < 0.45f && a >= shaftFrom && a <= shaftTo;
+            out.drawPixel(px, py, b_line ? ink : color);
+        }
+    }
 }
 
 void ParkingGame::draw(Adafruit_GFX& out) const {

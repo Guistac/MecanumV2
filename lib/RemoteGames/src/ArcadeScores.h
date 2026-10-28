@@ -4,7 +4,8 @@
 
 //The arcade's scores and settings kept in EEPROM [D-157]: a top 3 per game with a 4-letter name, the sound mode and
 //the last name entered. The remote keeps EEPROM bytes 0 to 255 for itself; the arcade's block starts at 256 (the
-//board's ArcadeStore adds it). Layout of the block (offsets in it):
+//board's ArcadeStore adds it) and may grow to 511: the Tracking page's marks start at 512 (MarkStore). Layout of the
+//block (offsets in it):
 //
 //  0       marker 0xA7
 //  1       layout version 1

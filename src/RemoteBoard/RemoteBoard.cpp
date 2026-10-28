@@ -45,7 +45,8 @@ void RemoteBoard::loadSettings(){
 void RemoteBoard::saveSettings(const RemoteSettings& newSettings){
     if(newSettings.channel != settings.channel){
         EEPROM.write(RemoteSettings::channelAddress, newSettings.channel);
-        radio.setChannel(newSettings.channel);
+        //Off keeps the radio on its channel, listening; it only stops sending (sendData)
+        if(!newSettings.isRadioOff()) radio.setChannel(newSettings.channel);
     }
     if(newSettings.contrast != settings.contrast) EEPROM.write(RemoteSettings::contrastAddress, newSettings.contrast);
     if(newSettings.dimming != settings.dimming) EEPROM.write(RemoteSettings::dimmingAddress, newSettings.dimming);
@@ -93,6 +94,23 @@ void RemoteBoard::updateCalibration(bool b_save, bool b_cancel, uint32_t now){
     playSound(RemoteSounds::Sound::SAVED);
 }
 
+//the marks' block (MarkStore: the layout), read once at boot; a blank or foreign block reads as no marks
+void RemoteBoard::loadMarks(){
+    uint8_t bytes[MarkStore::size];
+    for(int i = 0; i < MarkStore::size; i++) bytes[i] = EEPROM.read(MarkStore::address + i);
+    marks.fromBytes(bytes);
+}
+
+//after a confirmed change, after the frame: only the bytes that differ (a write can block for a flash erase, H12)
+void RemoteBoard::writeMarks(){
+    b_marksDirty = false;
+    uint8_t bytes[MarkStore::size];
+    marks.toBytes(bytes);
+    for(int i = 0; i < MarkStore::size; i++){
+        if(EEPROM.read(MarkStore::address + i) != bytes[i]) EEPROM.write(MarkStore::address + i, bytes[i]);
+    }
+}
+
 void RemoteBoard::recordBoot(){
     resetCause = Watchdog::readResetCause();
     uint8_t bytes[ResetHistory::size];
@@ -129,7 +147,8 @@ void RemoteBoard::initialize(){
     //The channel is remembered until the chip runs.
     loadStickCalibration();
     arcade.setStore(&arcadeStore);
-    radio.setChannel(settings.channel);
+    loadMarks();
+    radio.setChannel(settings.isRadioOff() ? RemoteSettings::defaultChannel : settings.channel);
     radio.initialize(1);
     Watchdog::feed();
 
@@ -183,6 +202,7 @@ void RemoteBoard::update(){
     //the frame first, then the screen: drawing never delays the controls (H13)
     sendData();
     arcade.saveDeferred();      //after the frame: an EEPROM write never delays it
+    if(b_marksDirty) writeMarks();
     receiveData();
     link.update(millis());
 
@@ -242,6 +262,8 @@ void RemoteBoard::updateOperatorLogic(){
         b_next = false;
     }
     if((b_previous || b_next) && menu.isOpen()) closeMenu();
+    //the Tracking page's controls; a pushbutton that cancels a question there changes no page
+    updateTracking(b_previous, b_next, now);
 
     bool b_menuActivity = updateMenu(now);
     Page pageBefore = pages.getPage();
@@ -292,7 +314,8 @@ void RemoteBoard::updateOperatorLogic(){
         if(fabsf(v) > deflection) deflection = fabsf(v);
     }
     bool b_sticksHaveAJob = menu.isOpen() || b_calibrating || b_calibrationResult || pages.getPage() == Page::SETTINGS ||
-                            arcade.isActive() || b_arcadeLoading || !b_joystickZeroCaptured || stopwatch.sticksBusy();
+                            arcade.isActive() || b_arcadeLoading || !b_joystickZeroCaptured || stopwatch.sticksBusy() ||
+                            pages.getPage() == Page::TRACKING;
     b_sticksOffWarning = deflection > 0.15f && isSpeedSwitchOff() && !b_sticksHaveAJob;
     bool b_grind = b_sticksOffWarning && RemoteSounds::isAllowed(RemoteSounds::Sound::CLICK, settings.sound);
     if(b_grind && now - grindMillis >= RemoteSounds::grindPeriodMillis){
@@ -342,6 +365,88 @@ void RemoteBoard::updateStopwatch(uint32_t now){
     if((events & StopwatchControl::TIME_UP) && soundPlayer.playingPriority(SoundLayer::FRONT) < SoundPriority::ALARM){
         playSound(S::TIME_UP);
     }
+}
+
+bool RemoteBoard::displayPose(float& x, float& y, float& heading){
+    x = robotProxy.motion.poseX;
+    y = robotProxy.motion.poseY;
+    heading = robotProxy.motion.heading;
+    bool b_live = Reply::availability(robotProxy.b_connected, robotProxy.motion) == Reply::MotionAvailability::LIVE;
+    if(!b_live || isnan(x) || isnan(y) || isnan(heading)) return false;
+    poseZero.apply(x, y, heading);
+    return true;
+}
+
+//the Tracking page's controls (lib/RemoteLogic/src/TrackingControl.h, the control map there): only on that page, not
+//in the menu, the calibration or the games, and not before the sticks are zeroed. Edit mode at OFF, drive mode at
+//SLOW and FAST. Display only: the stick buttons and sticks go out as before
+void RemoteBoard::updateTracking(bool& b_previous, bool& b_next, uint32_t now){
+    TrackingControl::Inputs in;
+    in.b_active = TrackingMap::controlsPage(pages.getPage()) && !menu.isOpen() && !arcade.isActive() && !b_arcadeLoading
+               && !b_calibrating && !b_calibrationResult && b_joystickZeroCaptured;
+    in.b_speedOff = isSpeedSwitchOff();
+    in.sticks[0] = leftJoystick.getXValue();
+    in.sticks[1] = leftJoystick.getYValue();
+    in.sticks[2] = rightJoystick.getXValue();
+    in.sticks[3] = rightJoystick.getYValue();
+    in.b_leftHeld = leftJoystick.isPressed();
+    in.b_rightHeld = rightJoystick.isPressed();
+    in.b_pushbutton = b_previous || b_next;
+    in.b_poseKnown = displayPose(in.x, in.y, in.heading);
+    in.b_watchRunning = stopwatch.stopwatch().isRunning();
+    in.watchMillis = stopwatch.stopwatch().elapsed(now);
+    in.b_run = timedRun.isRunning();
+    in.runTarget = timedRun.target();
+    in.now = now;
+    uint32_t events = trackingControl.update(in);
+    if(events == TrackingControl::NONE) return;
+    b_inputActivity = true;
+    if(events & TrackingControl::BUTTON_SPENT){
+        b_previous = false;
+        b_next = false;
+    }
+    using S = RemoteSounds::Sound;
+    using T = TrackingControl;
+    if(events & T::ZOOM){ trackingMap.zoom(now); playSound(S::VALUE); }
+    if(events & T::CLEAR_TRAIL){ trackingMap.clearTrail(); playSound(S::CLICK); }
+    if(events & T::PLAY_PAUSE){
+        //play a timed run to the selected mark (from the pose now), or pause / resume it (TargetRun)
+        TargetRun::Result result = timedRun.click(marks, trackingControl.getSelected(), in.b_poseKnown, in.x, in.y, in.heading,
+                                             trackingControl.pressMillis(), now);
+        if(result == TargetRun::REFUSED) playSound(S::REFUSED);
+        else playSound(result == TargetRun::PAUSED ? S::TIMER_STOP : S::TIMER_START);
+    }
+    if(events & T::REWIND){ timedRun.rewind(); playSound(S::TIMER_RESET); }
+    if(events & T::SELECTED) timedRun.acknowledge();
+    if(events & T::SNAP){
+        uint8_t k = trackingControl.snapMark();
+        const Mark& mark = marks.get(k);
+        float mh = k == MarkStore::zero ? 0.0f : mark.heading();
+        if(poseZero.snap(robotProxy.motion.poseX, robotProxy.motion.poseY, robotProxy.motion.heading, mark.x(), mark.y(), mh)){
+            b_frameChanged = true;
+            tripSince = k;
+            playSound(S::SAVED);
+        }
+        else playSound(S::REFUSED);
+    }
+    //a run keeps the plan it started with: changing or clearing its mark meanwhile changes nothing until the next play
+    if(events & T::MARKS_CHANGED) b_marksDirty = true;
+    if(events & (T::STORED | T::EDIT_SAVED | T::MARK_CLEARED | T::ALL_CLEARED)) playSound(S::SAVED);
+    if(events & (T::CANCELLED | T::TIMED_OUT | T::EDIT_LEFT)) playSound(S::DISCARDED);
+    if(events & T::REFUSED) playSound(S::REFUSED);
+    if(events & T::EDIT_OPENED) playSound(S::TIMER_EDIT);
+    if(events & T::ASKED) playSound(S::VALUE);
+    if(events & (T::SELECTED | T::VIEW_CHANGED | T::FIELD)) playSound(S::CLICK);
+    if(events & T::STEP) playSound(S::VALUE);
+    if(events & T::STEP_LIMIT) playSound(S::BUMP);
+}
+
+//every refresh: the timed run against the rover's displayed pose (TargetRun: the pace while the stopwatch runs, the
+//arrival, which stops the stopwatch; the stopwatch reset elsewhere cancels the run)
+void RemoteBoard::updateRun(uint32_t now){
+    float x, y, heading;
+    bool b_pose = displayPose(x, y, heading);
+    if(timedRun.update(b_pose, x, y, heading, now)) playSound(RemoteSounds::Sound::TIMER_STOP);
 }
 
 //the games [D-157]: in with both stick buttons held 2 s on the About page with the speed switch at OFF (sticks
@@ -476,8 +581,9 @@ bool RemoteBoard::updateMenu(uint32_t now){
 StatusView RemoteBoard::selectStatus(uint32_t now){
     StatusInputs in;
     in.estop = estop.getState();
-    //the USB remote does not use the radio
-    if(!linkPath.isUsb()){
+    //the USB remote does not use the radio, nor one switched off
+    in.b_radioOff = isRadioOff();
+    if(!linkPath.isUsb() && !in.b_radioOff){
         in.b_radioFault = !radio.isInitialized();
         in.radioFaultMillis = radio.getFaultMillis();
     }
@@ -493,11 +599,13 @@ StatusView RemoteBoard::selectStatus(uint32_t now){
 
 void RemoteBoard::updateLeds(){
     LedInputs in;
-    if(!linkPath.isUsb()) in.b_radioFault = !radio.isInitialized();
+    in.b_radioOff = isRadioOff();
+    if(!linkPath.isUsb() && !in.b_radioOff) in.b_radioFault = !radio.isInitialized();
     in.b_localEstop = !estop.isClear();
     in.b_finder = robotProxy.b_connected && robotProxy.functionButtonPressed;
     in.b_linkUp = robotProxy.b_connected;
     in.reportedState = robotProxy.status;
+    in.vehicle = robotProxy.motion.vehicleState;
     LedOutput out = Leds::pattern(in, millis());
     //a pressed button lights itself, fully
     leftLedButton.setBrightness(leftLedButton.isPressed() ? 1.0f : (out.b_left ? out.leftLevel : 0.0f));
@@ -562,6 +670,8 @@ void RemoteBoard::usbExchange(uint8_t* outgoingFrame){
 void RemoteBoard::sendData(){
     if(!radioSendEvent.shouldTrigger()) return;
     if(!linkPath.isUsb() && !radio.isInitialized()) return;
+    //[owner 2026-10-28] radio off: nothing goes out (the vehicle sees this remote gone, as when it is switched off)
+    if(isRadioOff()) return;
 
     UplinkControls controls;
     controls.b_disable = leftLedButton.isPressed();
@@ -610,7 +720,7 @@ void RemoteBoard::receiveData(){
     //radio listen; the USB remote ignores what it hears (another remote's receiver on the channel)
     uint8_t incomingFrame[128];
     uint8_t length = 0;
-    if(radio.receive(incomingFrame, sizeof(incomingFrame), &length) && !linkPath.isUsb()) handleReply(incomingFrame, length);
+    if(radio.receive(incomingFrame, sizeof(incomingFrame), &length) && !linkPath.isUsb() && !isRadioOff()) handleReply(incomingFrame, length);
 
     if(millis() - robotProxy.lastReceiveTime > 500) {
         robotProxy.b_connected = false;

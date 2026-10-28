@@ -4,6 +4,11 @@
 namespace Status{
 
     StatusView select(const StatusInputs& in){
+        //the remote as a game console: its own E-stop and the link do not matter, only its battery
+        if(in.b_radioOff){
+            if(in.battery == BatteryState::CRITICAL) return {BigMessage::BATTERY_CRITICAL, StatusLine::NORMAL};
+            return {BigMessage::RADIO_OFF, in.b_thankYou ? StatusLine::THANK_YOU : StatusLine::NORMAL};
+        }
         if(in.estop != EstopState::CLEAR){
             BigMessage message = in.estop == EstopState::WIRING ? BigMessage::ESTOP_WIRING : BigMessage::ESTOP;
             bool b_connected = in.b_linkUp && !in.b_radioFault;
@@ -22,6 +27,9 @@ namespace Status{
             case StickGuard::Release::BOTH: return {BigMessage::RELEASE_BOTH, line};
             default: break;
         }
+        //[D-163] without Stacato the receiver reports its own leftover state (it starts E-stopped): say No Stacato,
+        //not an alarm
+        if(in.vehicle == Reply::VehicleState::NO_STACATO) return {BigMessage::NOT_RUNNING, line};
         switch(RobotState(in.reportedState)){
             case RobotState::DISABLING: return {BigMessage::DISABLING, line};
             case RobotState::DISABLED: return {BigMessage::DISABLED, line};
@@ -56,6 +64,10 @@ namespace Status{
         }
     }
 
+    bool isLinkAlarm(BigMessage message){
+        return message == BigMessage::RADIO_FAULT || message == BigMessage::NO_LINK;
+    }
+
     const char* text(BigMessage message){
         switch(message){
             case BigMessage::ESTOP: return "E-STOP";
@@ -73,6 +85,7 @@ namespace Status{
             case BigMessage::ENABLING: return "Enabling";
             case BigMessage::ENABLED: return "Enabled";
             case BigMessage::NOT_RUNNING: return "Not running";
+            case BigMessage::RADIO_OFF: return "Radio off";
             default: return "???";
         }
     }

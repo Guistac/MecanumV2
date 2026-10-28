@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include <stdio.h>
+#include "StickRepeater.h"
 #include <stddef.h>
 #include <limits.h>
 #include <stdint.h>
@@ -230,6 +231,33 @@ public:
         return events;
     }
 
+    //the Tracking page's timed run (TargetRun, TimedTarget.h) drives the one timer: a play restarts it from 0:00
+    //(restart), the right click during the run pauses / resumes it timed at its press (playPause), the arrival stops it
+    //(stop), the left hold resets it like the left click here (rewind: to 0:00 or the set countdown, stopped). A run's
+    //time is always elapsed(), counting up from its start whether or not a countdown is set. They return STARTED /
+    //STOPPED / RESET
+    uint16_t playPause(uint32_t pressMillis){
+        if(watch.isRunning()){ watch.stop(pressMillis); return STOPPED; }
+        watch.start(pressMillis);
+        return STARTED;
+    }
+    uint16_t restart(uint32_t now){
+        watch.reset();
+        b_editing = false;
+        watch.start(now);
+        return RESET | STARTED;
+    }
+    uint16_t stop(uint32_t now){
+        if(!watch.isRunning()) return NONE;
+        watch.stop(now);
+        return STOPPED;
+    }
+    uint16_t rewind(){
+        watch.reset();
+        b_editing = false;
+        return RESET;
+    }
+
     bool isEditing() const { return b_editing; }
     bool sticksBusy() const { return b_sticksBusy; }
     const Stopwatch& stopwatch() const { return watch; }
@@ -264,40 +292,8 @@ private:
     bool b_editing = false;
     bool b_sticksBusy = false;
 
-    //one stick axis of the set time: a step on the push (60 %), re-armed under 30 %, repeated while held: the first
-    //repeat after firstRepeatMillis, then every repeatMillis, every fastRepeatMillis once held fastAfterMillis
-    struct Repeater{
-        int8_t direction = 0;
-        bool b_waitForRelease = false;
-        uint32_t holdStartMillis = 0;
-        uint32_t nextMillis = 0;
-
-        void start(float value){
-            direction = 0;
-            b_waitForRelease = value >= rearmThreshold || value <= -rearmThreshold;
-        }
-
-        //returns -1, 0 or +1
-        int8_t update(float value, uint32_t now, uint32_t repeatMillis, uint32_t fastAfterMillis, uint32_t fastRepeatMillis){
-            if(b_waitForRelease){
-                if(value < rearmThreshold && value > -rearmThreshold) b_waitForRelease = false;
-                return 0;
-            }
-            if(direction != 0){
-                bool b_released = direction > 0 ? value < rearmThreshold : value > -rearmThreshold;
-                if(b_released){ direction = 0; return 0; }
-                if(int32_t(now - nextMillis) < 0) return 0;
-                nextMillis = now + (now - holdStartMillis >= fastAfterMillis ? fastRepeatMillis : repeatMillis);
-                return direction;
-            }
-            if(value >= stepThreshold) direction = 1;
-            else if(value <= -stepThreshold) direction = -1;
-            else return 0;
-            holdStartMillis = now;
-            nextMillis = now + firstRepeatMillis;
-            return direction;
-        }
-    };
+    //one stick axis of the set time (StickRepeater: the first repeat after firstRepeatMillis, then every repeatMillis)
+    using Repeater = StickRepeater;
     Repeater seconds;   //right stick up / down
     Repeater minutes;   //right stick right / left
 

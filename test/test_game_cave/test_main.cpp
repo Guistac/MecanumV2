@@ -231,7 +231,9 @@ void test_demo_plays_fair_and_well_at_first(){
             game.demo(input);
             TEST_ASSERT_FALSE(input.held[1]);
             TEST_ASSERT_FALSE(input.clicked[1]);
-            for(int i = 0; i < 4; i++) TEST_ASSERT_EQUAL_FLOAT(0.0f, input.stick[i]);
+            //the sticks only to fire: the right stick pushed right
+            for(int i = 0; i < 4; i++) if(i != 2) TEST_ASSERT_EQUAL_FLOAT(0.0f, input.stick[i]);
+            TEST_ASSERT_TRUE(input.stick[2] == 0.0f || input.stick[2] == 1.0f);
             game.update(input);
         }
         TEST_ASSERT_FALSE(game.isCrashed());
@@ -293,17 +295,26 @@ void test_ping_every_hundred_metres_and_the_crash(){
     for(int t = 0; t < 20000 && !game.isOver(); t++){
         GameInput input;
         game.demo(input);
-        uint32_t metres = game.score();
+        uint32_t metres = game.distance();
         uint32_t cues = sink.cueCount(SoundLayer::FRONT);
         bool b_wasCrashed = game.isCrashed();
         game.update(input);
         uint32_t played = sink.cueCount(SoundLayer::FRONT) - cues;
+        //the demo's shots and hits sound too: not counted here
+        uint32_t seen = 0, extra = 0;
+        for(uint8_t back = 0; back < RecordingSink::keep && seen < played; back++){
+            const RecordingSink::Play* p = sink.last(SoundLayer::FRONT, back);
+            if(!p || p->b_note) continue;
+            seen++;
+            if(p->cue.notes == game.shotSound().notes || p->cue.notes == game.hitSound().notes) extra++;
+        }
+        played -= extra;
         if(!b_wasCrashed && game.isCrashed()){
             TEST_ASSERT_EQUAL_UINT32(1, played);
             TEST_ASSERT_TRUE(sink.last(SoundLayer::FRONT)->cue.notes == game.crashSound().notes);
             b_crashSound = true;
         }
-        else if(game.score() / 100 > metres / 100){
+        else if(game.distance() / 100 > metres / 100){
             TEST_ASSERT_EQUAL_UINT32(1, played);
             //the ping is played first; the rotor's chop of that tick may follow (it yields on the board)
             bool b_ping = false;
@@ -318,8 +329,8 @@ void test_ping_every_hundred_metres_and_the_crash(){
     }
     TEST_ASSERT_TRUE(game.isOver());
     TEST_ASSERT_TRUE(b_crashSound);
-    TEST_ASSERT_TRUE(game.score() >= 100);
-    TEST_ASSERT_EQUAL_UINT32(game.score() / 100, pings);
+    TEST_ASSERT_TRUE(game.distance() >= 100);
+    TEST_ASSERT_EQUAL_UINT32(game.distance() / 100, pings);
     //after the crash, nothing more (the debris falls in silence)
     uint32_t before = sink.total();
     run(game, GameInput(), 50);
@@ -338,6 +349,81 @@ void test_ping_every_hundred_metres_and_the_crash(){
     }
     TEST_ASSERT_TRUE(b_noise);
     TEST_ASSERT_TRUE(firstWhistle > 4 * lastWhistle);
+}
+
+//[owner 2026-10-28] bats come from about 65 m on, now and then, and always leave a way past them: their band inside
+//the cave, at least batWayPast rows open above or below it
+void test_bats_leave_a_way_past(){
+    uint32_t seen = 0;
+    for(uint32_t seed = 1; seed <= 6; seed++){
+        CaveGame game;
+        game.reset(seed);
+        for(int t = 0; t < 50 * 60 && !game.isCrashed(); t++){
+            GameInput input;
+            game.demo(input);
+            game.update(input);
+            for(uint8_t i = 0; i < CaveGame::maxBats; i++){
+                int16_t x, top, bottom;
+                if(!game.getBat(i, x, top, bottom) || x < 0 || x + CaveGame::batWidth > CaveGame::width) continue;
+                if(x == CaveGame::width - CaveGame::batWidth) seen++;
+                TEST_ASSERT_TRUE(game.distance() >= 60);
+                for(int16_t c = x; c < x + CaveGame::batWidth; c++){
+                    TEST_ASSERT_TRUE(top >= game.ceilingAt(c));
+                    TEST_ASSERT_TRUE(bottom < game.floorAt(c));
+                    int16_t above = top - game.ceilingAt(c), below = game.floorAt(c) - bottom - 1;
+                    TEST_ASSERT_TRUE(above >= CaveGame::batWayPast || below >= CaveGame::batWayPast);
+                }
+            }
+        }
+    }
+    TEST_ASSERT_TRUE(seen >= 6);
+}
+
+//a stick pushed right fires from the nose, a shot every 0.4 s while held; a bat shot is gone and worth 10 m
+void test_a_shot_bat_is_ten_metres(){
+    CaveGame game;
+    RecordingSink sink;
+    game.setSound(&sink);
+    game.reset(3);
+    GameInput hover;
+    hover.stick[1] = CaveGame::gravity / CaveGame::thrust;
+    hover.clicked[0] = true;
+    game.update(hover);
+    hover.clicked[0] = false;
+    TEST_ASSERT_FALSE(game.isReady());
+    int16_t gun = int16_t(lroundf(game.getCraftY())) + 2;
+    game.placeBat(100, gun);
+    GameInput fire = hover;
+    fire.stick[2] = 1.0f;
+    game.update(fire);
+    TEST_ASSERT_EQUAL_UINT8(1, game.getShotCount());
+    TEST_ASSERT_TRUE(sink.last(SoundLayer::FRONT) != nullptr);
+    //held: no second shot before the cooldown
+    for(int t = 0; t < CaveGame::shotCooldownTicks - 1; t++) game.update(fire);
+    TEST_ASSERT_TRUE(game.getShotCount() <= 1 || game.getBatCount() == 0);
+    for(int t = 0; t < 50 && game.getBatCount(); t++) game.update(hover);
+    TEST_ASSERT_EQUAL_UINT8(0, game.getBatCount());
+    TEST_ASSERT_EQUAL_UINT16(CaveGame::batBonus, game.getBonus());
+    TEST_ASSERT_EQUAL_UINT32(game.distance() + CaveGame::batBonus, game.score());
+    TEST_ASSERT_FALSE(game.isCrashed());
+    TEST_ASSERT_TRUE(CaveGame::firesFrom(fire));
+    GameInput up;
+    up.stick[1] = 1.0f;
+    TEST_ASSERT_FALSE(CaveGame::firesFrom(up));
+}
+
+//a bat touched crashes the craft like rock
+void test_touching_a_bat_crashes(){
+    CaveGame game;
+    game.reset(3);
+    GameInput hover;
+    hover.stick[1] = CaveGame::gravity / CaveGame::thrust;
+    hover.clicked[0] = true;
+    game.update(hover);
+    hover.clicked[0] = false;
+    game.placeBat(CaveGame::craftX + CaveGame::craftWidth + 2, int16_t(lroundf(game.getCraftY())) + 2);
+    for(int t = 0; t < 25 && !game.isCrashed(); t++) game.update(hover);
+    TEST_ASSERT_TRUE(game.isCrashed());
 }
 
 //sound never changes the game: the demo plays the same with a sink and without; without one nothing is heard
@@ -380,6 +466,9 @@ int main(){
     RUN_TEST(test_demo_plays_fair_and_well_at_first);
     RUN_TEST(test_rotor_chop_rate_follows_the_thrust);
     RUN_TEST(test_ping_every_hundred_metres_and_the_crash);
+    RUN_TEST(test_bats_leave_a_way_past);
+    RUN_TEST(test_a_shot_bat_is_ten_metres);
+    RUN_TEST(test_touching_a_bat_crashes);
     RUN_TEST(test_sound_leaves_the_demo_deterministic_and_silent_without_a_sink);
     return UNITY_END();
 }

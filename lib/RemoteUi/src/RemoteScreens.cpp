@@ -189,6 +189,7 @@ namespace RemoteUi{
         char channel[8];
         if(m.b_direct) snprintf(channel, sizeof(channel), m.b_dropout ? "DROP" : "USB");
         else if(m.b_usbWaiting && blink(m.now, 1000, 500)) snprintf(channel, sizeof(channel), "USB");
+        else if(m.b_radioOff) snprintf(channel, sizeof(channel), "RF OFF");
         else snprintf(channel, sizeof(channel), "CH%X", m.channel);
         //after the signal bars and the reply triangle (5 px), 2 px clear of it; then the alive dot
         int16_t channelX = signalWidth + 1 + 5 + 2;
@@ -242,6 +243,7 @@ namespace RemoteUi{
             case BigMessage::ENABLING: return "Enabling";
             case BigMessage::DISABLED: return "Disabled";
             case BigMessage::DISABLING: return "Disabling";
+            case BigMessage::RADIO_OFF: return "Radio off";
             default: return "Unknown";
         }
     }
@@ -310,7 +312,9 @@ namespace RemoteUi{
         //alarms: a filled banner with negative text; the own E-stop and the ramp pulse between banner and plain text
         if(Status::isAlarm(message)){
             bool b_filled = true;
+            //an E-stop's banner pulses, own or not, in step with the LEDs (Leds::estopFlash)
             if(message == BigMessage::ESTOP) b_filled = blink(m.now, 800, 500);
+            if(message == BigMessage::EXT_ESTOP && shownVehicleState(m) != Reply::VehicleState::AXIS_FAULT) b_filled = blink(m.now, 800, 500);
             if(message == BigMessage::STOPPING) b_filled = blink(m.now, 300, 150);
             uint16_t ink = b_filled ? OFF : ON;
             if(b_filled) g.fillRoundRect(0, middleTop, 127, middleHeight, 3, ON);
@@ -542,6 +546,7 @@ namespace RemoteUi{
         switch(page){
             case Page::MOTION: return "Motion";
             case Page::MOTORS: return "Motors";
+            case Page::TRACKING: return "Tracking";
             case Page::LINK: return "Link";
             case Page::RADIO: return "Radio";
             case Page::BATTERY: return "Battery";
@@ -572,43 +577,32 @@ namespace RemoteUi{
     //——— the Motion page [D-161, D-163] ———
 
     //A second main page next to Status: no return to Status after 10 s, the stopwatch's controls work here too, and it
-    //shows the same timer [D-160]. Two columns of three lines in rows 9..31: the body velocity on the left, the pose
-    //on the right. The wheels have their own page (Motors).
+    //shows the same timer [D-160]. Three lines in rows 9..31, one per axis, its label in the middle: the body velocity
+    //left of it, the pose right of it. The wheels have their own page (Motors).
     //  title line (rows 0..6, no page dots, as on Status): the motion icon, the vehicle state in capitals (small: a
     //  descender would touch the bar's row), the alive dot after it, and the timer right-aligned in plain digits (m:ss.t,
     //  mm:ss; blinking slowly when stopped; past zero the negative time, blinking with the bar, steady when stopped)
     //  row 8: the countdown bar, drawn by the Status page's code (notches over the content's tops in row 9)
-    //  left column (x 0..61): the body velocity, radio axes: X+ right, Y+ forward in m/s with 3 decimals, W+ clockwise
-    //  in deg/s with 1; label left, unit right-aligned, the value right-aligned before it
-    //  right column (x 68..126): the pose in Stacato's world frame: x stage right, y upstage in m with 2 decimals, the
-    //  heading in deg with 1 (counter-clockwise, 0 upstage); its label is an arrow pointing upstage, drawn in rows
-    //  26..31 so it keeps clear of the descender of y (row 24); -- without a value
-    //  no motion data (no link, nothing fresh from Stacato): the page says so on the text lines, title and bar stay
-    //  editing the countdown: the SET pill in the middle of rows 9..31 instead of the content, the bar hidden
+    //  labels X, Y, R (x 61..65): the axis of both values on the line
+    //  left, right-aligned at x 54: the body velocity, radio axes: X+ right, Y+ forward in m/s with 3 decimals, R+
+    //  clockwise in deg/s with 1
+    //  right, right-aligned at x 110: the pose in Stacato's world frame: x stage right, y upstage in m with 3 decimals,
+    //  the heading in deg with 1 and a degree ring after it (counter-clockwise, 0 upstage); -- without a value
+    //  no units but "/s" after each velocity (it tells velocity from position), "m" after x and y and the heading's
+    //  degree; title: the page's name (the vehicle state is the Status page's); no plus signs:
+    //  a minus only
+    //  zeroed (the frame switch turned to WORLD, PoseZero): the pose is the movement since, in the vehicle's frame at
+    //  that moment (y forward, x right)
+    //  no motion data (no link, nothing fresh from Stacato): the page says so on the text lines (without a link the
+    //  title says NO LINK already), title and bar stay
+    //  editing the countdown: in place of the timer, SET m:ss and the stick marks in plain text; the content stays, the
+    //  bar is hidden
     static const int16_t motionContentTop = 9;
-    static const int16_t velocityLabelX = 0;
-    static const int16_t velocityValueRight = 42;
-    static const int16_t velocityUnitRight = 61;
-    static const int16_t poseLabelX = 68;
-    static const int16_t poseValueRight = 119;
-    static const int16_t poseUnitRight = 126;
+    static const int16_t axisLabelX = 61;
+    static const int16_t velocityValueRight = 54;
+    static const int16_t poseValueRight = 110;
 
-    //the heading's label, 5 x 6 (rows 1..6 of a text line): an arrow pointing upstage
-    static const uint8_t headingBitmap[] = { 0x20, 0x70, 0xA8, 0x20, 0x20, 0x20 };
-
-    //the units: the font's degree sign is a 4 x 4 blob that reads as a dot, so deg is drawn as a 3 x 3 ring (its
-    //corners off) at the top of the line, deg/s that ring and "/s" 1 px after it
-    enum class Unit : uint8_t{ METRES_PER_SECOND, DEGREES_PER_SECOND, METRES, DEGREES };
-
-    static int16_t unitWidth(Adafruit_GFX& g, Unit unit){
-        switch(unit){
-            case Unit::METRES_PER_SECOND: return textWidth(g, pixelFont, "m/s");
-            case Unit::DEGREES_PER_SECOND: return 3 + 1 + textWidth(g, pixelFont, "/s");
-            case Unit::METRES: return textWidth(g, pixelFont, "m");
-            default: return 3;
-        }
-    }
-
+    //the font's degree sign is a 4 x 4 blob that reads as a dot: a 3 x 3 ring (its corners off) at the line's top
     static void degreeRing(Adafruit_GFX& g, int16_t x, int16_t top){
         g.drawPixel(x + 1, top, ON);
         g.drawPixel(x, top + 1, ON);
@@ -616,52 +610,27 @@ namespace RemoteUi{
         g.drawPixel(x + 1, top + 2, ON);
     }
 
-    //right-aligned at rightX
-    static void unitRight(Adafruit_GFX& g, int16_t rightX, int16_t top, Unit unit){
-        int16_t x = rightX - unitWidth(g, unit) + 1;
-        switch(unit){
-            case Unit::METRES_PER_SECOND: text(g, pixelFont, x, top, "m/s"); break;
-            case Unit::DEGREES_PER_SECOND: degreeRing(g, x, top); text(g, pixelFont, x + 4, top, "/s"); break;
-            case Unit::METRES: text(g, pixelFont, x, top, "m"); break;
-            default: degreeRing(g, x, top); break;
-        }
-    }
-
-    //label left, value and unit right, on a content line
-    static void columnLine(Adafruit_GFX& g, int16_t labelX, int16_t valueRight, int16_t unitX, int index,
-                           const char* label, const char* value, Unit unit){
-        int16_t top = motionContentTop + index * 8;
-        if(label) text(g, pixelFont, labelX, top, label);
-        textRight(g, pixelFont, valueRight, top, value);
-        unitRight(g, unitX, top, unit);
-    }
-
-    //a value as printed, without a minus on zero
-    static void signedValue(char* buffer, size_t size, float value, int decimals){
+    //a value as printed: a minus only, none on zero
+    static void plainValue(char* buffer, size_t size, float value, int decimals){
         float half = 0.5f * powf(10.0f, float(-decimals));
         if(fabsf(value) < half) value = 0.0f;
-        snprintf(buffer, size, "%+.*f", decimals, value);
+        snprintf(buffer, size, "%.*f", decimals, value);
     }
 
-    //the SET pill with its stick marks, as on Status (drawStopwatch), centred at x, top at y
-    static void editPill(Adafruit_GFX& g, const ScreenModel& m, int16_t centreX, int16_t y){
-        char digits[12];
-        char label[16];
-        Stopwatch::format(digits, sizeof(digits), m.stopwatch.setMillis, false);
-        snprintf(label, sizeof(label), "SET %s", digits);
-        int16_t tw = textWidth(g, pixelFont, label);
-        int16_t w = 2 + tw + 2 + stickMarkWidth + 2;
-        int16_t x = centreX - w / 2;
-        g.fillRoundRect(x, y, w, pillHeight, 2, ON);
-        text(g, pixelFont, x + 2, y + 1, label, OFF);
-        stickMarks(g, x + 2 + tw + 2, y + 1, OFF);
-    }
-
-    //the timer in the title line, plain, right-aligned at x 126 (past zero no pill: it would not fit above the bar)
+    //the timer in the title line, plain, right-aligned at x 126 (no pill: a 9 px pill would not fit above the content);
+    //editing in place: SET and the time being set, then the stick marks, steady, the content staying in view
     static void titleTimer(Adafruit_GFX& g, const ScreenModel& m){
         const StopwatchView& v = m.stopwatch;
-        if(v.b_editing) return;
         char digits[12];
+        if(v.b_editing){
+            char label[16];
+            Stopwatch::format(digits, sizeof(digits), v.setMillis, false);
+            snprintf(label, sizeof(label), "SET %s", digits);
+            int16_t marksX = 126 - stickMarkWidth + 1;
+            textRight(g, pixelFont, marksX - 2, 0, label);
+            stickMarks(g, marksX, 0, ON);
+            return;
+        }
         bool b_shown;
         if(v.b_overtime){
             Stopwatch::format(digits, sizeof(digits), v.shownMillis, true, true);
@@ -676,10 +645,6 @@ namespace RemoteUi{
     }
 
     static void drawMotionContent(Adafruit_GFX& g, const ScreenModel& m){
-        if(m.stopwatch.b_editing){
-            editPill(g, m, 63, 16);
-            return;
-        }
         const char* reason = nullptr;
         switch(m.motionAvailability){
             case Reply::MotionAvailability::NO_LINK: reason = "no link"; break;
@@ -688,37 +653,42 @@ namespace RemoteUi{
         }
         if(reason){
             textCentered(g, pixelFont, 63, motionContentTop, "no motion data");
-            textCentered(g, pixelFont, 63, motionContentTop + 8, reason);
+            //without a link the title says so already
+            if(m.motionAvailability != Reply::MotionAvailability::NO_LINK) textCentered(g, pixelFont, 63, motionContentTop + 8, reason);
             return;
         }
         const Reply::MotionView& v = m.motion;
         char value[12];
+        const char* labels[3] = {"X", "Y", "R"};
         //the velocity: m/s with 3 decimals below 10 m/s, deg/s with one below 1000
-        signedValue(value, sizeof(value), v.vx, fabsf(v.vx) < 9.9995f ? 3 : 2);
-        columnLine(g, velocityLabelX, velocityValueRight, velocityUnitRight, 0, "X", value, Unit::METRES_PER_SECOND);
-        signedValue(value, sizeof(value), v.vy, fabsf(v.vy) < 9.9995f ? 3 : 2);
-        columnLine(g, velocityLabelX, velocityValueRight, velocityUnitRight, 1, "Y", value, Unit::METRES_PER_SECOND);
         float degrees = v.vr * 57.29578f;
-        signedValue(value, sizeof(value), degrees, fabsf(degrees) < 999.95f ? 1 : 0);
-        columnLine(g, velocityLabelX, velocityValueRight, velocityUnitRight, 2, "W", value, Unit::DEGREES_PER_SECOND);
-        //the pose: m with 2 decimals below 100 m, the heading in deg with one
+        const float velocity[3] = {v.vx, v.vy, degrees};
+        //the pose: m with 3 decimals (mm) below 100 m, the heading in deg with one
         const float pose[3] = {v.poseX, v.poseY, v.heading};
-        const char* labels[3] = {"x", "y", nullptr};
-        const Unit units[3] = {Unit::METRES, Unit::METRES, Unit::DEGREES};
         for(int i = 0; i < 3; i++){
+            int16_t top = motionContentTop + i * 8;
+            text(g, pixelFont, axisLabelX, top, labels[i]);
+            if(i < 2) plainValue(value, sizeof(value), velocity[i], fabsf(velocity[i]) < 9.9995f ? 3 : 2);
+            else plainValue(value, sizeof(value), velocity[i], fabsf(velocity[i]) < 999.95f ? 1 : 0);
+            //"/s" after the velocity says what it is, without a full unit
+            textRight(g, pixelFont, velocityValueRight - textWidth(g, pixelFont, "/s") - 1, top, value);
+            textRight(g, pixelFont, velocityValueRight, top, "/s");
             if(isnan(pose[i])) snprintf(value, sizeof(value), "--");
-            else if(i < 2) signedValue(value, sizeof(value), pose[i], fabsf(pose[i]) < 99.995f ? 2 : 1);
-            else signedValue(value, sizeof(value), pose[i], 1);
-            columnLine(g, poseLabelX, poseValueRight, poseUnitRight, i, labels[i], value, units[i]);
+            //m with 3 decimals (mm) below 10 m, 2 below 100 m, then 1: room for the unit
+            else if(i < 2) plainValue(value, sizeof(value), pose[i], fabsf(pose[i]) < 9.9995f ? 3 : (fabsf(pose[i]) < 99.995f ? 2 : 1));
+            else plainValue(value, sizeof(value), pose[i], 1);
+            textRight(g, pixelFont, poseValueRight, top, value);
+            if(i == 2 && !isnan(pose[i])) degreeRing(g, poseValueRight + 2, top);
+            //the position's unit after the value (owner, 2026-10-28), where the heading has its degree
+            if(i < 2 && !isnan(pose[i])) text(g, pixelFont, poseValueRight + 2, top, "m");
         }
-        g.drawBitmap(poseLabelX, motionContentTop + 16 + 1, headingBitmap, 5, 6, ON);
     }
 
     static void drawMotionPage(Adafruit_GFX& g, const ScreenModel& m){
-        //the title line: icon, the vehicle state, the alive dot (no page dots to carry it), the timer
+        //the title line: icon, the page's name (owner, 2026-10-28: the state is the Status page's), the alive dot (no
+        //page dots to carry it), the timer
         g.drawBitmap(0, 0, motionBitmap, 7, 7, ON);
-        const char* state = vehicleStateText(shownVehicleState(m), m.reportedState);
-        const char* title = m.titleOverride ? m.titleOverride : (state ? state : pageTitle(Page::MOTION));
+        const char* title = m.titleOverride ? m.titleOverride : pageTitle(Page::MOTION);
         text(g, pixelFont, 10, 0, title);
         activeDot(g, 10 + textWidth(g, pixelFont, title) + 3, 2, m, true);
         titleTimer(g, m);
@@ -850,22 +820,718 @@ namespace RemoteUi{
         activeDot(g, 62, 14, m, true);
     }
 
+    //——— the Tracking page ———
+
+    //Permanent like Motion and Motors (no return to Status), the stopwatch's controls do not work here, no title, no
+    //page dots: a top-down map round the vehicle, which stays at the screen's centre (x 64, y 16) as a filled 5 x 7
+    //arrowhead pointing up, its forward; the map moves and turns round it (TrackingMap: the frame, the transform).
+    //  the grid in metres, turning with the heading: a solid line every 5 m, from 4 px per m a dot on every metre
+    //  crossing (drawGrid); drawn at the steadied pose (a dead band, TrackingMap::follow), so odometry jitter and slow
+    //  creep move it in clean 1 px steps; the zoom steps 3, 6, 12 and 24 px per m, gliding between them over half a
+    //  second (TrackingView::scale)
+    //  the frame's origin (the zero, or the stage origin before one) a small x turning with the map, on a dark disc
+    //  the trail: the last ~10 s as 2 x 2 dots at least 3 px apart, each on a dark 1 px halo, so they read over the
+    //  grid
+    //  bottom left on a dark margin: the scale, a bar of 1 m (5 m below 4 px per m) with end ticks and "1m" / "5m"
+    //  top left: the alive dot
+    //  top right: the compass, a needle on a dark disc pointing to the map frame's +y as seen from the rover (the
+    //  forward of the zero when one is kept, else the stage's upstage), its tip a filled dot; none without a heading
+    //  no pose or no motion data: no map, one centred plain line in the top row ("no link", "no motion data", "no
+    //  position"), the rover still drawn
+    //A dark margin of 1 px round the rover, the label, the delta, the alive dot and the line keeps the grid off them.
+    static const int16_t roverLeft = 62;       //the arrowhead, x 62..66, rows 13..19: its centre column at x 64
+    static const int16_t roverTop = 13;
+    static const uint8_t roverBitmap[] = { 0x20, 0x20, 0x70, 0x70, 0xF8, 0xF8, 0xD8 };
+    static const int16_t trackingDotX = 0;     //the alive dot, x 0..2, rows 0..2
+    static const int16_t compassX = 121;       //the compass's centre, its disc radius 6: x 115..127, rows 0..12
+    static const int16_t compassY = 6;
+    static const int16_t scaleTextTop = 24;    //the scale label's text, rows 24..30
+
+    static int16_t screenPixel(float v){ return int16_t(floorf(v + 0.5f)); }
+
+    //A grid that stays calm on a 1 bit screen while it turns and creeps: the 5 m lines drawn as lines between their
+    //screen end points (one staircase that keeps its shape as it moves), the metres only as a dot on each crossing
+    //(a turned lattice of dots reads cleanly where dotted lines shimmer); from 4 px per m, below it the 5 m lines only
+    static void drawGrid(Adafruit_GFX& g, float roverX, float roverY, float heading, float scale){
+        //every line that can reach the screen: half its diagonal (66 px) round the rover
+        float reach = 68.0f / scale;
+        int32_t firstX = int32_t(floorf(roverX - reach)), lastX = int32_t(ceilf(roverX + reach));
+        int32_t firstY = int32_t(floorf(roverY - reach)), lastY = int32_t(ceilf(roverY + reach));
+        //the 5 m lines: x = k along y, y = k along x
+        for(int32_t k = firstX; k <= lastX; k++){
+            if(k % 5 != 0) continue;
+            float x0, y0, x1, y1;
+            TrackingMap::toScreen(float(k), roverY - reach, roverX, roverY, heading, scale, x0, y0);
+            TrackingMap::toScreen(float(k), roverY + reach, roverX, roverY, heading, scale, x1, y1);
+            g.drawLine(screenPixel(x0), screenPixel(y0), screenPixel(x1), screenPixel(y1), ON);
+        }
+        for(int32_t k = firstY; k <= lastY; k++){
+            if(k % 5 != 0) continue;
+            float x0, y0, x1, y1;
+            TrackingMap::toScreen(roverX - reach, float(k), roverX, roverY, heading, scale, x0, y0);
+            TrackingMap::toScreen(roverX + reach, float(k), roverX, roverY, heading, scale, x1, y1);
+            g.drawLine(screenPixel(x0), screenPixel(y0), screenPixel(x1), screenPixel(y1), ON);
+        }
+        //the metre crossings off the 5 m lines
+        if(scale < 4.0f) return;
+        for(int32_t i = firstX; i <= lastX; i++){
+            for(int32_t j = firstY; j <= lastY; j++){
+                if(i % 5 == 0 || j % 5 == 0) continue;
+                float sx, sy;
+                TrackingMap::toScreen(float(i), float(j), roverX, roverY, heading, scale, sx, sy);
+                int16_t px = screenPixel(sx), py = screenPixel(sy);
+                if(px >= 0 && px < 128 && py >= 0 && py < 32) g.drawPixel(px, py, ON);
+            }
+        }
+    }
+
+    //the origin: an x of 2 px arms along the map's diagonals, on a dark disc of radius 3 (the 5 m lines cross there)
+    static void originMark(Adafruit_GFX& g, float roverX, float roverY, float heading, float scale){
+        float ox, oy;
+        TrackingMap::toScreen(0.0f, 0.0f, roverX, roverY, heading, scale, ox, oy);
+        int16_t cx = screenPixel(ox), cy = screenPixel(oy);
+        if(cx < -4 || cx > 131 || cy < -4 || cy > 35) return;
+        g.fillCircle(cx, cy, 3, OFF);
+        //the map's diagonals on the screen: its x and y axes turned by the heading
+        float t = heading * 0.017453293f;
+        float ax = cosf(t), ay = sinf(t);           //the map's x axis on the screen (y down)
+        float bx = sinf(t), by = -cosf(t);          //the map's y axis
+        g.drawPixel(cx, cy, ON);
+        for(int i = 1; i <= 2; i++){
+            float d = float(i) * 0.70710678f;
+            for(int sign = -1; sign <= 1; sign += 2){
+                float s = float(sign) * d;
+                g.drawPixel(screenPixel(ox + s * (ax + bx)), screenPixel(oy + s * (ay + by)), ON);
+                g.drawPixel(screenPixel(ox + s * (ax - bx)), screenPixel(oy + s * (ay - by)), ON);
+            }
+        }
+    }
+
+    //the trail from the newest sample back: a 2 x 2 dot wherever it is at least trailDotSpacing px (either way) from
+    //the last dot drawn (the samples lie closer than a pixel at walking speed), each on a dark 1 px halo, so it
+    //reads as dots apart from the 1 px grid
+    static const int16_t trailDotSpacing = 3;
+
+    static void drawTrail(Adafruit_GFX& g, const TrackingView& v, float roverX, float roverY, float heading, float scale){
+        int16_t px[TrackingView::trailCapacity], py[TrackingView::trailCapacity];
+        uint8_t dots = 0;
+        //where the rover is: the first dot keeps its spacing from it too
+        int16_t lastX = int16_t(TrackingMap::centreX), lastY = int16_t(TrackingMap::centreY);
+        for(int i = int(v.trailCount) - 1; i >= 0; i--){
+            float sx, sy;
+            TrackingMap::toScreen(v.trailX[i], v.trailY[i], roverX, roverY, heading, scale, sx, sy);
+            //the dot's top left pixel, the dot centred on the sample
+            int16_t x = int16_t(floorf(sx)), y = int16_t(floorf(sy));
+            int16_t dx = int16_t(abs(x - lastX)), dy = int16_t(abs(y - lastY));
+            if(dx < trailDotSpacing && dy < trailDotSpacing) continue;
+            px[dots] = x;
+            py[dots] = y;
+            dots++;
+            lastX = x;
+            lastY = y;
+        }
+        for(uint8_t i = 0; i < dots; i++) g.fillRect(px[i] - 1, py[i] - 1, 4, 4, OFF);
+        for(uint8_t i = 0; i < dots; i++) g.fillRect(px[i], py[i], 2, 2, ON);
+    }
+
+    //the scale bottom left: a bar of 1 m (5 m at 2 px per m) on row 30 with ticks at both ends (rows 28..30), the
+    //text after it, on its own dark margin
+    static void scaleLabel(Adafruit_GFX& g, float scale){
+        int metres = scale >= 4.0f ? 1 : 5;
+        int16_t length = int16_t(lroundf(float(metres) * scale));      //the bar spans length + 1 px, tick to tick
+        const char* label = metres == 1 ? "1m" : "5m";
+        int16_t textX = length + 3;
+        int16_t right = textX + textWidth(g, pixelFont, label) - 1;
+        g.fillRect(0, scaleTextTop - 1, right + 2, 32 - (scaleTextTop - 1), OFF);
+        g.drawFastHLine(0, 30, length + 1, ON);
+        g.drawFastVLine(0, 28, 3, ON);
+        g.drawFastVLine(length, 28, 3, ON);
+        text(g, pixelFont, textX, scaleTextTop, label);
+    }
+
+    //the map frame's +y seen from a rover at heading h (counter-clockwise): (sin h, -cos h) on the screen (y down)
+    static void compass(Adafruit_GFX& g, float compassHeading){
+        if(isnan(compassHeading)) return;
+        g.fillCircle(compassX, compassY, 6, OFF);
+        float t = compassHeading * 0.017453293f;
+        float dx = sinf(t), dy = -cosf(t);
+        int16_t tipX = screenPixel(float(compassX) + 4.0f * dx), tipY = screenPixel(float(compassY) + 4.0f * dy);
+        int16_t tailX = screenPixel(float(compassX) - 3.0f * dx), tailY = screenPixel(float(compassY) - 3.0f * dy);
+        g.drawLine(tailX, tailY, tipX, tipY, ON);
+        g.fillCircle(tipX, tipY, 1, ON);
+    }
+
+    //——— the Tracking page's marks, timed targets and views (owner, 2026-10-28) ———
+
+    //Small text with a few own glyphs in the 5 x 7 cell, so widths stay 6 px a character: \x01 a degree ring (the
+    //font's degree is a blob), \x02 turn counter-clockwise, \x04 turn clockwise. Drawn in either colour (in a pill:
+    //OFF)
+    //a half circle over the top with the arrowhead at the end it turns to (left: counter-clockwise)
+    static const uint8_t turnLeftBitmap[] = { 0x00, 0x70, 0x88, 0x88, 0xE8, 0x48, 0x00 };
+    static const uint8_t turnRightBitmap[] = { 0x00, 0x70, 0x88, 0x88, 0xB8, 0x90, 0x00 };
+
+    static int16_t richWidth(const char* s){ return int16_t(strlen(s) * 6 - 1); }
+
+    //'\x05' '\x06' in rich text (two cells, 11 px): an arrow pointing at richArrowDegrees (counter-clockwise from the
+    //screen's up) in the 7 x 7 square at the pair's centre: a shaft through the centre and a head of two 2 px strokes
+    static float richArrowDegrees = 0.0f;
+    static void richArrow(Adafruit_GFX& g, int16_t x, int16_t y, uint16_t color){
+        float t = richArrowDegrees * 0.017453293f;
+        float dx = -sinf(t), dy = -cosf(t);         //on the screen, y down
+        float cx = float(x) + 5.0f, cy = float(y) + 3.0f;
+        float tipX = cx + 3.0f * dx, tipY = cy + 3.0f * dy;
+        g.drawLine(screenPixel(cx - 3.0f * dx), screenPixel(cy - 3.0f * dy), screenPixel(tipX), screenPixel(tipY), color);
+        //the head: strokes from the tip back at 40 degrees either side of the shaft
+        for(int side = -1; side <= 1; side += 2){
+            float a = t + float(side) * 0.70f;
+            float bx = sinf(a), by = cosf(a);       //backwards along the turned shaft
+            g.drawLine(screenPixel(tipX), screenPixel(tipY), screenPixel(tipX + 2.4f * bx), screenPixel(tipY + 2.4f * by), color);
+        }
+    }
+
+    static void richText(Adafruit_GFX& g, int16_t x, int16_t y, const char* s, uint16_t color){
+        char one[2] = {0, 0};
+        for(const char* c = s; *c; c++, x += 6){
+            if(*c == '\x01'){
+                g.drawPixel(x + 1, y, color);
+                g.drawPixel(x, y + 1, color);
+                g.drawPixel(x + 2, y + 1, color);
+                g.drawPixel(x + 1, y + 2, color);
+            }
+            else if(*c == '\x02') g.drawBitmap(x, y, turnLeftBitmap, 5, 7, color);
+            else if(*c == '\x04') g.drawBitmap(x, y, turnRightBitmap, 5, 7, color);
+            else if(*c == '\x05') richArrow(g, x, y, color);
+            else if(*c == '\x06'){}
+            else{
+                one[0] = *c;
+                text(g, pixelFont, x, y, one, color);
+            }
+        }
+    }
+
+    //a filled pill with rich text at x (top y); returns its width
+    static int16_t richPill(Adafruit_GFX& g, int16_t x, int16_t y, const char* s){
+        int16_t w = richWidth(s) + 4;
+        g.fillRoundRect(x, y, w, pillHeight, 2, ON);
+        richText(g, x + 2, y + 1, s, OFF);
+        return w;
+    }
+
+    //a mark's place on the screen
+    static void markScreen(const Mark& mk, float roverX, float roverY, float heading, float scale, int16_t& sx, int16_t& sy){
+        float fx, fy;
+        TrackingMap::toScreen(mk.x(), mk.y(), roverX, roverY, heading, scale, fx, fy);
+        sx = screenPixel(fx);
+        sy = screenPixel(fy);
+    }
+
+    //a heading of the map frame (deg) as a screen direction seen from the rover at roverHeading (y down)
+    static void screenDirection(float headingDeg, float roverHeading, float& dx, float& dy){
+        float t = (headingDeg - roverHeading) * 0.017453293f;
+        dx = -sinf(t);
+        dy = -cosf(t);
+    }
+
+    //the marks: their number in plain digits on a dark 1 px margin, centred on the place; the selected one negative in
+    //a 9 x 9 pill (Z: the letter), with a 2 x 2 dot 8 px out along its heading (none without one). Z only while it is
+    //selected: otherwise the origin's x is the zero
+    static void drawMarks(Adafruit_GFX& g, const ScreenModel& m, float roverX, float roverY, float heading, float scale){
+        int8_t selected = m.trackingControl.selected;
+        //"none" selected clears the map of marks (owner, 2026-10-28); a run's target is still drawn
+        if(selected < 0 && !m.run.b_run) return;
+        for(int pass = 0; pass < 2; pass++){
+            for(uint8_t k = 0; k < MarkStore::count; k++){
+                const Mark& mk = m.marks.get(k);
+                bool b_selected = int8_t(k) == selected;
+                if(!mk.b_used || (pass == 0) == b_selected) continue;
+                if(k == MarkStore::zero && !b_selected) continue;
+                int16_t sx, sy;
+                markScreen(mk, roverX, roverY, heading, scale, sx, sy);
+                if(sx < -12 || sx > 140 || sy < -12 || sy > 44) continue;
+                char label[2] = {char(k == 0 ? 'Z' : '0' + k), 0};
+                int16_t w = b_selected ? 9 : 5, h = b_selected ? 9 : 7;
+                int16_t x = sx - w / 2, y = sy - h / 2;
+                if(b_selected && mk.b_heading){
+                    float dx, dy;
+                    screenDirection(mk.heading(), heading, dx, dy);
+                    int16_t px = screenPixel(float(sx) + 8.0f * dx - 0.5f), py = screenPixel(float(sy) + 8.0f * dy - 0.5f);
+                    g.fillRect(px - 1, py - 1, 4, 4, OFF);
+                    g.fillRect(px, py, 2, 2, ON);
+                }
+                g.fillRect(x - 1, y - 1, w + 2, h + 2, OFF);
+                if(b_selected){
+                    g.fillRoundRect(x, y, w, h, 2, ON);
+                    text(g, pixelFont, x + 2, y + 1, label, OFF);
+                }
+                else text(g, pixelFont, x, y, label);
+            }
+        }
+    }
+
+    //the run's line: dotted (every other pixel along it) from the pose at the play to the target, over the grid
+    static void dottedLine(Adafruit_GFX& g, int16_t x0, int16_t y0, int16_t x1, int16_t y1){
+        int16_t dx = int16_t(abs(x1 - x0)), dy = int16_t(-abs(y1 - y0));
+        int16_t sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+        int16_t err = int16_t(dx + dy);
+        for(int i = 0; i < 1200; i++){
+            if(i % 2 == 0 && x0 >= 0 && x0 < 128 && y0 >= 0 && y0 < 32) g.drawPixel(x0, y0, ON);
+            if(x0 == x1 && y0 == y1) break;
+            int16_t e2 = int16_t(2 * err);
+            if(e2 >= dy){ err = int16_t(err + dy); x0 = int16_t(x0 + sx); }
+            if(e2 <= dx){ err = int16_t(err + dx); y0 = int16_t(y0 + sy); }
+        }
+    }
+
+    static void drawRunLine(Adafruit_GFX& g, const TrackingRunView& r, float roverX, float roverY, float heading, float scale){
+        if(!r.b_run || isnan(r.startX) || isnan(r.targetX)) return;
+        float x0, y0, x1, y1;
+        TrackingMap::toScreen(r.startX, r.startY, roverX, roverY, heading, scale, x0, y0);
+        TrackingMap::toScreen(r.targetX, r.targetY, roverX, roverY, heading, scale, x1, y1);
+        //clipped coarsely: the far ends kept within a few screens
+        auto clip = [](float v, float lo, float hi){ return v < lo ? lo : (v > hi ? hi : v); };
+        dottedLine(g, screenPixel(clip(x0, -400, 528)), screenPixel(clip(y0, -400, 432)),
+                   screenPixel(clip(x1, -400, 528)), screenPixel(clip(y1, -400, 432)));
+    }
+
+    //the ghost: where the plan is now (TargetPlan::ghostAt), a 1 px ring of radius 6 (the rover's arrowhead fits inside
+    //with a pixel to spare) with a 2 px tick outside its rim along the planned heading, on a dark margin of 1 px round
+    //the ring and the tick only (so the dotted line to the target runs up to the ring). On time the arrowhead sits in
+    //the ring pointing at the tick: the ghost ahead of the rover means slow, behind it fast
+    static const int16_t ghostRadius = 6;
+    static void drawGhost(Adafruit_GFX& g, const TrackingRunView& r, float roverX, float roverY, float heading, float scale){
+        if(!r.b_ghost) return;
+        float fx, fy;
+        TrackingMap::toScreen(r.ghostX, r.ghostY, roverX, roverY, heading, scale, fx, fy);
+        int16_t cx = screenPixel(fx), cy = screenPixel(fy);
+        if(cx < -10 || cx > 137 || cy < -10 || cy > 41) return;
+        //the margin: the ring's band (radius 5 to 7) dark, then the tick's pixels each with a dark 3 x 3 round it
+        for(int16_t rr = ghostRadius - 1; rr <= ghostRadius + 1; rr++) g.drawCircle(cx, cy, rr, OFF);
+        float dx = 0.0f, dy = 0.0f;
+        bool b_tick = !isnan(r.ghostHeading);
+        if(b_tick){
+            screenDirection(r.ghostHeading, heading, dx, dy);
+            for(int d = ghostRadius + 1; d <= ghostRadius + 2; d++)
+                g.fillRect(screenPixel(fx + d * dx) - 1, screenPixel(fy + d * dy) - 1, 3, 3, OFF);
+        }
+        g.drawCircle(cx, cy, ghostRadius, ON);
+        if(!b_tick) return;
+        for(int d = ghostRadius + 1; d <= ghostRadius + 2; d++) g.drawPixel(screenPixel(fx + d * dx), screenPixel(fy + d * dy), ON);
+    }
+
+    //the drive-frame arrow, bottom right on a dark disc (x 118..127, rows 22..31): only at WORLD, which way the stick
+    //forward pushes the vehicle, Stacato's upstage seen from Stacato's own heading (not the display correction)
+    static const int16_t driveArrowX = 123;
+    static const int16_t driveArrowY = 27;
+    static const int16_t driveArrowLeft = 118;
+    static void driveArrow(Adafruit_GFX& g, float driveHeading){
+        g.fillCircle(driveArrowX, driveArrowY, 5, OFF);
+        float t = driveHeading * 0.017453293f;
+        float dx = sinf(t), dy = -cosf(t);
+        float tipX = driveArrowX + 3.6f * dx, tipY = driveArrowY + 3.6f * dy;
+        float baseX = driveArrowX + 0.6f * dx, baseY = driveArrowY + 0.6f * dy;
+        float tailX = driveArrowX - 3.4f * dx, tailY = driveArrowY - 3.4f * dy;
+        g.drawLine(screenPixel(tailX), screenPixel(tailY), screenPixel(baseX), screenPixel(baseY), ON);
+        g.fillTriangle(screenPixel(tipX), screenPixel(tipY),
+                       screenPixel(baseX - 2.2f * dy), screenPixel(baseY + 2.2f * dx),
+                       screenPixel(baseX + 2.2f * dy), screenPixel(baseY - 2.2f * dx), ON);
+    }
+
+    //the selected mark's pill, bottom centre between the scale label and the corner: its number, the distance and the
+    //bearing from the rover (an arrow pointing at it, as seen from the rover facing up, and the angle off its forward)
+    //and the turn to its
+    //heading; shortened to fit
+    static void markPill(Adafruit_GFX& g, const ScreenModel& m, int16_t left, int16_t right){
+        int8_t k = m.trackingControl.selected;
+        if(k < 0) return;
+        //an empty slot selected (to store into it): say so, so the selection is never invisible
+        if(!m.marks.isUsed(uint8_t(k))){
+            char empty[12];
+            snprintf(empty, sizeof(empty), "%c empty", k == 0 ? 'Z' : char('0' + k));
+            int16_t w = pillWidth(g, empty);
+            if(w <= right - left + 1){
+                int16_t x = placeCentred(w, left, right);
+                g.fillRect(x - 1, bottomTop - 1, w + 2, 32 - bottomTop + 1, OFF);
+                pill(g, x, bottomTop, empty);
+            }
+            return;
+        }
+        const Mark& mk = m.marks.get(uint8_t(k));
+        const Reply::MotionView& v = m.motion;
+        float dx = mk.x() - v.poseX, dy = mk.y() - v.poseY;
+        float distance = hypotf(dx, dy);
+        float bearing = TargetPlan::wrap(TargetPlan::headingOf(dx, dy) - v.heading);
+        float turn = mk.b_heading ? TargetPlan::wrap(mk.heading() - v.heading) : NAN;
+        char id = k == 0 ? 'Z' : char('0' + k);
+        char d[10], b[10], t[10];
+        snprintf(d, sizeof(d), distance < 9.995f ? "%.2fm" : "%.1fm", distance > 99.0f ? 99.0f : distance);
+        b[0] = 0;
+        richArrowDegrees = bearing;
+        if(distance > TargetPlan::arriveRadius) snprintf(b, sizeof(b), "\x05\x06%d\x01", int(fabsf(bearing) + 0.5f));
+        t[0] = 0;
+        if(!isnan(turn)) snprintf(t, sizeof(t), "%c%d\x01", turn >= 0.0f ? '\x02' : '\x04', int(fabsf(turn) + 0.5f));
+        char label[40];
+        int16_t room = right - left + 1;
+        //shortened until it fits: the full form, the parts closer, the distance in decimetres, then without the turn,
+        //then the distance alone
+        char dShort[10];
+        snprintf(dShort, sizeof(dShort), "%.1fm", distance > 99.0f ? 99.0f : distance);
+        const char* forms[5] = {"%c %s %s %s", "%c %s %s%s", "%c %s %s%s", "%c %s %s", "%c %s"};
+        for(int i = 0; i < 5; i++){
+            snprintf(label, sizeof(label), forms[i], id, i == 2 ? dShort : d, i < 4 ? b : "", i < 3 ? t : "");
+            //trim a trailing space left by an empty part
+            size_t n = strlen(label);
+            while(n > 0 && label[n - 1] == ' ') label[--n] = 0;
+            if(richWidth(label) + 4 <= room) break;
+        }
+        int16_t w = richWidth(label) + 4;
+        if(w > room) return;
+        richPill(g, placeCentred(w, left, right), bottomTop, label);
+    }
+
+    //the run's bottom row (owner, 2026-10-28: the operator drives by eye, the screen only says whether to hurry): the
+    //time left in plain digits bottom left ("4.2", whole seconds from 10 s); nothing more within +-0.3 s; outside it a
+    //small filled pill FASTER (late) or SLOWER (early), centred between the time left and the corner, taking turns
+    //with plain text every 0.5 s past 2 s; PAUSED in plain text in the pill's place while paused. After the arrival
+    //only the split "+0.4s" in a filled pill, for 3 s. The turn apart, in the right corner (Pace::turn). Each on a dark
+    //1 px margin
+    static void runBottom(Adafruit_GFX& g, const ScreenModel& m, int16_t right){
+        const TrackingRunView& r = m.run;
+        int16_t left = 0;
+        if(r.b_arrived){
+            char split[12];
+            Pace::split(split, sizeof(split), r.split);
+            int16_t w = pillWidth(g, split);
+            int16_t x = placeCentred(w, 0, right);
+            g.fillRect(x - 1, bottomTop - 1, w + 2, 32 - bottomTop + 1, OFF);
+            pill(g, x, bottomTop, split);
+            return;
+        }
+        if(!r.b_run) return;
+        if(!isnan(r.timeLeft)){
+            char t[12];
+            Pace::timeLeft(t, sizeof(t), r.timeLeft);
+            int16_t w = textWidth(g, pixelFont, t);
+            g.fillRect(0, bottomTop, w + 1, 32 - bottomTop, OFF);
+            text(g, pixelFont, 0, bottomTop + 1, t);
+            left = int16_t(w + 3);
+        }
+        //the turn, tracked apart (owner, 2026-10-28): a filled pill in the right corner with the way to turn and the lag,
+        //e.g. "<turn>12°", beyond 5 deg; the translation's pill then centres in what is left
+        char turn[12];
+        Pace::turn(turn, sizeof(turn), r.b_paused ? NAN : r.turnError);
+        if(turn[0]){
+            int16_t tw = richWidth(turn) + 4;
+            int16_t tx = right - tw + 1;
+            g.fillRect(tx - 1, bottomTop - 1, tw + 2, 32 - bottomTop + 1, OFF);
+            richPill(g, tx, bottomTop, turn);
+            right = int16_t(tx - 5);       //the pills 4 px apart, the strip between them dark (no grid between pills)
+            g.fillRect(right + 1, bottomTop - 1, tx - right - 1, 32 - bottomTop + 1, OFF);
+        }
+        const char* word = r.b_paused ? "PAUSED" : Pace::word(r.delta);
+        if(!word) return;
+        bool b_filled = !r.b_paused && (!Pace::blinks(r.delta) || blink(m.now, 1000, 500));
+        int16_t w = pillWidth(g, word);
+        int16_t x = placeCentred(w, left, right);
+        g.fillRect(x - 1, bottomTop - 1, w + 2, 32 - bottomTop + 1, OFF);
+        if(b_filled) pill(g, x, bottomTop, word);
+        else text(g, pixelFont, x + 2, bottomTop + 1, word);
+    }
+
+    //a refused play, for a moment at the top centre in a pill over a dark margin (the compass hidden): "3 HAS NO TIME",
+    //"SELECT A MARK", "ZERO HAS NO TIME", "NO POSITION", "ALREADY AT 3"
+    static void refusalPill(Adafruit_GFX& g, const ScreenModel& m){
+        char label[24];
+        Pace::refusal(label, sizeof(label), m.run.refusal, m.run.refusalMark);
+        if(!label[0]) return;
+        int16_t w = pillWidth(g, label);
+        int16_t x = placeCentred(w, 4, 127);
+        g.fillRect(x - 1, 0, w + 2, 10, OFF);
+        pill(g, x, 0, label);
+    }
+
+    //a pill that fills from the left with a hold's progress: the filled part negative, the rest plain text
+    static void progressPill(Adafruit_GFX& g, int16_t x, int16_t y, const char* label, float progress){
+        int16_t w = pillWidth(g, label);
+        GFXcanvas1 filled(w, pillHeight), plain(w, pillHeight);
+        filled.fillScreen(0);
+        plain.fillScreen(0);
+        filled.fillRoundRect(0, 0, w, pillHeight, 2, ON);
+        text(filled, pixelFont, 2, 1, label, OFF);
+        text(plain, pixelFont, 2, 1, label, ON);
+        int16_t split = int16_t(float(w) * progress + 0.5f);
+        for(int16_t cx = 0; cx < w; cx++){
+            for(int16_t cy = 0; cy < pillHeight; cy++){
+                bool b_on = cx < split ? filled.getPixel(cx, cy) : plain.getPixel(cx, cy);
+                if(b_on) g.drawPixel(x + cx, y + cy, ON);
+            }
+        }
+    }
+
+    //a question at the top centre in a pill over a dark margin: "AT 3? HOLD L", "SAVE 3? R", "OVERWRITE 3? HOLD R" (blinking
+    //until the hold starts), "CLEAR 3? HOLD L" (the same); while held the pill fills from the left with the hold
+    static void questionPill(Adafruit_GFX& g, const ScreenModel& m){
+        const TrackingControlView& c = m.trackingControl;
+        using Q = TrackingControlView::Question;
+        if(c.question == Q::NONE) return;
+        char id = c.questionMark == 0 ? 'Z' : char('0' + c.questionMark);
+        char label[24];
+        switch(c.question){
+            case Q::AT: snprintf(label, sizeof(label), "AT %c? HOLD L", id); break;
+            case Q::SAVE: snprintf(label, sizeof(label), "SAVE %c? R", id); break;
+            case Q::OVERWRITE: snprintf(label, sizeof(label), "OVERWRITE %c? HOLD R", id); break;
+            case Q::CLEAR: snprintf(label, sizeof(label), "CLEAR %c? HOLD L", id); break;
+            case Q::CLEAR_ALL: snprintf(label, sizeof(label), "CLEAR ALL? HOLD L"); break;
+            default: return;
+        }
+        bool b_hold = c.question == Q::OVERWRITE || c.question == Q::CLEAR || c.question == Q::AT || c.question == Q::CLEAR_ALL;
+        int16_t w = pillWidth(g, label);
+        int16_t x = placeCentred(w, 4, 127);
+        g.fillRect(x - 1, 0, w + 2, 10, OFF);
+        if(b_hold && c.holdProgress > 0.0f) progressPill(g, x, 0, label, c.holdProgress);
+        else if(!b_hold || blink(m.now, 500, 300)) pill(g, x, 0, label);
+        else text(g, pixelFont, x + 2, 1, label);
+    }
+
+    //a mark's values for the list and the editor: x, y in m, h in deg, t in s
+    static void mmText(char* out, size_t size, int32_t mm, int decimals){
+        plainValue(out, size, float(mm) * 0.001f, decimals);
+    }
+
+    static void timeText(char* out, size_t size, const Mark& mk, bool b_long){
+        if(!mk.b_time){ snprintf(out, size, "--"); return; }
+        if(b_long){ Stopwatch::format(out, size, mk.timeMillis(), true); return; }
+        //short: seconds with tenths below 100 s, m:ss from there
+        if(mk.timeTenths < 1000) snprintf(out, size, "%u.%u", unsigned(mk.timeTenths / 10), unsigned(mk.timeTenths % 10));
+        else Stopwatch::format(out, size, mk.timeMillis(), false);
+    }
+
+    //a value of the list: m with 1 decimal, whole metres from 10 m (at most 4 characters)
+    static void listMetres(char* out, size_t size, int32_t mm){
+        if(abs(mm) < 9950) plainValue(out, size, float(mm) * 0.001f, 1);
+        else snprintf(out, size, "%d", int(lroundf(float(mm) * 0.001f)));
+    }
+
+    //the mark list (edit mode, left stick right from the map): three lines, the selected mark's in a pill (rows 0..8,
+    //11..19, 22..30), a window round it; right-aligned columns with 3 px between them at their widest: the number,
+    //x and y in m (1 decimal, whole metres from 10 m; the editor has the mm), the heading in whole deg, the time in s
+    //with tenths (m:ss from 100 s); -- blank, an empty mark "--" only. The alive dot top right
+    static void drawMarkList(Adafruit_GFX& g, const ScreenModel& m){
+        int8_t selected = m.trackingControl.selected < 0 ? 0 : m.trackingControl.selected;
+        int8_t first = int8_t(selected - 1);
+        if(first < 0) first = 0;
+        if(first > MarkStore::count - 3) first = MarkStore::count - 3;
+        for(int8_t line = 0; line < 3; line++){
+            uint8_t k = uint8_t(first + line);
+            const Mark& mk = m.marks.get(k);
+            int16_t top = int16_t(line * 11);
+            bool b_selected = int8_t(k) == m.trackingControl.selected;
+            uint16_t ink = b_selected ? OFF : ON;
+            if(b_selected) g.fillRoundRect(0, top, 123, pillHeight, 2, ON);
+            char id[2] = {char(k == 0 ? 'Z' : '0' + k), 0};
+            text(g, pixelFont, 2, top + 1, id, ink);
+            if(!mk.b_used){
+                text(g, pixelFont, 16, top + 1, "--", ink);
+                continue;
+            }
+            char v[12];
+            listMetres(v, sizeof(v), mk.xMm);
+            textRight(g, pixelFont, 32, top + 1, v, ink);
+            listMetres(v, sizeof(v), mk.yMm);
+            textRight(g, pixelFont, 58, top + 1, v, ink);
+            if(mk.b_heading){
+                snprintf(v, sizeof(v), "%d", int(lroundf(mk.heading())));
+                textRight(g, pixelFont, 86, top + 1, v, ink);
+                richText(g, 88, top + 1, "\x01", ink);
+            }
+            else textRight(g, pixelFont, 86, top + 1, "--", ink);
+            timeText(v, sizeof(v), mk, false);
+            textRight(g, pixelFont, 120, top + 1, v, ink);
+        }
+        activeDot(g, 125, 0, m, true);
+    }
+
+    //the trip readout (edit mode, left stick left from the map): since the last zero or snap, plain text in capitals
+    //(no descenders between the lines)
+    static void drawTrip(Adafruit_GFX& g, const ScreenModel& m){
+        const TripView& t = m.trip;
+        char a[24], b[24];
+        snprintf(a, sizeof(a), t.distance < 999.5f ? "DIST %.2fm" : "DIST %.0fm", t.distance);
+        snprintf(b, sizeof(b), "TURN %d\x01", int(t.turned + 0.5f));
+        text(g, pixelFont, 0, 0, a);
+        richText(g, 126 - richWidth(b) + 1, 0, b, ON);
+        snprintf(a, sizeof(a), "TOP %.2f/s", t.top);
+        char time[12];
+        Stopwatch::format(time, sizeof(time), t.movingMillis, false);
+        snprintf(b, sizeof(b), "MOVE %s", time);
+        text(g, pixelFont, 0, 9, a);
+        textRight(g, pixelFont, 126, 9, b);
+        if(t.since == 0) snprintf(a, sizeof(a), "SINCE ZERO");
+        else if(t.since <= 9) snprintf(a, sizeof(a), "SINCE SNAP %u", unsigned(t.since));
+        else snprintf(a, sizeof(a), "SINCE POWER ON");
+        text(g, pixelFont, 0, 18, a);
+        activeDot(g, 124, 28, m, true);
+    }
+
+    //the number editor (edit mode, right hold): the title "MARK 3" with the keys, the four fields in two rows of
+    //pills (rows 10..18, 21..29), the one being changed filled; CLEAR 3? in the title row while asked
+    static void drawEditor(Adafruit_GFX& g, const ScreenModel& m){
+        const TrackingControlView& c = m.trackingControl;
+        const Mark& d = c.draft;
+        if(c.question == TrackingControlView::Question::CLEAR) questionPill(g, m);
+        else{
+            char title[12];
+            snprintf(title, sizeof(title), "MARK %u", unsigned(c.editMark));
+            text(g, pixelFont, 0, 0, title);
+            textRight(g, pixelFont, 118, 0, "R SAVE L BACK");
+            activeDot(g, 124, 2, m, true);
+        }
+        char x[14], y[14], h[14], t[14], v[12];
+        mmText(v, sizeof(v), d.xMm, 3);
+        snprintf(x, sizeof(x), "x %s", v);
+        mmText(v, sizeof(v), d.yMm, 3);
+        snprintf(y, sizeof(y), "y %s", v);
+        if(d.b_heading){
+            plainValue(v, sizeof(v), d.heading(), 1);
+            snprintf(h, sizeof(h), "h %s\x01", v);
+        }
+        else snprintf(h, sizeof(h), "h --");
+        timeText(v, sizeof(v), d, true);
+        snprintf(t, sizeof(t), "t %s", v);
+        const char* fields[4] = {x, y, h, t};
+        for(int i = 0; i < 4; i++){
+            int16_t fx = i % 2 == 0 ? 0 : 64, top = i < 2 ? 10 : 21;
+            if(uint8_t(c.field) == i) richPill(g, fx, top, fields[i]);
+            else richText(g, fx + 2, top + 1, fields[i], ON);
+        }
+    }
+
+    static void drawTrackingPage(Adafruit_GFX& g, const ScreenModel& m){
+        const TrackingControlView& c = m.trackingControl;
+        if(c.b_editMode && c.b_editing){
+            drawEditor(g, m);
+            return;
+        }
+        if(c.b_editMode && c.view != TrackingControlView::View::MAP){
+            if(c.view == TrackingControlView::View::LIST) drawMarkList(g, m);
+            else drawTrip(g, m);
+            //a question shows over the view
+            if(c.question != TrackingControlView::Question::NONE){
+                g.fillRect(0, 0, 128, 11, OFF);
+                questionPill(g, m);
+            }
+            return;
+        }
+        const Reply::MotionView& v = m.motion;
+        const char* reason = nullptr;
+        switch(m.motionAvailability){
+            case Reply::MotionAvailability::NO_LINK: reason = "no link"; break;
+            case Reply::MotionAvailability::NO_DATA: reason = "no motion data"; break;
+            case Reply::MotionAvailability::LIVE:
+                if(isnan(v.poseX) || isnan(v.poseY) || isnan(v.heading)) reason = "no position";
+                break;
+        }
+        float scale = m.tracking.scale;
+        //a run, or its arrival for 3 s: the bottom row is the run's (no scale label, no mark pill, no compass)
+        bool b_run = (m.run.b_run || m.run.b_arrived) && !reason;
+        bool b_question = c.question != TrackingControlView::Question::NONE;
+        if(!reason){
+            //the map at the steadied pose (TrackingMap::follow: a dead band against a shimmering grid), the pose itself
+            //where none was steadied (the renders)
+            const TrackingView& t = m.tracking;
+            bool b_steady = !isnan(t.mapX) && !isnan(t.mapY) && !isnan(t.mapHeading);
+            float x = b_steady ? t.mapX : v.poseX, y = b_steady ? t.mapY : v.poseY;
+            float heading = b_steady ? t.mapHeading : v.heading;
+            drawGrid(g, x, y, heading, scale);
+            originMark(g, x, y, heading, scale);
+            if(b_run) drawRunLine(g, m.run, x, y, heading, scale);
+            drawTrail(g, m.tracking, x, y, heading, scale);
+            drawMarks(g, m, x, y, heading, scale);
+            if(b_run && m.run.b_run) drawGhost(g, m.run, x, y, heading, scale);
+            //the bottom row: the scale (not during a run), the pace or the selected mark, the drive arrow
+            bool b_arrow = !isnan(m.driveHeading);
+            int16_t right = b_arrow ? driveArrowLeft - 2 : 127;
+            if(b_run) runBottom(g, m, right);
+            else{
+                scaleLabel(g, m.tracking.scale);
+                int metres = scale >= 4.0f ? 1 : 5;
+                int16_t labelRight = int16_t(lroundf(float(metres) * scale)) + 3 + textWidth(g, pixelFont, metres == 1 ? "1m" : "5m") - 1;
+                markPill(g, m, labelRight + 3, right);
+            }
+            if(b_arrow) driveArrow(g, m.driveHeading);
+        }
+        else{
+            int16_t w = textWidth(g, pixelFont, reason);
+            int16_t x = 64 - w / 2;
+            g.fillRect(x - 1, 0, w + 2, 8, OFF);
+            text(g, pixelFont, x, 0, reason);
+        }
+        //the rover, the compass (not during a run, nor while a pill takes the top) and the alive dot over their dark
+        //margins
+        g.fillRect(roverLeft - 1, roverTop - 1, 7, 9, OFF);
+        g.drawBitmap(roverLeft, roverTop, roverBitmap, 5, 7, ON);
+        if(b_question) questionPill(g, m);
+        else if(b_run){}            //no top line during a run: the ghost is never hidden
+        else if(m.run.refusal != RunRefusal::NONE) refusalPill(g, m);
+        else compass(g, m.tracking.compassHeading);
+        g.fillRect(trackingDotX, 0, 4, 4, OFF);
+        activeDot(g, trackingDotX, 0, m, true);
+    }
+
+    //——— the Link page ———
+
+    //The last 60 s on the left (x 0..59, rows 9..31, one column a second, the newest on the right, filled from the
+    //right): the loss as bars from the bottom (100 % the full height, at least 1 px for any loss), the signal (the
+    //weaker side, -110 dBm at the bottom to -40 dBm at the top) as a line, dark where it crosses a bar; none without
+    //a link. On the right (x 64..126) the numbers now: what the remote and the receiver hear, the loss and the delay
+    static const int16_t historyTop = 9;
+    static const int16_t historyBottom = 31;
+    static int16_t signalRow(int8_t dbm){
+        float v = (float(dbm) + 110.0f) / 70.0f;
+        if(v < 0.0f) v = 0.0f;
+        if(v > 1.0f) v = 1.0f;
+        return int16_t(historyBottom - lroundf(v * float(historyBottom - historyTop)));
+    }
+
     static void drawLinkPage(Adafruit_GFX& g, const ScreenModel& m){
         drawPageHeader(g, m, antennaBitmap);
-        char value[24];
-        //how strongly each side hears the other (the radio keeps its last reading: only meaningful while replies arrive)
-        if(m.b_linkUp) snprintf(value, sizeof(value), "%ddBm", m.downDbm);
-        else snprintf(value, sizeof(value), "--");
-        row(g, 0, "remote hears", value);
-        if(m.b_linkUp) snprintf(value, sizeof(value), "%ddBm", m.upDbm);
-        else snprintf(value, sizeof(value), "--");
-        row(g, 1, "receiver hears", value);
-        //frames without a reply in the last second, and how long a reply takes
-        if(m.b_linkUp){
-            snprintf(value, sizeof(value), "lost %u%%  delay %.0fms", m.loss, m.rttMs);
-            text(g, pixelFont, 0, 24, value);
+        const LinkHistoryView& h = m.linkHistory;
+        int16_t span = historyBottom - historyTop + 1;
+        int16_t barTop[LinkHistoryView::capacity];
+        for(uint8_t i = 0; i < h.count; i++){
+            int16_t x = int16_t(LinkHistoryView::capacity - h.count + i);
+            int16_t height = h.loss[i] == 0 ? 0 : int16_t(1 + lroundf(float(h.loss[i]) / 100.0f * float(span - 1)));
+            barTop[i] = int16_t(historyBottom - height + 1);
+            if(height > 0) g.drawFastVLine(x, barTop[i], height, ON);
         }
-        else row(g, 2, "lost", "--");
+        int16_t lastX = -1, lastY = 0;
+        for(uint8_t i = 0; i < h.count; i++){
+            int16_t x = int16_t(LinkHistoryView::capacity - h.count + i);
+            if(h.dbm[i] == LinkHistoryView::noSignal){ lastX = -1; continue; }
+            int16_t y = signalRow(h.dbm[i]);
+            //the line joins the samples column by column (a step drawn as a vertical run)
+            int16_t from = lastX >= 0 ? lastY : y;
+            int16_t y0 = from < y ? from : y, y1 = from < y ? y : from;
+            for(int16_t yy = y0; yy <= y1; yy++){
+                bool b_inBar = yy >= barTop[i] && h.loss[i] > 0;
+                g.drawPixel(x, yy, b_inBar ? OFF : ON);
+            }
+            lastX = x;
+            lastY = y;
+        }
+        char value[16];
+        text(g, pixelFont, 64, 9, "remote");
+        if(m.b_linkUp) snprintf(value, sizeof(value), "%d", m.downDbm); else snprintf(value, sizeof(value), "--");
+        textRight(g, pixelFont, 126, 9, value);
+        text(g, pixelFont, 64, 17, "recv");
+        if(m.b_linkUp) snprintf(value, sizeof(value), "%d", m.upDbm); else snprintf(value, sizeof(value), "--");
+        textRight(g, pixelFont, 126, 17, value);
+        if(m.b_linkUp){
+            snprintf(value, sizeof(value), "%u%%", m.loss);
+            text(g, pixelFont, 64, 25, value);
+            snprintf(value, sizeof(value), "%.0fms", m.rttMs);
+            textRight(g, pixelFont, 126, 25, value);
+        }
+        else text(g, pixelFont, 64, 25, "lost --");
     }
 
     static void drawRadioPage(Adafruit_GFX& g, const ScreenModel& m){
@@ -1007,6 +1673,7 @@ namespace RemoteUi{
         switch(m.page){
             case Page::MOTION: drawMotionPage(g, m); break;
             case Page::MOTORS: drawMotorsPage(g, m); break;
+            case Page::TRACKING: drawTrackingPage(g, m); break;
             case Page::LINK: drawLinkPage(g, m); break;
             case Page::RADIO: drawRadioPage(g, m); break;
             case Page::BATTERY: drawBatteryPage(g, m); break;
@@ -1045,7 +1712,8 @@ namespace RemoteUi{
             switch(SettingsMenu::Item(item)){
                 case SettingsMenu::Item::CHANNEL:
                     name = "Channel";
-                    snprintf(value, sizeof(value), "%X", m.pending.channel);
+                    if(m.pending.isRadioOff()) snprintf(value, sizeof(value), "Off");
+                    else snprintf(value, sizeof(value), "%X", m.pending.channel);
                     b_editable = true;
                     b_changed = m.pending.channel != m.settings.channel;
                     break;
