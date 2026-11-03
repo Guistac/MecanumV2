@@ -97,6 +97,7 @@ private:
         uint8_t speedModeDisplay = 0;
         bool directionModeDisplay = false;
         bool functionButtonPressed = false;     //the receiver's remote finder button
+        bool creepDisplay = false;              //[D-207] the reply's creep echo (status word bit 10)
         int8_t robotRxSignalStrength = 0;       //from the reply's page 3 (2.5 Hz) [D-163]
         float batteryVoltage = 0.0;             //the same
         //[D-161] the motion from the reply, the last value of each paged field; [D-163] the pose carried forward

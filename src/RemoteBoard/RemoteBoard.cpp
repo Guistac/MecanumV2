@@ -659,6 +659,7 @@ void RemoteBoard::usbExchange(uint8_t* outgoingFrame){
     Reply::Status status;
     status.state = uint8_t(usbMavlink->stacatoState) & 0x7;
     status.speed = uint8_t(usbProxy.speedSelection) & 0x3;
+    status.b_creep = usbProxy.b_connected && usbProxy.b_creep;     //[D-207] as relayed to Stacato
     status.txCounter = usbProxy.txCounter & 0xF;
     status.page = usbReplyPager.next();
     status.mavState = usbMavlink->vehicleMavState();
@@ -730,6 +731,7 @@ void RemoteBoard::receiveData(){
         radioSendEvent.setFrequency(pingSendFrequency);
         //no link: no motion is shown as live [D-161]
         robotProxy.motion.clear();
+        robotProxy.creepDisplay = false;    //nor creep [D-207]
     }
 }
 
@@ -754,6 +756,7 @@ void RemoteBoard::handleReply(uint8_t* incomingFrame, uint8_t length){
     robotProxy.speedModeDisplay = reply.status.speed;
     robotProxy.directionModeDisplay = reply.status.b_direction;
     robotProxy.functionButtonPressed = reply.status.b_function;
+    robotProxy.creepDisplay = reply.status.b_creep;
     uint8_t mirroredTxCounter = reply.status.txCounter;
 
     //in page 3 (2.5 Hz [D-163]), kept in between

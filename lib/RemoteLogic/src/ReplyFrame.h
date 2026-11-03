@@ -7,8 +7,9 @@
 //are always flashed together, there is no compatibility with an older format: the remote takes only a 13 byte reply
 //(the D-161 12 byte reply and the 8 byte reply before it are invalid frames: a mismatched pair shows NO LINK). The
 //uplink is unchanged (UplinkFrame.h, 8 bytes, header 0b111, the E-stop number in bytes 6 and 7).
-//  0-1   the status word as before D-161 (header 0b111, state, speed and direction echo, function button, tx counter
-//        mirror); bits 10-11 are 0 again (D-161 had the page there)
+//  0-1   the status word as before D-161: bits 0-2 header 0b111, 3-5 state, 6-7 speed echo, 8 direction echo, 9
+//        function button, 10 creep echo [D-207] (the creep the receiver relays to Stacato), 11 0 (D-161 had the page
+//        in 10-11), 12-15 tx counter mirror
 //  2-3   vx, 4-5 vy (int16 little-endian, mm/s), 6-7 vr (int16, mrad/s), in every reply
 //  8-11  the page's slot, pages in the order 0..7, one per reply (20 Hz replies):
 //        0, 2, 4, 6  the four wheel velocities (int8 each, -127..127 = -100..100 % of the drive's velocity limit,
@@ -57,19 +58,21 @@ namespace Reply{
         uint8_t speed = 0;              //SpeedMode echo, 2 bits
         bool b_direction = false;
         bool b_function = false;        //the receiver's remote finder button
+        bool b_creep = false;           //[D-207] bit 10: the creep the receiver relays (MANUAL_CONTROL bit 11)
         uint8_t txCounter = 0;          //the remote's counter mirrored, 4 bits
         uint8_t page = 0;               //the slot in bytes 8-11, 3 bits, in byte 12 [D-163]
         uint8_t mavState = noStacato;   //[D-163] Stacato's MAV_STATE as received, 4 bits; 0xF: no Stacato heartbeat
         bool b_armed = false;           //[D-163] MAV_MODE_FLAG_SAFETY_ARMED: no E-stop latched in Stacato
     };
 
-    //bits 10-11 stay 0 [D-163]
+    //bit 10 creep [D-207]; bit 11 stays 0 [D-163]
     inline uint16_t statusWord(const Status& s){
         uint16_t word = statusHeader;
         word |= (s.state & 0x7) << 3;
         word |= (s.speed & 0x3) << 6;
         if(s.b_direction) word |= 0x100;
         if(s.b_function) word |= 0x200;
+        if(s.b_creep) word |= 0x400;
         word |= (s.txCounter & 0xF) << 12;
         return word;
     }
@@ -85,6 +88,7 @@ namespace Reply{
         s.speed = (word >> 6) & 0x3;
         s.b_direction = word & 0x100;
         s.b_function = word & 0x200;
+        s.b_creep = word & 0x400;
         s.txCounter = (word >> 12) & 0xF;
         s.mavState = byte12 & 0xF;
         s.b_armed = byte12 & 0x10;

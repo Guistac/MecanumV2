@@ -198,6 +198,8 @@ void RobotBoard::sendData(){
   status.speed = uint8_t(motionControl.speedMode) & 0x3;
   status.b_direction = motionControl.directionMode;
   status.b_function = function1Button.isPressed();
+  //[D-207] the creep as relayed to Stacato (MANUAL_CONTROL bit 11)
+  status.b_creep = remoteProxy.b_connected && remoteProxy.b_creep;
   status.txCounter = remoteProxy.txCounter & 0xF;
   status.page = replyPager.next();
   status.mavState = mavlink->vehicleMavState();

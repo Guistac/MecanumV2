@@ -235,7 +235,7 @@ static uint16_t legacyStatusWord(uint8_t state, uint8_t speed, bool b_direction,
 void test_status_word_as_before_and_byte_12(){
     for(uint8_t state = 0; state < 8; state++)
     for(uint8_t speed = 0; speed < 4; speed++)
-    for(int flags = 0; flags < 4; flags++)
+    for(int flags = 0; flags < 8; flags++)
     for(uint8_t counter = 0; counter < 16; counter++)
     for(uint8_t page = 0; page < 8; page++){
         Status s;
@@ -243,14 +243,16 @@ void test_status_word_as_before_and_byte_12(){
         s.speed = speed;
         s.b_direction = flags & 1;
         s.b_function = flags & 2;
+        s.b_creep = flags & 4;
         s.txCounter = counter;
         s.page = page;
         s.mavState = (state + counter) & 0xF;
         s.b_armed = counter & 1;
         uint16_t word = statusWord(s);
-        //exactly the old word: bits 10-11 are 0 again
-        TEST_ASSERT_EQUAL_HEX16(legacyStatusWord(state, speed, s.b_direction, s.b_function, counter), word);
-        TEST_ASSERT_EQUAL_HEX16(0, word & 0x0C00);
+        //exactly the old word, bit 10 the creep echo [D-207]; bit 11 stays 0
+        uint16_t creepBit = s.b_creep ? 0x0400 : 0;
+        TEST_ASSERT_EQUAL_HEX16(legacyStatusWord(state, speed, s.b_direction, s.b_function, counter) | creepBit, word);
+        TEST_ASSERT_EQUAL_HEX16(creepBit, word & 0x0C00);
         uint8_t byte12 = vehicleByte(s);
         TEST_ASSERT_EQUAL_HEX8(s.mavState, byte12 & 0xF);
         TEST_ASSERT_EQUAL(s.b_armed, bool(byte12 & 0x10));
@@ -260,6 +262,7 @@ void test_status_word_as_before_and_byte_12(){
         TEST_ASSERT_EQUAL_UINT8(speed, back.speed);
         TEST_ASSERT_EQUAL(s.b_direction, back.b_direction);
         TEST_ASSERT_EQUAL(s.b_function, back.b_function);
+        TEST_ASSERT_EQUAL(s.b_creep, back.b_creep);
         TEST_ASSERT_EQUAL_UINT8(counter, back.txCounter);
         TEST_ASSERT_EQUAL_UINT8(page, back.page);
         TEST_ASSERT_EQUAL_UINT8(s.mavState, back.mavState);
@@ -447,6 +450,7 @@ void test_decode_round_trip_and_rejects(){
     s.speed = 1;
     s.b_direction = true;
     s.b_function = true;
+    s.b_creep = true;
     s.txCounter = 7;
     s.mavState = MAV_EMERGENCY;
     s.b_armed = false;
@@ -463,6 +467,7 @@ void test_decode_round_trip_and_rejects(){
         TEST_ASSERT_EQUAL_UINT8(6, d.status.state);
         TEST_ASSERT_EQUAL_UINT8(1, d.status.speed);
         TEST_ASSERT_TRUE(d.status.b_direction && d.status.b_function);
+        TEST_ASSERT_TRUE(d.status.b_creep);
         TEST_ASSERT_EQUAL_UINT8(7, d.status.txCounter);
         TEST_ASSERT_EQUAL_UINT8(page, d.status.page);
         TEST_ASSERT_EQUAL_INT16(312, d.vx);
