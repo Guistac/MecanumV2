@@ -168,13 +168,13 @@ void RobotBoard::receiveData(){
         remoteProxy.leftJoystickY,
         remoteProxy.rightJoystickX,
         remoteProxy.rightJoystickY);
-      Serial.printf("dis%i ena%i ss%i dir%i lb%i rb%i lj%i rj%i count%i\n",
+      Serial.printf("dis%i ena%i ss%i dir%i lb%i creep%i lj%i rj%i count%i\n",
         remoteProxy.b_shouldDisable,
         remoteProxy.b_shouldEnable,
         remoteProxy.speedSelection,
         remoteProxy.b_directionToggle,
         remoteProxy.b_leftButton,
-        remoteProxy.b_rightButton,
+        remoteProxy.b_creep,
         remoteProxy.b_leftJoystick,
         remoteProxy.b_rightJoystick,
         remoteProxy.txCounter);

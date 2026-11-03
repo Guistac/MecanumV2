@@ -26,8 +26,9 @@ using namespace Reply;
 
 //——— references: the code as it was before D-161 (a4c8220), copied ———
 
-//src/Utilities/RemoteProxy.h decodeRemoteFrame at a4c8220
-static bool legacyDecodeRemoteFrame(const uint8_t* frame, uint8_t length, RemoteProxy& proxy){
+//src/Utilities/RemoteProxy.h decodeRemoteFrame at a4c8220; bit 9 (the right pushbutton then, creep since D-207) into
+//b_rightButton
+static bool legacyDecodeRemoteFrame(const uint8_t* frame, uint8_t length, RemoteProxy& proxy, bool& b_rightButton){
     if(length != 8) return false;
     uint16_t controlword = frame[0] | frame[1] << 8;
     uint8_t header = controlword & 0x7;
@@ -38,7 +39,7 @@ static bool legacyDecodeRemoteFrame(const uint8_t* frame, uint8_t length, Remote
     if(uint8_t(proxy.speedSelection) == 0x3) proxy.speedSelection = SpeedMode::LOW_SPEED;
     proxy.b_directionToggle = controlword & 0x80;
     proxy.b_leftButton = controlword & 0x100;
-    proxy.b_rightButton = controlword & 0x200;
+    b_rightButton = controlword & 0x200;
     proxy.b_leftJoystick = controlword & 0x400;
     proxy.b_rightJoystick = controlword & 0x800;
     proxy.txCounter = (controlword >> 12) & 0xF;
@@ -65,7 +66,7 @@ static bool legacyRemoteAccepts(const uint8_t* frame, uint8_t length){
 static bool sameProxy(const RemoteProxy& a, const RemoteProxy& b){
     return a.b_shouldDisable == b.b_shouldDisable && a.b_shouldEnable == b.b_shouldEnable
         && a.speedSelection == b.speedSelection && a.b_directionToggle == b.b_directionToggle
-        && a.b_leftButton == b.b_leftButton && a.b_rightButton == b.b_rightButton
+        && a.b_leftButton == b.b_leftButton
         && a.b_leftJoystick == b.b_leftJoystick && a.b_rightJoystick == b.b_rightJoystick
         && a.leftJoystickX == b.leftJoystickX && a.leftJoystickY == b.leftJoystickY
         && a.rightJoystickX == b.rightJoystickX && a.rightJoystickY == b.rightJoystickY
@@ -83,7 +84,8 @@ void test_uplink_estop_number_every_value_as_before(){
         RemoteProxy legacy, now;
         legacy.b_safetyClear = !Safety::isNumberClear(n);   //start opposite: the decode must write it
         now.b_safetyClear = legacy.b_safetyClear;
-        TEST_ASSERT_TRUE(legacyDecodeRemoteFrame(frame, 8, legacy));
+        bool b_right;
+        TEST_ASSERT_TRUE(legacyDecodeRemoteFrame(frame, 8, legacy, b_right));
         TEST_ASSERT_TRUE(decodeRemoteFrame(frame, 8, now));
         if(legacy.b_safetyClear != now.b_safetyClear){
             char message[48];
@@ -119,11 +121,14 @@ void test_uplink_all_fields_as_before(){
             uint8_t frame[8] = {uint8_t(word & 0xFF), uint8_t(word >> 8), sticks[s], sticks[(s + 3) % 9],
                                 sticks[(s + 5) % 9], sticks[(s + 7) % 9], uint8_t(number & 0xFF), uint8_t(number >> 8)};
             RemoteProxy legacy, now;
-            bool b_legacy = legacyDecodeRemoteFrame(frame, 8, legacy);
+            bool b_right = false;
+            bool b_legacy = legacyDecodeRemoteFrame(frame, 8, legacy, b_right);
             bool b_now = decodeRemoteFrame(frame, 8, now);
             TEST_ASSERT_EQUAL(b_legacy, b_now);
             TEST_ASSERT_EQUAL((word & 0x7) == 0x7, b_now);
             if(b_now) TEST_ASSERT_TRUE(sameProxy(legacy, now));
+            //[D-207] bit 9 is creep, only at MEDIUM (state 3 reads as LOW)
+            if(b_now) TEST_ASSERT_EQUAL(b_right && legacy.speedSelection == SpeedMode::MEDIUM_SPEED, now.b_creep);
         }
     }
 }
@@ -145,6 +150,73 @@ void test_uplink_a_reply_is_never_an_uplink(){
     TEST_ASSERT_FALSE(decodeRemoteFrame(frame, 13, proxy));
     for(uint8_t length : {uint8_t(0), uint8_t(4), uint8_t(7), uint8_t(9), uint8_t(12), uint8_t(20)}) TEST_ASSERT_FALSE(decodeRemoteFrame(frame, length, proxy));
     TEST_ASSERT_FALSE(proxy.b_safetyClear);
+}
+
+//——— creep [D-207]: uplink bit 9 at MEDIUM only, MANUAL_CONTROL.buttons bit 11 ———
+
+void test_uplink_creep_decoded_only_at_medium(){
+    for(uint8_t state = 0; state < 4; state++){
+        for(int creep = 0; creep < 2; creep++){
+            UplinkControls controls;
+            controls.speedState = state;
+            controls.b_creep = creep;
+            uint8_t frame[8];
+            Uplink::encode(controls, false, 5, Safety::generateClearNumber(), frame);
+            RemoteProxy proxy;
+            proxy.b_creep = !creep;     //the decode must write it
+            TEST_ASSERT_TRUE(decodeRemoteFrame(frame, 8, proxy));
+            TEST_ASSERT_EQUAL(creep && state == uint8_t(SpeedMode::MEDIUM_SPEED), proxy.b_creep);
+            TEST_ASSERT_FALSE(proxy.b_leftButton);      //bit 8, the old flight termination, never set
+        }
+    }
+    //a hand-made frame with bit 9 at FAST, OFF or state 3: ignored
+    for(uint8_t state : {uint8_t(0), uint8_t(2), uint8_t(3)}){
+        uint16_t word = 0x7 | 0x200 | (state << 5);
+        uint8_t frame[8] = {uint8_t(word & 0xFF), uint8_t(word >> 8), 127, 127, 127, 127, 0, 0};
+        RemoteProxy proxy;
+        TEST_ASSERT_TRUE(decodeRemoteFrame(frame, 8, proxy));
+        TEST_ASSERT_FALSE(proxy.b_creep);
+    }
+}
+
+//the buttons word as the receiver built it at 3d94029 (MavLink.h sendMsg_MANUAL_CONTROLS), bit 1 the right pushbutton
+static uint16_t legacyButtons(const RemoteProxy& p, bool b_rightButton){
+    bool connected = p.b_connected;
+    uint16_t buttons = 0;
+    buttons |= (p.b_leftButton) << 0;
+    buttons |= (b_rightButton) << 1;
+    buttons |= (p.b_leftJoystick) << 2;
+    buttons |= (p.b_rightJoystick) << 3;
+    buttons |= (p.speedSelection == SpeedMode::HIGH_SPEED) << 4;
+    buttons |= (p.speedSelection == SpeedMode::LOW_SPEED) << 5;
+    buttons |= (p.b_directionToggle) << 6;
+    buttons |= (p.b_safetyClear && p.b_connected) << 7;
+    buttons |= (p.b_shouldDisable) << 8;
+    buttons |= (p.b_shouldEnable) << 9;
+    buttons |= (connected) << 10;
+    return buttons;
+}
+
+void test_manual_control_buttons_with_creep(){
+    //every control word, connected or not: bits 0 and 2-10 as before, bit 1 always 0, bit 11 creep and connected
+    for(uint32_t word = 0x7; word <= 0xFFFF; word += 8){
+        for(int connected = 0; connected < 2; connected++){
+            uint16_t number = uint16_t(word * 2654435761u >> 16);
+            uint8_t frame[8] = {uint8_t(word & 0xFF), uint8_t(word >> 8), 200, 50, 127, 127, uint8_t(number & 0xFF), uint8_t(number >> 8)};
+            RemoteProxy proxy;
+            TEST_ASSERT_TRUE(decodeRemoteFrame(frame, 8, proxy));
+            proxy.b_connected = connected;
+            uint16_t buttons = manualControlButtons(proxy);
+            bool b_right = word & 0x200;
+            TEST_ASSERT_EQUAL_HEX16(legacyButtons(proxy, b_right) & ~0x0002, buttons & 0x07FD);
+            TEST_ASSERT_EQUAL_HEX16(0, buttons & 0x0002);
+            TEST_ASSERT_EQUAL_HEX16(0, buttons & 0xF000);
+            bool b_medium = ((word >> 5) & 0x3) == 0x1;
+            TEST_ASSERT_EQUAL(connected && b_right && b_medium, bool(buttons & 0x0800));
+            //creep never with a speed bit: Stacato reads creep only at MEDIUM
+            if(buttons & 0x0800) TEST_ASSERT_EQUAL_HEX16(0, buttons & 0x0030);
+        }
+    }
 }
 
 //——— the reply ———
@@ -874,6 +946,8 @@ int main(int argc, char** argv){
     RUN_TEST(test_uplink_generated_numbers);
     RUN_TEST(test_uplink_all_fields_as_before);
     RUN_TEST(test_uplink_a_reply_is_never_an_uplink);
+    RUN_TEST(test_uplink_creep_decoded_only_at_medium);
+    RUN_TEST(test_manual_control_buttons_with_creep);
     RUN_TEST(test_status_word_as_before_and_byte_12);
     RUN_TEST(test_conversions_round_clamp_and_nan);
     RUN_TEST(test_reply_layout_every_page);

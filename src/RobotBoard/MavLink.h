@@ -66,13 +66,11 @@ class Mavlink{
     bool b_previousEnable = false;
     bool b_previousDisable = false;
     bool b_previousLeft = false;
-    bool b_previousRight = false;
     //the USB remote, its first frame after USB took over: a button held through the handover is not a press
     void syncCommandEdges(){
         b_previousEnable = proxy->b_shouldEnable;
         b_previousDisable = proxy->b_shouldDisable;
         b_previousLeft = proxy->b_leftButton;
-        b_previousRight = proxy->b_rightButton;
     }
     LengthTimer heartbeatTimeout = LengthTimer(0.5);
 
@@ -123,12 +121,7 @@ class Mavlink{
         }
         b_previousLeft = b_left;
 
-        //REBOOT
-        bool b_right = proxy->b_rightButton;
-        if(b_right && !b_previousRight){
-            sendCmd(MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN, 0.0, REBOOT_SHUTDOWN_ACTION_REBOOT);
-        }
-        b_previousRight = b_right;
+        //uplink bit 9 is creep [D-207], no longer the reboot command: it goes out in MANUAL_CONTROL.buttons bit 11
     }
 
     void receiveMessage(const mavlink_message_t* msg, const mavlink_status_t* status){
@@ -272,18 +265,8 @@ class Mavlink{
         int16_t y = connected ? proxy->leftJoystickY * 1000.0 : 0;
         int16_t z = connected ? proxy->rightJoystickX * 1000.0 : 0;
         int16_t r = connected ? proxy->rightJoystickY * 1000.0 : 0;
-        uint16_t buttons = 0;
-        buttons |= (proxy->b_leftButton) << 0;
-        buttons |= (proxy->b_rightButton) << 1;
-        buttons |= (proxy->b_leftJoystick) << 2;
-        buttons |= (proxy->b_rightJoystick) << 3;
-        buttons |= (proxy->speedSelection == SpeedMode::HIGH_SPEED) << 4;
-        buttons |= (proxy->speedSelection == SpeedMode::LOW_SPEED) << 5;
-        buttons |= (proxy->b_directionToggle) << 6;
-        buttons |= (proxy->b_safetyClear && proxy->b_connected) << 7;
-        buttons |= (proxy->b_shouldDisable) << 8;
-        buttons |= (proxy->b_shouldEnable) << 9;
-        buttons |= (connected) << 10; //D-44: radio link to the handheld up
+        //the bit map in Utilities/RemoteProxy.h (host-tested): bit 1 is 0, bit 11 creep [D-207]
+        uint16_t buttons = manualControlButtons(*proxy);
 
         mavlink_message_t msg;
         mavlink_msg_manual_control_pack(systemId, componentId, &msg, 0, x ,y ,z, r, buttons, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
