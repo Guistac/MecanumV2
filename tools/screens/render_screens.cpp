@@ -55,6 +55,17 @@ int main(int argc, char** argv){
     auto add = [&](const char* name, ScreenModel m){ examples.push_back({name, m}); };
 
     { ScreenModel m = base(); add("01_enabled_slow", m); }
+    //[D-207] creep: CREEP in place of SLOW, flashing at 1 Hz (pill 0..499 ms, plain text 500..999 ms); with a running
+    //stopwatch beside it; in an alarm row (plain text)
+    { ScreenModel m = base(); m.b_creep = true; m.now = 100; add("01c1_enabled_creep_pill", m); }
+    { ScreenModel m = base(); m.b_creep = true; m.now = 600; add("01c2_enabled_creep_plain", m); }
+    { ScreenModel m = base(); m.b_creep = true; m.speedState = 2; add("01c5_creep_echo_at_fast_shows_fast", m); }
+    //[D-208 point 5] NO LINK: CREEP from the remote's own flick (the alarm row: plain text); a held echo alone shows SLOW
+    { ScreenModel m = base(); m.b_linkUp = false; m.b_localCreep = true; m.status = {BigMessage::NO_LINK, StatusLine::ESTOP_NOT_CONNECTED}; add("01c7_no_link_creep", m); }
+    { ScreenModel m = base(); m.b_linkUp = false; m.b_creep = true; m.status = {BigMessage::NO_LINK, StatusLine::ESTOP_NOT_CONNECTED}; add("01c8_no_link_echo_only_shows_slow", m); }
+    //link up with no echo (an old receiver): the own flick alone shows SLOW
+    { ScreenModel m = base(); m.b_localCreep = true; add("01c9_link_up_no_echo_shows_slow", m); }
+    { ScreenModel m = base(); m.speedState = 2; add("01c6_enabled_fast", m); }
     { ScreenModel m = base(); m.status.message = BigMessage::DISABLED; m.speedState = 0; add("02_disabled_off", m); }
     { ScreenModel m = base(); m.status.message = BigMessage::ENABLING; m.speedState = 2; m.b_worldFrame = true; add("03_enabling_fast_world", m); }
     { ScreenModel m = base(); m.status = {BigMessage::ESTOP, StatusLine::NORMAL}; add("04_estop", m); }
@@ -89,6 +100,8 @@ int main(int argc, char** argv){
     { ScreenModel m = base(); m.status.message = BigMessage::DISABLED; m.speedState = 0; add("01s1_timer_idle", m); }
     { ScreenModel m = base(); m.stopwatch = timer(0, 133400, Stopwatch::State::RUNNING); add("01s2_timer_counting", m); }
     { ScreenModel m = base(); m.stopwatch = timer(0, 725000, Stopwatch::State::RUNNING); m.b_worldFrame = true; add("01s3_timer_counting_12min_world", m); }
+    { ScreenModel m = base(); m.b_creep = true; m.now = 100; m.b_worldFrame = true; m.stopwatch = timer(0, 725000, Stopwatch::State::RUNNING); add("01c3_creep_pill_timer_world", m); }
+    { ScreenModel m = base(); m.b_creep = true; m.now = 600; m.b_worldFrame = true; m.stopwatch = timer(0, 725000, Stopwatch::State::RUNNING); add("01c4_creep_plain_timer_world", m); }
     { ScreenModel m = base(); m.stopwatch = timer(0, 133400, Stopwatch::State::STOPPED); m.now = 0; add("01s4_timer_stopped_shown", m); }
     { ScreenModel m = base(); m.stopwatch = timer(0, 133400, Stopwatch::State::STOPPED); m.now = 1000; add("01s5_timer_stopped_blank", m); }
     { ScreenModel m = base(); m.stopwatch = timer(150000, 0, Stopwatch::State::IDLE); m.status.message = BigMessage::DISABLED; m.speedState = 0; add("01s6_countdown_idle_2m30_full_bar", m); }

@@ -65,6 +65,8 @@ struct ScreenModel{
     uint16_t radioFailures = 0;
     uint8_t speedState = 0;
     bool b_sticksOffWarning = false;    //a stick pushed while the speed switch is at OFF (the grind sounds)
+    bool b_creep = false;               //[D-207] the receiver echoes creep (reply bit 10): CREEP in place of SLOW
+    bool b_localCreep = false;          //[D-208 point 5] the remote's own flick state: CREEP without a link
     bool b_worldFrame = false;
     StopwatchView stopwatch;            //the rehearsal stopwatch, bottom centre of the Status page [D-160]
 

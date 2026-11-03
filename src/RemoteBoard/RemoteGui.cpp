@@ -59,6 +59,8 @@ void RemoteBoard::fillScreenModel(ScreenModel& m){
     m.radioFailures = radio.getInitFailures();
     m.speedState = speedToggle.getState();
     m.b_sticksOffWarning = b_sticksOffWarning;
+    m.b_creep = robotProxy.creepDisplay;
+    m.b_localCreep = speedFlick.isCreep();
     m.b_worldFrame = directionToggle.getSwitchState();
     m.stopwatch = stopwatch.view(now);
 

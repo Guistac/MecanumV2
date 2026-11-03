@@ -25,6 +25,8 @@
 #include <PoseZero.h>
 #include <TrackingMap.h>
 #include <TrackingControl.h>
+#include <SpeedFlick.h>
+#include <CreepView.h>
 
 void setUp(){}
 void tearDown(){}
@@ -374,6 +376,15 @@ void test_sounds_follow_the_setting(){
     TEST_ASSERT_TRUE(isAllowed(Sound::STATUS_ESTOP, alarms));
     TEST_ASSERT_FALSE(isAllowed(Sound::SEARCHING, alarms));
     TEST_ASSERT_FALSE(isAllowed(Sound::WARNING, off));
+    //[D-207] creep on and off: status sounds (Alarms plays them, Off does not), several notes, never the speed click
+    const Sound creeps[] = {Sound::STATUS_CREEP_ON, Sound::STATUS_CREEP_OFF};
+    for(Sound creep : creeps){
+        TEST_ASSERT_TRUE(isAllowed(creep, alarms));
+        TEST_ASSERT_FALSE(isAllowed(creep, off));
+        TEST_ASSERT_TRUE(cue(creep).noteCount > 1);
+        TEST_ASSERT_TRUE(cue(creep).notes != cue(Sound::SPEED_SLOW).notes);
+    }
+    TEST_ASSERT_TRUE(cue(Sound::STATUS_CREEP_ON).notes != cue(Sound::STATUS_CREEP_OFF).notes);
     TEST_ASSERT_TRUE(gamesAllowed(alarms));
     TEST_ASSERT_FALSE(gamesAllowed(off));
     for(uint8_t i = 1; i < uint8_t(Sound::COUNT); i++){
@@ -1043,7 +1054,7 @@ void test_uplink_frame_layout_and_guards(){
     TEST_ASSERT_FALSE(word & 0x8);
     TEST_ASSERT_EQUAL_UINT16(2, (word >> 5) & 0x3);
     TEST_ASSERT_TRUE(word & 0x80);
-    TEST_ASSERT_EQUAL_HEX16(0, word & 0x300);    //pushbuttons never sent
+    TEST_ASSERT_EQUAL_HEX16(0, word & 0x300);    //pushbuttons never sent, no creep at FAST
     TEST_ASSERT_TRUE(word & 0x800);
     TEST_ASSERT_EQUAL_UINT16(0x3, word >> 12);
     TEST_ASSERT_EQUAL_UINT8(255, frame[2]);
@@ -1055,6 +1066,364 @@ void test_uplink_frame_layout_and_guards(){
     Uplink::encode(controls, true, 0x13, 0xBEEF, frame);
     for(int i = 2; i < 6; i++) TEST_ASSERT_EQUAL_UINT8(127, frame[i]);
     TEST_ASSERT_EQUAL_HEX16(word, frame[0] | frame[1] << 8);
+}
+
+void test_uplink_creep_bit_only_at_medium(){
+    for(uint8_t state = 0; state < 4; state++){
+        for(int creep = 0; creep < 2; creep++){
+            UplinkControls controls;
+            controls.speedState = state;
+            controls.b_creep = creep;
+            uint8_t frame[8];
+            Uplink::encode(controls, false, 0, 0, frame);
+            uint16_t word = frame[0] | frame[1] << 8;
+            TEST_ASSERT_EQUAL(creep && state == uint8_t(SpeedMode::MEDIUM_SPEED), bool(word & 0x200));
+            TEST_ASSERT_EQUAL_HEX16(0, word & 0x100);     //bit 8 never: an old receiver's flight termination
+            TEST_ASSERT_EQUAL_UINT16(state, (word >> 5) & 0x3);
+        }
+    }
+}
+
+//——— SpeedFlick: the creep gesture [D-207 point 4] ———
+
+namespace{
+    //the switch as the remote's loop reads it (100 Hz input, a loop every 10 ms)
+    const uint8_t OFF = uint8_t(SpeedMode::LOW_SPEED);
+    const uint8_t MID = uint8_t(SpeedMode::MEDIUM_SPEED);
+    const uint8_t FAST = uint8_t(SpeedMode::HIGH_SPEED);
+    const uint8_t BOTH = uint8_t(SpeedMode::NO_SPEED);
+
+    struct FlickRig{
+        SpeedFlick flick;
+        uint32_t now = 100000;
+        bool b_centred = true;
+        //holds the switch at state for millis, one update every 10 ms (the first at once); returns the last result
+        bool hold(uint8_t state, uint32_t millis){
+            bool b_creep = flick.update(state, b_centred, now);
+            for(uint32_t t = 10; t < millis; t += 10){
+                now += 10;
+                b_creep = flick.update(state, b_centred, now);
+            }
+            now += millis >= 10 ? 10 : millis;
+            return b_creep;
+        }
+        //a flick from middle: offMillis at OFF (or state), then back at middle
+        bool flickThrough(uint32_t offMillis, uint8_t offState = OFF){
+            hold(offState, offMillis);
+            return hold(MID, 10);
+        }
+        //started at middle and settled there
+        void startAtMiddle(){ hold(MID, 200); }
+    };
+}
+
+void test_flick_toggles_creep_both_ways(){
+    FlickRig r;
+    r.startAtMiddle();
+    TEST_ASSERT_FALSE(r.flick.isCreep());
+    TEST_ASSERT_TRUE(r.flickThrough(200));
+    TEST_ASSERT_TRUE(r.hold(MID, 3000));         //stays creep at middle, for as long as it is there
+    TEST_ASSERT_FALSE(r.flickThrough(200));
+    TEST_ASSERT_FALSE(r.hold(MID, 500));
+    TEST_ASSERT_TRUE(r.flickThrough(80));
+}
+
+void test_flick_leaving_middle_clears_creep(){
+    FlickRig r;
+    r.startAtMiddle();
+    TEST_ASSERT_TRUE(r.flickThrough(200));
+    TEST_ASSERT_FALSE(r.hold(OFF, 10));          //at OFF: no creep in the frame
+    TEST_ASSERT_FALSE(r.hold(OFF, 2000));
+    TEST_ASSERT_FALSE(r.hold(MID, 10));          //a long stay: slow
+    TEST_ASSERT_TRUE(r.flickThrough(200));
+    TEST_ASSERT_FALSE(r.hold(FAST, 10));
+}
+
+void test_flick_from_fast_gives_slow(){
+    FlickRig r;
+    r.startAtMiddle();
+    TEST_ASSERT_TRUE(r.flickThrough(200));
+    r.hold(FAST, 100);                           //creep, quickly up to FAST and back: slow
+    TEST_ASSERT_FALSE(r.hold(MID, 10));
+    r.hold(FAST, 2000);
+    TEST_ASSERT_FALSE(r.hold(MID, 10));
+}
+
+void test_flick_after_long_off_stay_gives_slow(){
+    FlickRig r;
+    r.startAtMiddle();
+    TEST_ASSERT_FALSE(r.flickThrough(1200));     //slow stays slow
+    TEST_ASSERT_TRUE(r.flickThrough(200));
+    TEST_ASSERT_FALSE(r.flickThrough(1200));     //creep goes to slow, not toggled
+    TEST_ASSERT_TRUE(r.flickThrough(200));
+    TEST_ASSERT_FALSE(r.flickThrough(5000));
+}
+
+void test_flick_window_and_dwell_edges(){
+    //the window: back at middle 1000 ms after leaving it counts, 1010 does not
+    {
+        SpeedFlick f;
+        f.update(MID, true, 0);
+        f.update(OFF, true, 1000);
+        TEST_ASSERT_TRUE(f.update(MID, true, 2000));
+        f.update(OFF, true, 3000);
+        TEST_ASSERT_FALSE(f.update(MID, true, 4000));       //toggled back
+        f.update(OFF, true, 5000);
+        TEST_ASSERT_TRUE(f.update(MID, true, 5100));
+        f.update(OFF, true, 6000);
+        TEST_ASSERT_FALSE(f.update(MID, true, 7010));       //late: slow, from creep
+        f.update(OFF, true, 8000);
+        TEST_ASSERT_FALSE(f.update(MID, true, 9010));       //late: slow, from slow
+    }
+    //the dwell: 50 ms at OFF counts
+    {
+        SpeedFlick f;
+        f.update(MID, true, 0);
+        f.update(OFF, true, 1000);
+        f.update(OFF, true, 1040);
+        TEST_ASSERT_TRUE(f.update(MID, true, 1050));
+    }
+    //the clock wraps
+    {
+        SpeedFlick f;
+        f.update(MID, true, 0xFFFFFF00u);
+        f.update(OFF, true, 0xFFFFFFF0u);
+        TEST_ASSERT_TRUE(f.update(MID, true, 0x00000100u));
+    }
+}
+
+void test_flick_bounce_under_dwell_is_ignored(){
+    FlickRig r;
+    r.startAtMiddle();
+    TEST_ASSERT_FALSE(r.flickThrough(30));       //slow: a bounce does not toggle
+    TEST_ASSERT_FALSE(r.flickThrough(40));
+    TEST_ASSERT_TRUE(r.flickThrough(200));
+    TEST_ASSERT_TRUE(r.flickThrough(30));        //creep: a bounce keeps creep (never more speed from a contact)
+    TEST_ASSERT_TRUE(r.flickThrough(10, BOTH));
+    TEST_ASSERT_FALSE(r.flickThrough(200));
+    //bounce with a stick out keeps the speed too
+    r.b_centred = false;
+    TEST_ASSERT_FALSE(r.flickThrough(20));
+    r.b_centred = true;
+    TEST_ASSERT_TRUE(r.flickThrough(200));
+    r.b_centred = false;
+    TEST_ASSERT_TRUE(r.flickThrough(20));
+}
+
+void test_flick_with_a_stick_out_gives_slow(){
+    FlickRig r;
+    r.startAtMiddle();
+    //out when leaving middle (slow: a flick would give creep)
+    r.b_centred = false;
+    r.hold(MID, 50);
+    r.hold(OFF, 10);
+    r.b_centred = true;
+    TEST_ASSERT_FALSE(r.flickThrough(200));
+    //out during the stay at OFF
+    r.hold(OFF, 100);
+    r.b_centred = false;
+    r.hold(OFF, 30);
+    r.b_centred = true;
+    r.hold(OFF, 100);
+    TEST_ASSERT_FALSE(r.hold(MID, 10));
+    //out at the arrival
+    r.hold(OFF, 200);
+    r.b_centred = false;
+    TEST_ASSERT_FALSE(r.hold(MID, 10));
+    r.b_centred = true;
+    r.hold(MID, 100);
+    //from creep a flick with a stick out gives slow, not creep
+    TEST_ASSERT_TRUE(r.flickThrough(200));
+    r.hold(OFF, 100);
+    r.b_centred = false;
+    r.hold(OFF, 20);
+    r.b_centred = true;
+    r.hold(OFF, 100);
+    TEST_ASSERT_FALSE(r.hold(MID, 10));
+    //and a clean flick after it works
+    TEST_ASSERT_TRUE(r.flickThrough(200));
+}
+
+void test_flick_power_on_gives_slow(){
+    //power on at middle
+    SpeedFlick a;
+    TEST_ASSERT_FALSE(a.update(MID, true, 5));
+    TEST_ASSERT_FALSE(a.update(MID, true, 500));
+    //power on at OFF, then quickly to middle: no flick began at middle
+    SpeedFlick b;
+    TEST_ASSERT_FALSE(b.update(OFF, true, 5));
+    TEST_ASSERT_FALSE(b.update(MID, true, 200));
+    //at FAST, then middle
+    SpeedFlick c;
+    c.update(FAST, true, 5);
+    TEST_ASSERT_FALSE(c.update(MID, true, 200));
+    //a fresh one is never creep before a flick
+    SpeedFlick d;
+    TEST_ASSERT_FALSE(d.isCreep());
+}
+
+void test_flick_through_fast_does_not_count(){
+    FlickRig r;
+    r.startAtMiddle();
+    r.hold(FAST, 100);
+    TEST_ASSERT_FALSE(r.hold(MID, 10));          //middle, FAST, middle quickly
+    //middle, OFF, FAST, OFF, middle within the window
+    r.hold(OFF, 100);
+    r.hold(FAST, 100);
+    r.hold(OFF, 100);
+    TEST_ASSERT_FALSE(r.hold(MID, 10));
+    //from creep the same gives slow
+    TEST_ASSERT_TRUE(r.flickThrough(200));
+    r.hold(OFF, 100);
+    r.hold(FAST, 100);
+    r.hold(OFF, 100);
+    TEST_ASSERT_FALSE(r.hold(MID, 10));
+}
+
+void test_flick_state_3_counts_as_off(){
+    FlickRig r;
+    r.startAtMiddle();
+    TEST_ASSERT_TRUE(r.flickThrough(200, BOTH));
+    TEST_ASSERT_FALSE(r.hold(BOTH, 10));
+    TEST_ASSERT_TRUE(r.hold(MID, 10));           //10 ms at state 3: bounce, creep kept
+    //OFF and state 3 within one stay are one OFF
+    r.hold(OFF, 50);
+    r.hold(BOTH, 50);
+    r.hold(OFF, 50);
+    TEST_ASSERT_FALSE(r.hold(MID, 10));
+    r.hold(BOTH, 30);
+    r.hold(OFF, 30);
+    TEST_ASSERT_TRUE(r.hold(MID, 10));
+}
+
+
+//——— CreepView: the CREEP display and sounds from the echo [D-207 point 5] ———
+
+void test_creep_shown_only_with_echo_link_and_middle(){
+    //[D-208 point 5] at middle only: the echo with the link up, the remote's own flick with no link
+    for(uint8_t state = 0; state < 4; state++)
+    for(int echo = 0; echo < 2; echo++)
+    for(int local = 0; local < 2; local++)
+    for(int link = 0; link < 2; link++){
+        bool b_expected = state == uint8_t(SpeedMode::MEDIUM_SPEED) && (link ? echo : local);
+        TEST_ASSERT_EQUAL(b_expected, CreepView::isShown(echo, local, link, state));
+    }
+    const uint8_t MEDIUM = uint8_t(SpeedMode::MEDIUM_SPEED);
+    //a stale echo at FAST or state 3: no CREEP, whatever the flick
+    TEST_ASSERT_FALSE(CreepView::isShown(true, true, true, uint8_t(SpeedMode::HIGH_SPEED)));
+    TEST_ASSERT_FALSE(CreepView::isShown(true, true, false, uint8_t(SpeedMode::NO_SPEED)));
+    //NO LINK: the own flick, a held echo ignored
+    TEST_ASSERT_TRUE(CreepView::isShown(false, true, false, MEDIUM));
+    TEST_ASSERT_FALSE(CreepView::isShown(true, false, false, MEDIUM));
+    //link up: the echo only (an old receiver never echoes)
+    TEST_ASSERT_FALSE(CreepView::isShown(false, true, true, MEDIUM));
+    TEST_ASSERT_TRUE(CreepView::isShown(true, false, true, MEDIUM));
+}
+
+void test_creep_pill_flashes_at_1_hz(){
+    //filled 0..499 ms of each second, plain 500..999
+    for(uint32_t t = 0; t < 3000; t++) TEST_ASSERT_EQUAL(t % 1000 < 500, CreepView::isPillFilled(t));
+    TEST_ASSERT_TRUE(CreepView::isPillFilled(123000));
+    TEST_ASSERT_TRUE(CreepView::isPillFilled(123499));
+    TEST_ASSERT_FALSE(CreepView::isPillFilled(123500));
+    TEST_ASSERT_FALSE(CreepView::isPillFilled(123999));
+    //across the millis() wrap: still half filled, half plain on each side; the phase jumps once (2^32 % 1000 = 296)
+    uint32_t filled = 0;
+    for(uint32_t i = 0; i < 1000; i++) filled += CreepView::isPillFilled(0xFFFFFFFFu - 999 + i);
+    TEST_ASSERT_EQUAL_UINT32(500, filled);
+    TEST_ASSERT_TRUE(CreepView::isPillFilled(0xFFFFFFFFu));      //4294967295 % 1000 = 295
+    TEST_ASSERT_TRUE(CreepView::isPillFilled(0));
+    TEST_ASSERT_FALSE(CreepView::isPillFilled(0xFFFFFFFFu - 295 - 1));   //...999
+    filled = 0;
+    for(uint32_t t = 0; t < 1000; t++) filled += CreepView::isPillFilled(t);
+    TEST_ASSERT_EQUAL_UINT32(500, filled);
+}
+
+//the remote's loop: the shown CREEP from echo, flick and link [D-208 point 5], and its sound
+struct CreepRig{
+    CreepView::ShownSound sound;
+    bool b_echo = false, b_local = false, b_link = false;
+    uint8_t state = uint8_t(SpeedMode::MEDIUM_SPEED);
+    bool shown() const { return CreepView::isShown(b_echo, b_local, b_link, state); }
+    RemoteSounds::Sound step(){ return sound.update(shown()); }
+};
+
+void test_creep_echo_sounds(){
+    using RemoteSounds::Sound;
+    //link up: on at the echo's rise, off at its fall, once each
+    CreepRig r;
+    r.b_link = true;
+    TEST_ASSERT_TRUE(r.step() == Sound::NONE);
+    r.b_local = true;
+    TEST_ASSERT_TRUE(r.step() == Sound::NONE);              //the flick waits for the echo with the link up
+    r.b_echo = true;
+    TEST_ASSERT_TRUE(r.step() == Sound::STATUS_CREEP_ON);
+    TEST_ASSERT_TRUE(r.step() == Sound::NONE);
+    r.b_local = false;
+    r.b_echo = false;
+    TEST_ASSERT_TRUE(r.step() == Sound::STATUS_CREEP_OFF);
+    TEST_ASSERT_TRUE(r.step() == Sound::NONE);
+    //leaving middle: off at once, before the echo falls
+    r.b_local = r.b_echo = true;
+    TEST_ASSERT_TRUE(r.step() == Sound::STATUS_CREEP_ON);
+    r.state = uint8_t(SpeedMode::LOW_SPEED);
+    r.b_local = false;
+    TEST_ASSERT_TRUE(r.step() == Sound::STATUS_CREEP_OFF);
+    r.b_echo = false;
+    TEST_ASSERT_TRUE(r.step() == Sound::NONE);
+}
+
+void test_creep_no_link_flick_shows_and_plays(){
+    using RemoteSounds::Sound;
+    CreepRig r;
+    TEST_ASSERT_TRUE(r.step() == Sound::NONE);
+    r.b_local = true;                                       //a flick in NO LINK
+    TEST_ASSERT_TRUE(r.shown());
+    TEST_ASSERT_TRUE(r.step() == Sound::STATUS_CREEP_ON);
+    TEST_ASSERT_TRUE(r.step() == Sound::NONE);
+    r.b_local = false;                                      //and back to slow
+    TEST_ASSERT_TRUE(r.step() == Sound::STATUS_CREEP_OFF);
+}
+
+void test_creep_link_up_confirming_plays_nothing(){
+    using RemoteSounds::Sound;
+    CreepRig r;
+    r.b_local = true;
+    TEST_ASSERT_TRUE(r.step() == Sound::STATUS_CREEP_ON);
+    //the link comes up and the receiver echoes creep: shown stays, no sound
+    r.b_link = true;
+    r.b_echo = true;
+    TEST_ASSERT_TRUE(r.shown());
+    TEST_ASSERT_TRUE(r.step() == Sound::NONE);
+}
+
+void test_creep_link_up_without_echo_old_receiver(){
+    using RemoteSounds::Sound;
+    CreepRig r;
+    r.b_local = true;
+    TEST_ASSERT_TRUE(r.step() == Sound::STATUS_CREEP_ON);
+    //the link comes up with no echo (an old receiver): CREEP goes, creep off plays
+    r.b_link = true;
+    TEST_ASSERT_FALSE(r.shown());
+    TEST_ASSERT_TRUE(r.step() == Sound::STATUS_CREEP_OFF);
+    TEST_ASSERT_TRUE(r.step() == Sound::NONE);
+}
+
+void test_creep_link_lost_with_creep_held(){
+    using RemoteSounds::Sound;
+    CreepRig r;
+    r.b_link = true;
+    r.b_local = r.b_echo = true;
+    TEST_ASSERT_TRUE(r.step() == Sound::STATUS_CREEP_ON);
+    //the link is lost (the remote clears the echo), the flick still creep: shown stays, no sound
+    r.b_link = false;
+    r.b_echo = false;
+    TEST_ASSERT_TRUE(r.shown());
+    TEST_ASSERT_TRUE(r.step() == Sound::NONE);
+    //it comes back and echoes creep: still nothing
+    r.b_link = true;
+    r.b_echo = true;
+    TEST_ASSERT_TRUE(r.step() == Sound::NONE);
 }
 
 //——— LinkMonitor ———
@@ -2092,5 +2461,23 @@ int main(){
     RUN_TEST(test_stopwatch_edit_mode_set_clear_and_leave);
     RUN_TEST(test_stopwatch_edit_ignores_a_stick_already_out);
     RUN_TEST(test_stopwatch_sounds);
+    RUN_TEST(test_uplink_creep_bit_only_at_medium);
+    RUN_TEST(test_flick_toggles_creep_both_ways);
+    RUN_TEST(test_flick_leaving_middle_clears_creep);
+    RUN_TEST(test_flick_from_fast_gives_slow);
+    RUN_TEST(test_flick_after_long_off_stay_gives_slow);
+    RUN_TEST(test_flick_window_and_dwell_edges);
+    RUN_TEST(test_flick_bounce_under_dwell_is_ignored);
+    RUN_TEST(test_flick_with_a_stick_out_gives_slow);
+    RUN_TEST(test_flick_power_on_gives_slow);
+    RUN_TEST(test_flick_through_fast_does_not_count);
+    RUN_TEST(test_flick_state_3_counts_as_off);
+    RUN_TEST(test_creep_shown_only_with_echo_link_and_middle);
+    RUN_TEST(test_creep_pill_flashes_at_1_hz);
+    RUN_TEST(test_creep_echo_sounds);
+    RUN_TEST(test_creep_no_link_flick_shows_and_plays);
+    RUN_TEST(test_creep_link_up_confirming_plays_nothing);
+    RUN_TEST(test_creep_link_up_without_echo_old_receiver);
+    RUN_TEST(test_creep_link_lost_with_creep_held);
     return UNITY_END();
 }

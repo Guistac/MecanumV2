@@ -301,6 +301,13 @@ void RemoteBoard::updateOperatorLogic(){
     }
     playSound(RemoteSounds::forSpeedChange(previousSpeedState, speedState));
     previousSpeedState = speedState;
+    //[D-207 point 4] the creep flick, before sendData reads it: leaving middle clears creep in the same loop's frame
+    speedFlick.update(speedState, isLeftStickCentred() && isRightStickCentred(), now);
+    //creep on and off follow the CREEP the Status page shows [D-208 point 5]: the echo with the link up, the own flick
+    //without one; a link coming up that confirms it plays nothing
+    bool b_creepShown = CreepView::isShown(robotProxy.creepDisplay, speedFlick.isCreep(), robotProxy.b_connected, speedState);
+    RemoteSounds::Sound creepSound = creepShownSound.update(b_creepShown);
+    if(creepSound != RemoteSounds::Sound::NONE) playSound(creepSound);
     if(b_direction != b_previousDirection){
         playSound(b_direction ? RemoteSounds::Sound::DIRECTION_SET : RemoteSounds::Sound::DIRECTION_CLEAR);
     }
@@ -659,6 +666,7 @@ void RemoteBoard::usbExchange(uint8_t* outgoingFrame){
     Reply::Status status;
     status.state = uint8_t(usbMavlink->stacatoState) & 0x7;
     status.speed = uint8_t(usbProxy.speedSelection) & 0x3;
+    status.b_creep = usbProxy.b_connected && usbProxy.b_creep;     //[D-207] as relayed to Stacato
     status.txCounter = usbProxy.txCounter & 0xF;
     status.page = usbReplyPager.next();
     status.mavState = usbMavlink->vehicleMavState();
@@ -686,6 +694,7 @@ void RemoteBoard::sendData(){
     //the games never enable a vehicle; disable always works [D-157]
     if(arcade.isActive()) controls.b_enable = false;
     controls.speedState = speedToggle.getState();
+    controls.b_creep = speedFlick.isCreep();        //sent only at MEDIUM (Uplink::encode) [D-207]
     controls.b_direction = directionToggle.getSwitchState();
     controls.b_leftStickPressed = leftJoystick.isPressed();
     controls.b_rightStickPressed = rightJoystick.isPressed();
@@ -729,6 +738,7 @@ void RemoteBoard::receiveData(){
         radioSendEvent.setFrequency(pingSendFrequency);
         //no link: no motion is shown as live [D-161]
         robotProxy.motion.clear();
+        robotProxy.creepDisplay = false;    //nor creep [D-207]
     }
 }
 
@@ -753,6 +763,7 @@ void RemoteBoard::handleReply(uint8_t* incomingFrame, uint8_t length){
     robotProxy.speedModeDisplay = reply.status.speed;
     robotProxy.directionModeDisplay = reply.status.b_direction;
     robotProxy.functionButtonPressed = reply.status.b_function;
+    robotProxy.creepDisplay = reply.status.b_creep;
     uint8_t mirroredTxCounter = reply.status.txCounter;
 
     //in page 3 (2.5 Hz [D-163]), kept in between

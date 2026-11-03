@@ -20,6 +20,8 @@
 #include <TripMeter.h>
 #include <LinkHistory.h>
 #include <PageNavigator.h>
+#include <SpeedFlick.h>
+#include <CreepView.h>
 #include <StatusView.h>
 #include <Dimmer.h>
 #include <BootGuard.h>
@@ -96,6 +98,7 @@ private:
         uint8_t speedModeDisplay = 0;
         bool directionModeDisplay = false;
         bool functionButtonPressed = false;     //the receiver's remote finder button
+        bool creepDisplay = false;              //[D-207] the reply's creep echo (status word bit 10)
         int8_t robotRxSignalStrength = 0;       //from the reply's page 3 (2.5 Hz) [D-163]
         float batteryVoltage = 0.0;             //the same
         //[D-161] the motion from the reply, the last value of each paged field; [D-163] the pose carried forward
@@ -226,6 +229,8 @@ private:
     uint32_t grindSeed = 2463534242u;
     bool b_switchesSeen = false;        //the switches' states at power on are taken without a sound
     uint8_t previousSpeedState = 0;
+    CreepView::ShownSound creepShownSound;      //the creep sounds from the shown CREEP (lib/RemoteLogic/src/CreepView.h)
+    SpeedFlick speedFlick;              //[D-207] the creep gesture on the speed switch (lib/RemoteLogic/src/SpeedFlick.h)
     bool b_previousDirection = false;
     uint32_t previousSearchPhase = 0;
     void closeMenu();
