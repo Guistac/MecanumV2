@@ -869,24 +869,34 @@ OFF, FAST or state 3 is ignored. The receiver's legacy reboot command on bit 9 i
 Stacato counts creep only with neither bit 4 nor bit 5 set. Reply (13 bytes): status word bit 10 echoes the creep the
 receiver relays (MANUAL_CONTROL bit 11); the USB remote fills it the same way.
 
-Status page: from the echo, while the switch is at middle and the link is up, `CREEP` takes the place of `SLOW`,
-flashing at 1 Hz: 0.5 s in a filled pill with negative text, 0.5 s as plain text in the same place, so the word is
-always readable and creep is never taken for the steady slow pill. During an alarm row it is plain text like the other
-switch labels. Cases `01c*` in `tools/screens/render_screens.cpp`.
+Status page (`lib/RemoteLogic/src/CreepView.h`): with the switch at middle, `CREEP` takes the place of `SLOW`. With
+the link up it comes from the receiver's echo (an old receiver never echoes, so the remote never shows a creep the
+vehicle cannot run); with NO LINK from the remote's own flick state, as `SLOW`, `FAST`, `WORLD` and `BODY` come from
+its own switches (D-208 point 5). It flashes at 1 Hz: 0.5 s in a filled pill with negative text, 0.5 s as plain text in
+the same place, so the word is always readable and creep is never taken for the steady slow pill. During an alarm row
+(NO LINK included) it is steady plain text like the other switch labels: no pill fits under the banner. Cases `01c*`
+in `tools/screens/render_screens.cpp` (`01c7` NO LINK creep, `01c8` a held echo in NO LINK shows `SLOW`, `01c9` link
+up without echo shows `SLOW`).
 
-Sounds (status family, alarm priority: they play at All and Alarms only, not at Off), from the echo, not the switch:
-creep on, three A sharp 6 ticks slowing down with an echo; creep off, three D sharp 6 ticks speeding up to an A sharp 6.
-Neither is the speed switch's single click. A lost link clears the echo without a sound.
+Sounds (status family, alarm priority: they play at All and Alarms only, not at Off) follow what the Status page
+shows (D-208 point 5): one sound whenever the shown creep changes, whatever changed it (the flick, the echo, the link
+going down or up); none when a link coming up confirms what was already shown. So a flick in NO LINK plays creep on; a
+link coming up without an echo (an old receiver) takes CREEP away and plays creep off; a link lost with the flick
+still at creep keeps CREEP and plays nothing. Creep on: three A sharp 6 ticks slowing down with an echo; creep off:
+three D sharp 6 ticks speeding up to an A sharp 6. Neither is the speed switch's single click.
 `python3 tools/sounds/render_cues.py cue remote_creep_on` (and `remote_creep_off`).
 
 Tests (`pio test -e native`): `test_remote_logic` every gesture row (both toggles, from FAST, a long OFF stay, a
 bounce, a stick out at leaving, during OFF and at arrival, power on, through FAST, state 3, the window and dwell
-edges, the `millis()` wrap), the uplink bit 9 only at MEDIUM and bit 8 never, the creep sounds; `test_reply_frame` the
-decoder against the old one (bit 9 into creep only at MEDIUM), the buttons word against the old one for every control
-word (bits 0, 2-10 unchanged, bit 1 0, bit 11 creep), the status word bit 10 round trip with bit 11 0.
+edges, the `millis()` wrap), the uplink bit 9 only at MEDIUM and bit 8 never, the creep sounds, and `CreepView` (what
+is shown for every echo, flick, link and switch combination, the 1 Hz phase, the sounds across NO LINK, link up with
+and without the echo, and link loss); `test_reply_frame` the decoder against the old one (bit 9 into creep only at
+MEDIUM), the buttons word against the old one for every control word (bits 0, 2-10 unchanged, bit 1 0, bit 11 creep),
+the status word bit 10 round trip with bit 11 0.
 
 To check on the hardware (both boards flashed, Stacato on the D-207 build): the flick both ways and the `CREEP` pill
-and sounds; FAST to middle gives slow; a slow OFF stay gives slow; a flick with a stick out gives slow; creep in
+and sounds, also in NO LINK (CREEP from the flick; the link coming up with creep confirmed plays nothing); FAST to
+middle gives slow; a slow OFF stay gives slow; a flick with a stick out gives slow; creep in
 Stacato's MAVLink panel; the USB remote the same; a new remote with an old receiver gives no creep and nothing else
 (optional).
 

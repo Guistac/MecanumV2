@@ -1281,16 +1281,24 @@ void test_flick_state_3_counts_as_off(){
 //——— CreepView: the CREEP display and sounds from the echo [D-207 point 5] ———
 
 void test_creep_shown_only_with_echo_link_and_middle(){
+    //[D-208 point 5] at middle only: the echo with the link up, the remote's own flick with no link
     for(uint8_t state = 0; state < 4; state++)
     for(int echo = 0; echo < 2; echo++)
+    for(int local = 0; local < 2; local++)
     for(int link = 0; link < 2; link++){
-        bool b_expected = echo && link && state == uint8_t(SpeedMode::MEDIUM_SPEED);
-        TEST_ASSERT_EQUAL(b_expected, CreepView::isShown(echo, link, state));
+        bool b_expected = state == uint8_t(SpeedMode::MEDIUM_SPEED) && (link ? echo : local);
+        TEST_ASSERT_EQUAL(b_expected, CreepView::isShown(echo, local, link, state));
     }
-    //a stale echo at FAST, or with the link down: no CREEP
-    TEST_ASSERT_FALSE(CreepView::isShown(true, true, uint8_t(SpeedMode::HIGH_SPEED)));
-    TEST_ASSERT_FALSE(CreepView::isShown(true, false, uint8_t(SpeedMode::MEDIUM_SPEED)));
-    TEST_ASSERT_FALSE(CreepView::isShown(true, true, uint8_t(SpeedMode::NO_SPEED)));
+    const uint8_t MEDIUM = uint8_t(SpeedMode::MEDIUM_SPEED);
+    //a stale echo at FAST or state 3: no CREEP, whatever the flick
+    TEST_ASSERT_FALSE(CreepView::isShown(true, true, true, uint8_t(SpeedMode::HIGH_SPEED)));
+    TEST_ASSERT_FALSE(CreepView::isShown(true, true, false, uint8_t(SpeedMode::NO_SPEED)));
+    //NO LINK: the own flick, a held echo ignored
+    TEST_ASSERT_TRUE(CreepView::isShown(false, true, false, MEDIUM));
+    TEST_ASSERT_FALSE(CreepView::isShown(true, false, false, MEDIUM));
+    //link up: the echo only (an old receiver never echoes)
+    TEST_ASSERT_FALSE(CreepView::isShown(false, true, true, MEDIUM));
+    TEST_ASSERT_TRUE(CreepView::isShown(true, false, true, MEDIUM));
 }
 
 void test_creep_pill_flashes_at_1_hz(){
@@ -1312,26 +1320,91 @@ void test_creep_pill_flashes_at_1_hz(){
     TEST_ASSERT_EQUAL_UINT32(500, filled);
 }
 
+//the remote's loop: the shown CREEP from echo, flick and link [D-208 point 5], and its sound
+struct CreepRig{
+    CreepView::ShownSound sound;
+    bool b_echo = false, b_local = false, b_link = false;
+    uint8_t state = uint8_t(SpeedMode::MEDIUM_SPEED);
+    bool shown() const { return CreepView::isShown(b_echo, b_local, b_link, state); }
+    RemoteSounds::Sound step(){ return sound.update(shown()); }
+};
+
 void test_creep_echo_sounds(){
     using RemoteSounds::Sound;
-    CreepView::EchoSound e;
-    TEST_ASSERT_TRUE(e.update(true, false) == Sound::NONE);
-    TEST_ASSERT_TRUE(e.update(true, true) == Sound::STATUS_CREEP_ON);     //the echo rises, link up
-    TEST_ASSERT_TRUE(e.update(true, true) == Sound::NONE);                //once
-    TEST_ASSERT_TRUE(e.update(true, false) == Sound::STATUS_CREEP_OFF);   //falls, link up
-    TEST_ASSERT_TRUE(e.update(true, false) == Sound::NONE);
-    //creep, then the link drops: nothing (the warning speaks), even with the echo still held in the proxy
-    TEST_ASSERT_TRUE(e.update(true, true) == Sound::STATUS_CREEP_ON);
-    TEST_ASSERT_TRUE(e.update(false, true) == Sound::NONE);
-    TEST_ASSERT_TRUE(e.update(false, false) == Sound::NONE);
-    //reconnection with creep still held: creep on again
-    TEST_ASSERT_TRUE(e.update(true, true) == Sound::STATUS_CREEP_ON);
-    //link drop and reconnection without creep: nothing
-    TEST_ASSERT_TRUE(e.update(true, false) == Sound::STATUS_CREEP_OFF);
-    TEST_ASSERT_TRUE(e.update(false, false) == Sound::NONE);
-    TEST_ASSERT_TRUE(e.update(true, false) == Sound::NONE);
-    //an echo arriving while disconnected plays nothing
-    TEST_ASSERT_TRUE(e.update(false, true) == Sound::NONE);
+    //link up: on at the echo's rise, off at its fall, once each
+    CreepRig r;
+    r.b_link = true;
+    TEST_ASSERT_TRUE(r.step() == Sound::NONE);
+    r.b_local = true;
+    TEST_ASSERT_TRUE(r.step() == Sound::NONE);              //the flick waits for the echo with the link up
+    r.b_echo = true;
+    TEST_ASSERT_TRUE(r.step() == Sound::STATUS_CREEP_ON);
+    TEST_ASSERT_TRUE(r.step() == Sound::NONE);
+    r.b_local = false;
+    r.b_echo = false;
+    TEST_ASSERT_TRUE(r.step() == Sound::STATUS_CREEP_OFF);
+    TEST_ASSERT_TRUE(r.step() == Sound::NONE);
+    //leaving middle: off at once, before the echo falls
+    r.b_local = r.b_echo = true;
+    TEST_ASSERT_TRUE(r.step() == Sound::STATUS_CREEP_ON);
+    r.state = uint8_t(SpeedMode::LOW_SPEED);
+    r.b_local = false;
+    TEST_ASSERT_TRUE(r.step() == Sound::STATUS_CREEP_OFF);
+    r.b_echo = false;
+    TEST_ASSERT_TRUE(r.step() == Sound::NONE);
+}
+
+void test_creep_no_link_flick_shows_and_plays(){
+    using RemoteSounds::Sound;
+    CreepRig r;
+    TEST_ASSERT_TRUE(r.step() == Sound::NONE);
+    r.b_local = true;                                       //a flick in NO LINK
+    TEST_ASSERT_TRUE(r.shown());
+    TEST_ASSERT_TRUE(r.step() == Sound::STATUS_CREEP_ON);
+    TEST_ASSERT_TRUE(r.step() == Sound::NONE);
+    r.b_local = false;                                      //and back to slow
+    TEST_ASSERT_TRUE(r.step() == Sound::STATUS_CREEP_OFF);
+}
+
+void test_creep_link_up_confirming_plays_nothing(){
+    using RemoteSounds::Sound;
+    CreepRig r;
+    r.b_local = true;
+    TEST_ASSERT_TRUE(r.step() == Sound::STATUS_CREEP_ON);
+    //the link comes up and the receiver echoes creep: shown stays, no sound
+    r.b_link = true;
+    r.b_echo = true;
+    TEST_ASSERT_TRUE(r.shown());
+    TEST_ASSERT_TRUE(r.step() == Sound::NONE);
+}
+
+void test_creep_link_up_without_echo_old_receiver(){
+    using RemoteSounds::Sound;
+    CreepRig r;
+    r.b_local = true;
+    TEST_ASSERT_TRUE(r.step() == Sound::STATUS_CREEP_ON);
+    //the link comes up with no echo (an old receiver): CREEP goes, creep off plays
+    r.b_link = true;
+    TEST_ASSERT_FALSE(r.shown());
+    TEST_ASSERT_TRUE(r.step() == Sound::STATUS_CREEP_OFF);
+    TEST_ASSERT_TRUE(r.step() == Sound::NONE);
+}
+
+void test_creep_link_lost_with_creep_held(){
+    using RemoteSounds::Sound;
+    CreepRig r;
+    r.b_link = true;
+    r.b_local = r.b_echo = true;
+    TEST_ASSERT_TRUE(r.step() == Sound::STATUS_CREEP_ON);
+    //the link is lost (the remote clears the echo), the flick still creep: shown stays, no sound
+    r.b_link = false;
+    r.b_echo = false;
+    TEST_ASSERT_TRUE(r.shown());
+    TEST_ASSERT_TRUE(r.step() == Sound::NONE);
+    //it comes back and echoes creep: still nothing
+    r.b_link = true;
+    r.b_echo = true;
+    TEST_ASSERT_TRUE(r.step() == Sound::NONE);
 }
 
 //——— LinkMonitor ———
@@ -2382,5 +2455,9 @@ int main(){
     RUN_TEST(test_creep_shown_only_with_echo_link_and_middle);
     RUN_TEST(test_creep_pill_flashes_at_1_hz);
     RUN_TEST(test_creep_echo_sounds);
+    RUN_TEST(test_creep_no_link_flick_shows_and_plays);
+    RUN_TEST(test_creep_link_up_confirming_plays_nothing);
+    RUN_TEST(test_creep_link_up_without_echo_old_receiver);
+    RUN_TEST(test_creep_link_lost_with_creep_held);
     return UNITY_END();
 }

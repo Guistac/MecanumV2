@@ -424,9 +424,8 @@ namespace RemoteUi{
         else text(g, pixelFont, tx, bottomTop + 1, digits);
     }
 
-    //[D-207] creep as the receiver echoes it, and only while the switch is at middle here (the echo lags a frame when
-    //the switch leaves it)
-    static bool isCreepShown(const ScreenModel& m){ return CreepView::isShown(m.b_creep, m.b_linkUp, m.speedState); }
+    //[D-207, D-208 point 5] creep at middle: the receiver's echo with the link up, the remote's own flick without one
+    static bool isCreepShown(const ScreenModel& m){ return CreepView::isShown(m.b_creep, m.b_localCreep, m.b_linkUp, m.speedState); }
 
     static void drawBottomRow(Adafruit_GFX& g, const ScreenModel& m){
         //during an alarm the row explains it (no room for a gap between the banner and pills): the switches matter less
