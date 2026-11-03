@@ -196,9 +196,14 @@ namespace RemoteUi{
         text(g, pixelFont, channelX, 0, channel);
         activeDot(g, channelX + textWidth(g, pixelFont, channel) + 3, 2, m, true);
 
-        //the vehicle's pack, then the remote's own battery (blinking when low)
+        //the vehicle's pack (its charge when the Pack setting names it), then the remote's own battery (blinking when low)
         char voltage[8];
-        if(m.b_linkUp) snprintf(voltage, sizeof(voltage), "%.1fV", m.robotVoltage);
+        int8_t percent = RemoteSettings::packPercent(m.settings.pack, m.robotVoltage);
+        if(percent >= 0){
+            if(m.b_linkUp) snprintf(voltage, sizeof(voltage), "%d%%", percent);
+            else snprintf(voltage, sizeof(voltage), "--%%");
+        }
+        else if(m.b_linkUp) snprintf(voltage, sizeof(voltage), "%.1fV", m.robotVoltage);
         else snprintf(voltage, sizeof(voltage), "--.-V");
         textRight(g, pixelFont, 111, 0, voltage);
         if(m.remoteBattery == BatteryState::OK || blink(m.now, 1000, 600)) batteryIcon(g, 114, 0, m.remotePercent);
@@ -1555,8 +1560,10 @@ namespace RemoteUi{
         row(g, 0, "remote", value);
         snprintf(value, sizeof(value), "%.2fV", m.remoteVoltage);
         row(g, 1, "  cell", value);
-        if(m.b_linkUp) snprintf(value, sizeof(value), "%.1fV", m.robotVoltage);
-        else snprintf(value, sizeof(value), "--");
+        int8_t percent = RemoteSettings::packPercent(m.settings.pack, m.robotVoltage);
+        if(!m.b_linkUp) snprintf(value, sizeof(value), "--");
+        else if(percent >= 0) snprintf(value, sizeof(value), "%d%% %.1fV", percent, m.robotVoltage);
+        else snprintf(value, sizeof(value), "%.1fV", m.robotVoltage);
         row(g, 2, "vehicle", value);
     }
 
@@ -1728,6 +1735,12 @@ namespace RemoteUi{
                     snprintf(value, sizeof(value), "%s", RemoteSettings::dimmingLabel(m.pending.dimming));
                     b_editable = true;
                     b_changed = m.pending.dimming != m.settings.dimming;
+                    break;
+                case SettingsMenu::Item::PACK:
+                    name = "Pack";
+                    snprintf(value, sizeof(value), "%s", RemoteSettings::packLabel(m.pending.pack));
+                    b_editable = true;
+                    b_changed = m.pending.pack != m.settings.pack;
                     break;
                 case SettingsMenu::Item::STICKS:
                     name = "Sticks";

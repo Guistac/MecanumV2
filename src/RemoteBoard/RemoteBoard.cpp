@@ -38,7 +38,8 @@ void RemoteBoard::loadSettings(){
     else settings = RemoteSettings::fromStored(storedChannel,
                                                EEPROM.read(RemoteSettings::contrastAddress),
                                                EEPROM.read(RemoteSettings::dimmingAddress),
-                                               EEPROM.read(RemoteSettings::soundAddress));
+                                               EEPROM.read(RemoteSettings::soundAddress),
+                                               EEPROM.read(RemoteSettings::packAddress));
 }
 
 //only changed bytes, once on confirm: a write can block for a flash erase (H12)
@@ -51,6 +52,7 @@ void RemoteBoard::saveSettings(const RemoteSettings& newSettings){
     if(newSettings.contrast != settings.contrast) EEPROM.write(RemoteSettings::contrastAddress, newSettings.contrast);
     if(newSettings.dimming != settings.dimming) EEPROM.write(RemoteSettings::dimmingAddress, newSettings.dimming);
     if(newSettings.sound != settings.sound) EEPROM.write(RemoteSettings::soundAddress, newSettings.sound);
+    if(newSettings.pack != settings.pack) EEPROM.write(RemoteSettings::packAddress, newSettings.pack);
     settings = newSettings;
 }
 

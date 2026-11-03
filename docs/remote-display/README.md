@@ -112,6 +112,11 @@ sees the remote gone, as when it is switched off. The Status page says Radio off
 critical remote battery shows above it), the top row RF OFF, both LEDs are dark: the remote is a game console. The
 USB link (D-159) still works. Stored as 16 in the channel byte; kept over a restart, safe mode included.
 
+Pack (owner, 2026-10-28): the vehicle's battery as the receiver sends it (45 to 70 V in 255 steps). Volts (default)
+shows the voltage as before; Li-ion 14S, 15S or 16S shows the charge in percent in the top row (and percent and volts
+on the Battery page), from the remote's own Li-ion curve per cell (3.2 V 0 %, 3.8 V 50 %, 4.2 V 100 %): a resting
+voltage indicator, it drops under load. EEPROM byte 17.
+
 Joystick calibration (menu item Sticks, H15): "release both" (all axes still for 0.7 s, rest positions averaged),
 then "circle both" (extremes recorded, shown live as two circles); the right pushbutton saves once every axis covers a
 quarter of the full scale on each side, the left one cancels; after saving, a result screen shows each stick's

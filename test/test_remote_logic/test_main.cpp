@@ -148,6 +148,20 @@ void test_settings_validated_on_load(){
     TEST_ASSERT_FALSE(blank.isRadioOff());
 }
 
+//[owner 2026-10-28] the vehicle's pack: Volts by default, a 16S Li-ion pack in percent from its voltage
+void test_vehicle_pack_percent(){
+    TEST_ASSERT_EQUAL_UINT8(0, RemoteSettings::fromStored(3, 1, 2, 0, 0xFF).pack);
+    TEST_ASSERT_EQUAL_UINT8(3, RemoteSettings::fromStored(3, 1, 2, 0, 3).pack);
+    TEST_ASSERT_EQUAL_UINT8(0, RemoteSettings::fromStored(3, 1, 2, 0, 4).pack);
+    TEST_ASSERT_EQUAL_INT8(-1, RemoteSettings::packPercent(0, 60.0f));
+    TEST_ASSERT_EQUAL_UINT8(16, RemoteSettings::packCells(3));
+    TEST_ASSERT_EQUAL_INT8(100, RemoteSettings::packPercent(3, 67.2f));     //4.20 V a cell
+    TEST_ASSERT_EQUAL_INT8(50, RemoteSettings::packPercent(3, 60.8f));      //3.80 V
+    TEST_ASSERT_EQUAL_INT8(0, RemoteSettings::packPercent(3, 51.2f));       //3.20 V
+    TEST_ASSERT_EQUAL_INT8(0, RemoteSettings::packPercent(3, 45.0f));       //the receiver's floor
+    TEST_ASSERT_EQUAL_STRING("Li-ion 16S", RemoteSettings::packLabel(3));
+}
+
 //the radio off: Radio off on the Status page whatever the link and the own E-stop, not an alarm; only a critical
 //battery says more. Both LEDs dark
 void test_radio_off_is_a_quiet_state(){
@@ -210,6 +224,11 @@ void test_menu_changes_are_pending_until_save_held(){
     menu.update(0, 1, 0);
     menu.update(0, 1, 0);
     TEST_ASSERT_EQUAL_UINT8(uint8_t(RemoteSounds::Level::OFF), menu.getPending().sound);       //clamped
+    menu.update(1, 0, 0);
+    TEST_ASSERT_TRUE(menu.getItem() == SettingsMenu::Item::PACK);
+    TEST_ASSERT_EQUAL_UINT8(0, menu.getPending().pack);                                       //Volts
+    for(int i = 0; i < 5; i++) menu.update(0, 1, 0);
+    TEST_ASSERT_EQUAL_UINT8(3, menu.getPending().pack);                                       //Li-ion 16S, clamped
     menu.update(1, 0, 0);
     TEST_ASSERT_TRUE(menu.getItem() == SettingsMenu::Item::STICKS);
     TEST_ASSERT_TRUE(menu.update(0, 1, 0) == SettingsMenu::Event::CALIBRATE);
@@ -2015,6 +2034,7 @@ int main(){
     RUN_TEST(test_battery_thresholds_with_hysteresis);
     RUN_TEST(test_settings_validated_on_load);
     RUN_TEST(test_radio_off_is_a_quiet_state);
+    RUN_TEST(test_vehicle_pack_percent);
     RUN_TEST(test_link_alarms_are_the_radio_fault_and_no_link);
     RUN_TEST(test_menu_changes_are_pending_until_save_held);
     RUN_TEST(test_menu_exit_and_item_bounds);

@@ -8,7 +8,7 @@
 class SettingsMenu{
 public:
 
-    enum class Item : uint8_t{ CHANNEL, CONTRAST, DIMMING, SOUND, STICKS, SAVE, EXIT, COUNT };
+    enum class Item : uint8_t{ CHANNEL, CONTRAST, DIMMING, SOUND, PACK, STICKS, SAVE, EXIT, COUNT };
     enum class Event{ NONE, SAVED, CLOSED, CALIBRATE };
 
     static constexpr uint32_t saveHoldMillis = 1000;
@@ -46,6 +46,9 @@ public:
                 break;
             case Item::SOUND:
                 pending.sound = stepClamped(pending.sound, valueStep, RemoteSounds::levelCount);
+                break;
+            case Item::PACK:
+                pending.pack = stepClamped(pending.pack, valueStep, RemoteSettings::packOptions);
                 break;
             case Item::STICKS:
                 if(valueStep > 0) return Event::CALIBRATE;
