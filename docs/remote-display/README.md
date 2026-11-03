@@ -183,7 +183,8 @@ The display is 128 x 32 pixels, read at arm's length. Rules, from the review of 
   rows (a 9 px bar and its gap per row do not fit 4 times).
 - Main screen grid: top line rows 0..6 (signal, channel, vehicle voltage, remote battery), middle rows 8..22 (the
   state word with a dot, or an alarm banner with an icon), bottom rows 23..31. Bottom left above the speed switch:
-  `OFF` as plain text, `SLOW` / `FAST` in a pill; bottom right above the frame switch: `BODY` plain, `WORLD` in a pill;
+  `OFF` as plain text, `SLOW` / `FAST` in a pill, `CREEP` flashing at 1 Hz between pill and plain text (D-207, Creep
+  jog below); bottom right above the frame switch: `BODY` plain, `WORLD` in a pill;
   between them the stopwatch (Stopwatch (D-160) below; the Status page has no page dots), or while they last a
   marker pill or "thank you". A countdown adds its bar across the screen in row 8. During an alarm (a full-width banner leaves no gap above
   9 px pills) the bottom row is the alarm's explanation in plain text.
@@ -322,7 +323,8 @@ A 12 mm piezo disc between pins 19 and 18, 220 ohm in series, pressed against th
   that cannot be confused: interface sounds are one short square on the C pentatonic (page changes, a note per page;
   menu item and value, a bump at the ends; Save and discard; enable and disable ticks; the speed and direction
   switches; a buzz when enable cannot work); status sounds are several notes off that scale with an echo, or rough
-  two-leg buzzes (enabling, enabled, disabling, disabled, E-stop engaged (harsh), E-stop released, link found; one
+  two-leg buzzes (enabling, enabled, disabling, disabled, E-stop engaged (harsh), E-stop released, link found, creep
+  on and creep off (D-207); one
   warning for link lost, radio fault, E-stop wiring, battery). Status sounds follow the state the receiver reports.
   NO LINK: a falling pair every 2 s with three fading echoes, the LEDs flashing and echoing with it. A stick pushed
   at speed OFF: a continuous grind, and OFF blinks on the Status screen.
@@ -415,7 +417,7 @@ The 13 byte reply (`lib/RemoteLogic/src/ReplyFrame.h`; bytes 0 to 3 travel in th
 
 | Byte | Contents |
 | --- | --- |
-| 0-1 | the status word as before D-161 (`[2:0]` header `0b111`, `[5:3]` state, `[7:6]` speed echo, `[8]` direction echo, `[9]` receiver function button, `[15:12]` tx counter mirror); bits `[11:10]` are 0 again (D-161 had the page there) |
+| 0-1 | the status word as before D-161 (`[2:0]` header `0b111`, `[5:3]` state, `[7:6]` speed echo, `[8]` direction echo, `[9]` receiver function button, `[10]` creep echo (D-207, below), `[11]` 0 (D-161 had the page in `[11:10]`), `[15:12]` tx counter mirror) |
 | 2-3, 4-5 | vx, vy: int16 little-endian, mm/s, in every reply (20 Hz) |
 | 6-7 | vr: int16, mrad/s, in every reply |
 | 8-11 | the page's slot (pages below) |
@@ -809,6 +811,84 @@ To check on the hardware (both boards flashed together):
 8. [D-163] The pose: x, y and heading against Stacato's spatial editor while driving; signs (stage right x+, upstage
    y+, counter-clockwise heading+); smooth between the pose pages (no 400 ms steps at walking speed); `--` within
    0.5 s of closing Stacato.
+
+### Creep jog (D-207)
+
+Decided by the owner on 2026-11-03 (D-207, Stacato repo `docs/architecture/decisions/DECISIONS.md`), built on branch
+`creep-jog`, not yet run on hardware. A third jog speed, much slower than slow, with a gentler acceleration. The
+remote and the receiver are flashed together; Stacato needs the D-207 build too (`feat/creep-jog`).
+
+**The gesture** (`lib/RemoteLogic/src/SpeedFlick.h`, decided on the remote): with the speed switch at the middle
+position (slow), a quick flick middle, OFF, middle toggles between slow and creep. It counts when:
+
+- the switch is back at middle within 1000 ms of leaving it (`SpeedFlick::windowMillis`);
+- it stayed at OFF at least 50 ms (`SpeedFlick::minOffMillis`);
+- both sticks stayed centred from leaving middle to coming back (`isLeftStickCentred() && isRightStickCentred()`,
+  within `stickCentredThreshold` 0.1 of rest, calibrated).
+
+Every other arrival at middle gives slow: from FAST, from OFF after a longer stay, at power on, and a flick with a
+stick out. A flick through FAST never counts. A stay at OFF under 50 ms is contact bounce: back at middle it keeps the
+speed held when middle was left (creep stays creep, slow stays slow). Leaving middle clears creep at once (the next
+frame). Switch state 3 (both contacts) counts as OFF. The flick passes through OFF, which streams zero (D-93), so the
+speed never changes during a move. Window and dwell are constants, to be tuned on the bench.
+
+Uplink control word (bytes 0-1 of the 8 byte remote frame, layout unchanged; `UplinkFrame.h`):
+
+| Bits | Contents |
+| --- | --- |
+| 0-2 | header `0b111` |
+| 3 | disable (left LED button) |
+| 4 | enable (right LED button) |
+| 5-6 | speed switch state: 0 OFF, 1 middle (MEDIUM, slow), 2 FAST, 3 both contacts (read as OFF) |
+| 7 | direction (frame) switch |
+| 8 | always 0 (the left pushbutton's bit; an old receiver sends it as `DO_FLIGHTTERMINATION`, D-147) |
+| 9 | creep (D-207), only while bits 5-6 are 1; was the right pushbutton (0 since D-147) |
+| 10, 11 | left, right stick pushed |
+| 12-15 | frame counter |
+
+Bit 9 rather than bit 8: an old receiver turns bit 8 into an E-stop and bit 9 into a reboot request Stacato refuses,
+so a new remote with an old receiver has no creep and nothing else.
+
+Receiver (`src/Utilities/RemoteProxy.h`): `b_creep = (controlword & 0x200) && speedSelection == MEDIUM_SPEED`; bit 9 at
+OFF, FAST or state 3 is ignored. The receiver's legacy reboot command on bit 9 is gone. `MANUAL_CONTROL.buttons`
+(`manualControlButtons()`, the same code for the receiver and the USB remote):
+
+| Bit | Contents |
+| --- | --- |
+| 0 | uplink bit 8 (always 0 from a D-147 remote) |
+| 1 | always 0 (the right pushbutton's bit, gone with D-207) |
+| 2, 3 | left, right stick pushed |
+| 4 | speed FAST |
+| 5 | speed OFF (sticks off, D-93) |
+| 6 | direction switch |
+| 7 | E-stop number clear and connected |
+| 8, 9 | disable, enable |
+| 10 | connected (D-44) |
+| 11 | creep and connected (D-207, `BUTTON_SPEED_CREEP`; never with bit 4 or 5) |
+
+Stacato counts creep only with neither bit 4 nor bit 5 set. Reply (13 bytes): status word bit 10 echoes the creep the
+receiver relays (MANUAL_CONTROL bit 11); the USB remote fills it the same way.
+
+Status page: from the echo, while the switch is at middle and the link is up, `CREEP` takes the place of `SLOW`,
+flashing at 1 Hz: 0.5 s in a filled pill with negative text, 0.5 s as plain text in the same place, so the word is
+always readable and creep is never taken for the steady slow pill. During an alarm row it is plain text like the other
+switch labels. Cases `01c*` in `tools/screens/render_screens.cpp`.
+
+Sounds (status family, alarm priority: they play at All and Alarms only, not at Off), from the echo, not the switch:
+creep on, three A sharp 6 ticks slowing down with an echo; creep off, three D sharp 6 ticks speeding up to an A sharp 6.
+Neither is the speed switch's single click. A lost link clears the echo without a sound.
+`python3 tools/sounds/render_cues.py cue remote_creep_on` (and `remote_creep_off`).
+
+Tests (`pio test -e native`): `test_remote_logic` every gesture row (both toggles, from FAST, a long OFF stay, a
+bounce, a stick out at leaving, during OFF and at arrival, power on, through FAST, state 3, the window and dwell
+edges, the `millis()` wrap), the uplink bit 9 only at MEDIUM and bit 8 never, the creep sounds; `test_reply_frame` the
+decoder against the old one (bit 9 into creep only at MEDIUM), the buttons word against the old one for every control
+word (bits 0, 2-10 unchanged, bit 1 0, bit 11 creep), the status word bit 10 round trip with bit 11 0.
+
+To check on the hardware (both boards flashed, Stacato on the D-207 build): the flick both ways and the `CREEP` pill
+and sounds; FAST to middle gives slow; a slow OFF stay gives slow; a flick with a stick out gives slow; creep in
+Stacato's MAVLink panel; the USB remote the same; a new remote with an old receiver gives no creep and nothing else
+(optional).
 
 ## Tier C: Stacato fills the detail byte
 
