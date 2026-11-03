@@ -25,6 +25,7 @@
 #include <PoseZero.h>
 #include <TrackingMap.h>
 #include <TrackingControl.h>
+#include <SpeedFlick.h>
 
 void setUp(){}
 void tearDown(){}
@@ -1036,6 +1037,218 @@ void test_uplink_frame_layout_and_guards(){
     Uplink::encode(controls, true, 0x13, 0xBEEF, frame);
     for(int i = 2; i < 6; i++) TEST_ASSERT_EQUAL_UINT8(127, frame[i]);
     TEST_ASSERT_EQUAL_HEX16(word, frame[0] | frame[1] << 8);
+}
+
+//——— SpeedFlick: the creep gesture [D-207 point 4] ———
+
+namespace{
+    //the switch as the remote's loop reads it (100 Hz input, a loop every 10 ms)
+    const uint8_t OFF = uint8_t(SpeedMode::LOW_SPEED);
+    const uint8_t MID = uint8_t(SpeedMode::MEDIUM_SPEED);
+    const uint8_t FAST = uint8_t(SpeedMode::HIGH_SPEED);
+    const uint8_t BOTH = uint8_t(SpeedMode::NO_SPEED);
+
+    struct FlickRig{
+        SpeedFlick flick;
+        uint32_t now = 100000;
+        bool b_centred = true;
+        //holds the switch at state for millis, one update every 10 ms (the first at once); returns the last result
+        bool hold(uint8_t state, uint32_t millis){
+            bool b_creep = flick.update(state, b_centred, now);
+            for(uint32_t t = 10; t < millis; t += 10){
+                now += 10;
+                b_creep = flick.update(state, b_centred, now);
+            }
+            now += millis >= 10 ? 10 : millis;
+            return b_creep;
+        }
+        //a flick from middle: offMillis at OFF (or state), then back at middle
+        bool flickThrough(uint32_t offMillis, uint8_t offState = OFF){
+            hold(offState, offMillis);
+            return hold(MID, 10);
+        }
+        //started at middle and settled there
+        void startAtMiddle(){ hold(MID, 200); }
+    };
+}
+
+void test_flick_toggles_creep_both_ways(){
+    FlickRig r;
+    r.startAtMiddle();
+    TEST_ASSERT_FALSE(r.flick.isCreep());
+    TEST_ASSERT_TRUE(r.flickThrough(200));
+    TEST_ASSERT_TRUE(r.hold(MID, 3000));         //stays creep at middle, for as long as it is there
+    TEST_ASSERT_FALSE(r.flickThrough(200));
+    TEST_ASSERT_FALSE(r.hold(MID, 500));
+    TEST_ASSERT_TRUE(r.flickThrough(80));
+}
+
+void test_flick_leaving_middle_clears_creep(){
+    FlickRig r;
+    r.startAtMiddle();
+    TEST_ASSERT_TRUE(r.flickThrough(200));
+    TEST_ASSERT_FALSE(r.hold(OFF, 10));          //at OFF: no creep in the frame
+    TEST_ASSERT_FALSE(r.hold(OFF, 2000));
+    TEST_ASSERT_FALSE(r.hold(MID, 10));          //a long stay: slow
+    TEST_ASSERT_TRUE(r.flickThrough(200));
+    TEST_ASSERT_FALSE(r.hold(FAST, 10));
+}
+
+void test_flick_from_fast_gives_slow(){
+    FlickRig r;
+    r.startAtMiddle();
+    TEST_ASSERT_TRUE(r.flickThrough(200));
+    r.hold(FAST, 100);                           //creep, quickly up to FAST and back: slow
+    TEST_ASSERT_FALSE(r.hold(MID, 10));
+    r.hold(FAST, 2000);
+    TEST_ASSERT_FALSE(r.hold(MID, 10));
+}
+
+void test_flick_after_long_off_stay_gives_slow(){
+    FlickRig r;
+    r.startAtMiddle();
+    TEST_ASSERT_FALSE(r.flickThrough(1200));     //slow stays slow
+    TEST_ASSERT_TRUE(r.flickThrough(200));
+    TEST_ASSERT_FALSE(r.flickThrough(1200));     //creep goes to slow, not toggled
+    TEST_ASSERT_TRUE(r.flickThrough(200));
+    TEST_ASSERT_FALSE(r.flickThrough(5000));
+}
+
+void test_flick_window_and_dwell_edges(){
+    //the window: back at middle 1000 ms after leaving it counts, 1010 does not
+    {
+        SpeedFlick f;
+        f.update(MID, true, 0);
+        f.update(OFF, true, 1000);
+        TEST_ASSERT_TRUE(f.update(MID, true, 2000));
+        f.update(OFF, true, 3000);
+        TEST_ASSERT_FALSE(f.update(MID, true, 4000));       //toggled back
+        f.update(OFF, true, 5000);
+        TEST_ASSERT_TRUE(f.update(MID, true, 5100));
+        f.update(OFF, true, 6000);
+        TEST_ASSERT_FALSE(f.update(MID, true, 7010));       //late: slow, from creep
+        f.update(OFF, true, 8000);
+        TEST_ASSERT_FALSE(f.update(MID, true, 9010));       //late: slow, from slow
+    }
+    //the dwell: 50 ms at OFF counts
+    {
+        SpeedFlick f;
+        f.update(MID, true, 0);
+        f.update(OFF, true, 1000);
+        f.update(OFF, true, 1040);
+        TEST_ASSERT_TRUE(f.update(MID, true, 1050));
+    }
+    //the clock wraps
+    {
+        SpeedFlick f;
+        f.update(MID, true, 0xFFFFFF00u);
+        f.update(OFF, true, 0xFFFFFFF0u);
+        TEST_ASSERT_TRUE(f.update(MID, true, 0x00000100u));
+    }
+}
+
+void test_flick_bounce_under_dwell_is_ignored(){
+    FlickRig r;
+    r.startAtMiddle();
+    TEST_ASSERT_FALSE(r.flickThrough(30));       //slow: a bounce does not toggle
+    TEST_ASSERT_FALSE(r.flickThrough(40));
+    TEST_ASSERT_TRUE(r.flickThrough(200));
+    TEST_ASSERT_TRUE(r.flickThrough(30));        //creep: a bounce keeps creep (never more speed from a contact)
+    TEST_ASSERT_TRUE(r.flickThrough(10, BOTH));
+    TEST_ASSERT_FALSE(r.flickThrough(200));
+    //bounce with a stick out keeps the speed too
+    r.b_centred = false;
+    TEST_ASSERT_FALSE(r.flickThrough(20));
+    r.b_centred = true;
+    TEST_ASSERT_TRUE(r.flickThrough(200));
+    r.b_centred = false;
+    TEST_ASSERT_TRUE(r.flickThrough(20));
+}
+
+void test_flick_with_a_stick_out_gives_slow(){
+    FlickRig r;
+    r.startAtMiddle();
+    //out when leaving middle (slow: a flick would give creep)
+    r.b_centred = false;
+    r.hold(MID, 50);
+    r.hold(OFF, 10);
+    r.b_centred = true;
+    TEST_ASSERT_FALSE(r.flickThrough(200));
+    //out during the stay at OFF
+    r.hold(OFF, 100);
+    r.b_centred = false;
+    r.hold(OFF, 30);
+    r.b_centred = true;
+    r.hold(OFF, 100);
+    TEST_ASSERT_FALSE(r.hold(MID, 10));
+    //out at the arrival
+    r.hold(OFF, 200);
+    r.b_centred = false;
+    TEST_ASSERT_FALSE(r.hold(MID, 10));
+    r.b_centred = true;
+    r.hold(MID, 100);
+    //from creep a flick with a stick out gives slow, not creep
+    TEST_ASSERT_TRUE(r.flickThrough(200));
+    r.hold(OFF, 100);
+    r.b_centred = false;
+    r.hold(OFF, 20);
+    r.b_centred = true;
+    r.hold(OFF, 100);
+    TEST_ASSERT_FALSE(r.hold(MID, 10));
+    //and a clean flick after it works
+    TEST_ASSERT_TRUE(r.flickThrough(200));
+}
+
+void test_flick_power_on_gives_slow(){
+    //power on at middle
+    SpeedFlick a;
+    TEST_ASSERT_FALSE(a.update(MID, true, 5));
+    TEST_ASSERT_FALSE(a.update(MID, true, 500));
+    //power on at OFF, then quickly to middle: no flick began at middle
+    SpeedFlick b;
+    TEST_ASSERT_FALSE(b.update(OFF, true, 5));
+    TEST_ASSERT_FALSE(b.update(MID, true, 200));
+    //at FAST, then middle
+    SpeedFlick c;
+    c.update(FAST, true, 5);
+    TEST_ASSERT_FALSE(c.update(MID, true, 200));
+    //a fresh one is never creep before a flick
+    SpeedFlick d;
+    TEST_ASSERT_FALSE(d.isCreep());
+}
+
+void test_flick_through_fast_does_not_count(){
+    FlickRig r;
+    r.startAtMiddle();
+    r.hold(FAST, 100);
+    TEST_ASSERT_FALSE(r.hold(MID, 10));          //middle, FAST, middle quickly
+    //middle, OFF, FAST, OFF, middle within the window
+    r.hold(OFF, 100);
+    r.hold(FAST, 100);
+    r.hold(OFF, 100);
+    TEST_ASSERT_FALSE(r.hold(MID, 10));
+    //from creep the same gives slow
+    TEST_ASSERT_TRUE(r.flickThrough(200));
+    r.hold(OFF, 100);
+    r.hold(FAST, 100);
+    r.hold(OFF, 100);
+    TEST_ASSERT_FALSE(r.hold(MID, 10));
+}
+
+void test_flick_state_3_counts_as_off(){
+    FlickRig r;
+    r.startAtMiddle();
+    TEST_ASSERT_TRUE(r.flickThrough(200, BOTH));
+    TEST_ASSERT_FALSE(r.hold(BOTH, 10));
+    TEST_ASSERT_TRUE(r.hold(MID, 10));           //10 ms at state 3: bounce, creep kept
+    //OFF and state 3 within one stay are one OFF
+    r.hold(OFF, 50);
+    r.hold(BOTH, 50);
+    r.hold(OFF, 50);
+    TEST_ASSERT_FALSE(r.hold(MID, 10));
+    r.hold(BOTH, 30);
+    r.hold(OFF, 30);
+    TEST_ASSERT_TRUE(r.hold(MID, 10));
 }
 
 //——— LinkMonitor ———
@@ -2072,5 +2285,15 @@ int main(){
     RUN_TEST(test_stopwatch_edit_mode_set_clear_and_leave);
     RUN_TEST(test_stopwatch_edit_ignores_a_stick_already_out);
     RUN_TEST(test_stopwatch_sounds);
+    RUN_TEST(test_flick_toggles_creep_both_ways);
+    RUN_TEST(test_flick_leaving_middle_clears_creep);
+    RUN_TEST(test_flick_from_fast_gives_slow);
+    RUN_TEST(test_flick_after_long_off_stay_gives_slow);
+    RUN_TEST(test_flick_window_and_dwell_edges);
+    RUN_TEST(test_flick_bounce_under_dwell_is_ignored);
+    RUN_TEST(test_flick_with_a_stick_out_gives_slow);
+    RUN_TEST(test_flick_power_on_gives_slow);
+    RUN_TEST(test_flick_through_fast_does_not_count);
+    RUN_TEST(test_flick_state_3_counts_as_off);
     return UNITY_END();
 }
