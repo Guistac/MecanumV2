@@ -26,6 +26,7 @@
 #include <TrackingMap.h>
 #include <TrackingControl.h>
 #include <SpeedFlick.h>
+#include <CreepView.h>
 
 void setUp(){}
 void tearDown(){}
@@ -1276,6 +1277,63 @@ void test_flick_state_3_counts_as_off(){
     TEST_ASSERT_TRUE(r.hold(MID, 10));
 }
 
+
+//——— CreepView: the CREEP display and sounds from the echo [D-207 point 5] ———
+
+void test_creep_shown_only_with_echo_link_and_middle(){
+    for(uint8_t state = 0; state < 4; state++)
+    for(int echo = 0; echo < 2; echo++)
+    for(int link = 0; link < 2; link++){
+        bool b_expected = echo && link && state == uint8_t(SpeedMode::MEDIUM_SPEED);
+        TEST_ASSERT_EQUAL(b_expected, CreepView::isShown(echo, link, state));
+    }
+    //a stale echo at FAST, or with the link down: no CREEP
+    TEST_ASSERT_FALSE(CreepView::isShown(true, true, uint8_t(SpeedMode::HIGH_SPEED)));
+    TEST_ASSERT_FALSE(CreepView::isShown(true, false, uint8_t(SpeedMode::MEDIUM_SPEED)));
+    TEST_ASSERT_FALSE(CreepView::isShown(true, true, uint8_t(SpeedMode::NO_SPEED)));
+}
+
+void test_creep_pill_flashes_at_1_hz(){
+    //filled 0..499 ms of each second, plain 500..999
+    for(uint32_t t = 0; t < 3000; t++) TEST_ASSERT_EQUAL(t % 1000 < 500, CreepView::isPillFilled(t));
+    TEST_ASSERT_TRUE(CreepView::isPillFilled(123000));
+    TEST_ASSERT_TRUE(CreepView::isPillFilled(123499));
+    TEST_ASSERT_FALSE(CreepView::isPillFilled(123500));
+    TEST_ASSERT_FALSE(CreepView::isPillFilled(123999));
+    //across the millis() wrap: still half filled, half plain on each side; the phase jumps once (2^32 % 1000 = 296)
+    uint32_t filled = 0;
+    for(uint32_t i = 0; i < 1000; i++) filled += CreepView::isPillFilled(0xFFFFFFFFu - 999 + i);
+    TEST_ASSERT_EQUAL_UINT32(500, filled);
+    TEST_ASSERT_TRUE(CreepView::isPillFilled(0xFFFFFFFFu));      //4294967295 % 1000 = 295
+    TEST_ASSERT_TRUE(CreepView::isPillFilled(0));
+    TEST_ASSERT_FALSE(CreepView::isPillFilled(0xFFFFFFFFu - 295 - 1));   //...999
+    filled = 0;
+    for(uint32_t t = 0; t < 1000; t++) filled += CreepView::isPillFilled(t);
+    TEST_ASSERT_EQUAL_UINT32(500, filled);
+}
+
+void test_creep_echo_sounds(){
+    using RemoteSounds::Sound;
+    CreepView::EchoSound e;
+    TEST_ASSERT_TRUE(e.update(true, false) == Sound::NONE);
+    TEST_ASSERT_TRUE(e.update(true, true) == Sound::STATUS_CREEP_ON);     //the echo rises, link up
+    TEST_ASSERT_TRUE(e.update(true, true) == Sound::NONE);                //once
+    TEST_ASSERT_TRUE(e.update(true, false) == Sound::STATUS_CREEP_OFF);   //falls, link up
+    TEST_ASSERT_TRUE(e.update(true, false) == Sound::NONE);
+    //creep, then the link drops: nothing (the warning speaks), even with the echo still held in the proxy
+    TEST_ASSERT_TRUE(e.update(true, true) == Sound::STATUS_CREEP_ON);
+    TEST_ASSERT_TRUE(e.update(false, true) == Sound::NONE);
+    TEST_ASSERT_TRUE(e.update(false, false) == Sound::NONE);
+    //reconnection with creep still held: creep on again
+    TEST_ASSERT_TRUE(e.update(true, true) == Sound::STATUS_CREEP_ON);
+    //link drop and reconnection without creep: nothing
+    TEST_ASSERT_TRUE(e.update(true, false) == Sound::STATUS_CREEP_OFF);
+    TEST_ASSERT_TRUE(e.update(false, false) == Sound::NONE);
+    TEST_ASSERT_TRUE(e.update(true, false) == Sound::NONE);
+    //an echo arriving while disconnected plays nothing
+    TEST_ASSERT_TRUE(e.update(false, true) == Sound::NONE);
+}
+
 //——— LinkMonitor ———
 
 void test_link_loss_and_bar(){
@@ -2321,5 +2379,8 @@ int main(){
     RUN_TEST(test_flick_power_on_gives_slow);
     RUN_TEST(test_flick_through_fast_does_not_count);
     RUN_TEST(test_flick_state_3_counts_as_off);
+    RUN_TEST(test_creep_shown_only_with_echo_link_and_middle);
+    RUN_TEST(test_creep_pill_flashes_at_1_hz);
+    RUN_TEST(test_creep_echo_sounds);
     return UNITY_END();
 }

@@ -302,11 +302,8 @@ void RemoteBoard::updateOperatorLogic(){
     //[D-207 point 4] the creep flick, before sendData reads it: leaving middle clears creep in the same loop's frame
     speedFlick.update(speedState, isLeftStickCentred() && isRightStickCentred(), now);
     //creep on and off follow the receiver's echo (reply bit 10), not the switch; a lost link clears it in silence
-    bool b_creepEcho = robotProxy.b_connected && robotProxy.creepDisplay;
-    if(b_creepEcho != b_creepEchoHeard){
-        if(robotProxy.b_connected) playSound(b_creepEcho ? RemoteSounds::Sound::STATUS_CREEP_ON : RemoteSounds::Sound::STATUS_CREEP_OFF);
-        b_creepEchoHeard = b_creepEcho;
-    }
+    RemoteSounds::Sound creepSound = creepEchoSound.update(robotProxy.b_connected, robotProxy.creepDisplay);
+    if(creepSound != RemoteSounds::Sound::NONE) playSound(creepSound);
     if(b_direction != b_previousDirection){
         playSound(b_direction ? RemoteSounds::Sound::DIRECTION_SET : RemoteSounds::Sound::DIRECTION_CLEAR);
     }

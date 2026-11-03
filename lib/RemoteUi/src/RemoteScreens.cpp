@@ -1,4 +1,5 @@
 #include "RemoteScreens.h"
+#include <CreepView.h>
 #include <Fonts/FreeSansBold9pt7b.h>
 
 //Remote screens [D-147]: 128 x 32, three rows. Top (y 0..7): link and batteries. Middle (y 8..22): the one thing that
@@ -425,9 +426,7 @@ namespace RemoteUi{
 
     //[D-207] creep as the receiver echoes it, and only while the switch is at middle here (the echo lags a frame when
     //the switch leaves it)
-    static bool isCreepShown(const ScreenModel& m){
-        return m.b_creep && m.b_linkUp && SpeedMode(m.speedState) == SpeedMode::MEDIUM_SPEED;
-    }
+    static bool isCreepShown(const ScreenModel& m){ return CreepView::isShown(m.b_creep, m.b_linkUp, m.speedState); }
 
     static void drawBottomRow(Adafruit_GFX& g, const ScreenModel& m){
         //during an alarm the row explains it (no room for a gap between the banner and pills): the switches matter less
@@ -455,7 +454,7 @@ namespace RemoteUi{
         SpeedMode speed = SpeedMode(m.speedState);
         bool b_creep = isCreepShown(m);
         if(b_creep){
-            if(blink(m.now, 1000, 500)) pill(g, 0, bottomTop, "CREEP");
+            if(CreepView::isPillFilled(m.now)) pill(g, 0, bottomTop, "CREEP");
             else text(g, pixelFont, 2, bottomTop + 1, "CREEP");
         }
         else if(speed == SpeedMode::MEDIUM_SPEED) pill(g, 0, bottomTop, "SLOW");

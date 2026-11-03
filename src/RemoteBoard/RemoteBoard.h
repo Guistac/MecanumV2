@@ -21,6 +21,7 @@
 #include <LinkHistory.h>
 #include <PageNavigator.h>
 #include <SpeedFlick.h>
+#include <CreepView.h>
 #include <StatusView.h>
 #include <Dimmer.h>
 #include <BootGuard.h>
@@ -228,7 +229,7 @@ private:
     uint32_t grindSeed = 2463534242u;
     bool b_switchesSeen = false;        //the switches' states at power on are taken without a sound
     uint8_t previousSpeedState = 0;
-    bool b_creepEchoHeard = false;      //the creep echo the creep sounds last followed
+    CreepView::EchoSound creepEchoSound;    //the creep sounds from the echo (lib/RemoteLogic/src/CreepView.h)
     SpeedFlick speedFlick;              //[D-207] the creep gesture on the speed switch (lib/RemoteLogic/src/SpeedFlick.h)
     bool b_previousDirection = false;
     uint32_t previousSearchPhase = 0;
