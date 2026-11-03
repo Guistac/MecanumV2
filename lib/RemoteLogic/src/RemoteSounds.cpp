@@ -157,6 +157,21 @@ namespace RemoteSounds{
             {260, SY, 0, W::SQUARE, 1480, 100, 70, 60},
             {440, SY, 0, W::SQUARE, 1480, 100, 35, 60},
         };
+        //[D-207] creep, from the receiver's echo: ticks on one pitch off the C pentatonic, slowing down into creep (the
+        //gaps growing, a soft echo), speeding up out of it to a higher tick; never one plain click like the speed
+        //switch's
+        const SoundNote statusCreepOn[] = {
+            {0, SQ, 0, W::SQUARE, 1865, 30, 0, 0},
+            {110, SQ, 0, W::SQUARE, 1865, 30, 0, 0},
+            {270, SQ, 0, W::SQUARE, 1865, 30, 0, 0},
+            {480, SY, 0, W::SQUARE, 1865, 40, 50, 60},
+        };
+        const SoundNote statusCreepOff[] = {
+            {0, SQ, 0, W::SQUARE, 1245, 30, 0, 0},
+            {150, SQ, 0, W::SQUARE, 1245, 30, 0, 0},
+            {240, SQ, 0, W::SQUARE, 1245, 30, 0, 0},
+            {300, SQ, 0, W::SQUARE, 1865, 60, 0, 0},
+        };
         //three rough beeps: the two legs a semitone apart (F6 and F sharp 6), urgent but not the E-stop's growl
         const SoundNote warning[] = {
             {0, DU, 0, W::SQUARE, 1397, 130, 0, 0, 1480},
@@ -196,6 +211,8 @@ namespace RemoteSounds{
             {estopNotes, uint8_t(sizeof(estopNotes) / sizeof(SoundNote))},
             {NOTES(statusEstopReleased)},
             {NOTES(statusLinkFound)},
+            {NOTES(statusCreepOn)},
+            {NOTES(statusCreepOff)},
             {NOTES(warning)},
             {NOTES(speedOff)},
             {NOTES(speedSlow)},

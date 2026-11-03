@@ -41,6 +41,9 @@ namespace RemoteSounds{
                                 //E_STOPPING or E_STOP [D-163]): noise, then fast tritones stepping down, harsh
         STATUS_ESTOP_RELEASED,  //a calm rise, an echo
         STATUS_LINK_FOUND,      //the receiver answers again: two pings rising, an echo
+        STATUS_CREEP_ON,        //[D-207] the receiver echoes creep: three A sharp 6 ticks slowing down, an echo; not the
+                                //speed switch's single click. A status sound: alarm priority, plays at Alarms only
+        STATUS_CREEP_OFF,       //the echo of creep ends: three D sharp 6 ticks speeding up to an A sharp 6
         WARNING,                //link lost, radio fault, E-stop wiring, battery: three rough two-leg beeps
         SPEED_OFF,      //the speed switch to OFF (sticks off): low; to slow: middle; to fast: high
         SPEED_SLOW,

@@ -423,6 +423,12 @@ namespace RemoteUi{
         else text(g, pixelFont, tx, bottomTop + 1, digits);
     }
 
+    //[D-207] creep as the receiver echoes it, and only while the switch is at middle here (the echo lags a frame when
+    //the switch leaves it)
+    static bool isCreepShown(const ScreenModel& m){
+        return m.b_creep && m.b_linkUp && SpeedMode(m.speedState) == SpeedMode::MEDIUM_SPEED;
+    }
+
     static void drawBottomRow(Adafruit_GFX& g, const ScreenModel& m){
         //during an alarm the row explains it (no room for a gap between the banner and pills): the switches matter less
         //than why nothing moves
@@ -437,15 +443,22 @@ namespace RemoteUi{
             }
             //no explanation needed (NO LINK): the switches as plain text, pills would touch the banner
             //a stick pushed at OFF: the speed text blinks (no pill here, it would touch the banner)
-            const char* speed = Status::speedText(m.speedState);
+            const char* speed = isCreepShown(m) ? "CREEP" : Status::speedText(m.speedState);
             if(!m.b_sticksOffWarning || blink(m.now, 250, 125)) text(g, pixelFont, 2, 24, speed);
             textRight(g, pixelFont, 123, 24, m.b_worldFrame ? "WORLD" : "BODY");
             return;
         }
 
-        //speed switch, above it on the left: OFF as plain text (sticks do nothing), SLOW and FAST in a pill
+        //speed switch, above it on the left: OFF as plain text (sticks do nothing), SLOW and FAST in a pill; creep
+        //[D-207 point 5] CREEP flashing at 1 Hz, 0.5 s in the pill, 0.5 s plain text in the same place, so the word is
+        //always readable and never taken for the steady SLOW
         SpeedMode speed = SpeedMode(m.speedState);
-        if(speed == SpeedMode::MEDIUM_SPEED) pill(g, 0, bottomTop, "SLOW");
+        bool b_creep = isCreepShown(m);
+        if(b_creep){
+            if(blink(m.now, 1000, 500)) pill(g, 0, bottomTop, "CREEP");
+            else text(g, pixelFont, 2, bottomTop + 1, "CREEP");
+        }
+        else if(speed == SpeedMode::MEDIUM_SPEED) pill(g, 0, bottomTop, "SLOW");
         else if(speed == SpeedMode::HIGH_SPEED) pill(g, 0, bottomTop, "FAST");
         //a stick pushed at OFF (the grind sounds): OFF blinks negative, in a pill
         else if(m.b_sticksOffWarning && blink(m.now, 250, 125)) pill(g, 0, bottomTop, "OFF");
@@ -456,7 +469,8 @@ namespace RemoteUi{
         else textRight(g, pixelFont, 123, bottomTop + 1, "BODY");
 
         //the free span between them, 1 px clear of each
-        int16_t speedRight = speed == SpeedMode::MEDIUM_SPEED || speed == SpeedMode::HIGH_SPEED ? pillWidth(g, "SLOW") - 1
+        int16_t speedRight = b_creep ? pillWidth(g, "CREEP") - 1
+                           : speed == SpeedMode::MEDIUM_SPEED || speed == SpeedMode::HIGH_SPEED ? pillWidth(g, "SLOW") - 1
                            : (m.b_sticksOffWarning ? pillWidth(g, "OFF") - 1 : 2 + textWidth(g, pixelFont, "OFF") - 1);
         int16_t frameLeft = m.b_worldFrame ? 125 - pillWidth(g, "WORLD") + 1 : 123 - textWidth(g, pixelFont, "BODY") + 1;
         int16_t left = speedRight + 2;

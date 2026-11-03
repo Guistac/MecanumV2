@@ -356,6 +356,14 @@ void test_sounds_follow_the_setting(){
     TEST_ASSERT_TRUE(isAllowed(Sound::STATUS_ESTOP, alarms));
     TEST_ASSERT_FALSE(isAllowed(Sound::SEARCHING, alarms));
     TEST_ASSERT_FALSE(isAllowed(Sound::WARNING, off));
+    //[D-207] creep on and off: status sounds (Alarms plays them, Off does not), several notes, never the speed click
+    for(Sound creep : {Sound::STATUS_CREEP_ON, Sound::STATUS_CREEP_OFF}){
+        TEST_ASSERT_TRUE(isAllowed(creep, alarms));
+        TEST_ASSERT_FALSE(isAllowed(creep, off));
+        TEST_ASSERT_TRUE(cue(creep).noteCount > 1);
+        TEST_ASSERT_TRUE(cue(creep).notes != cue(Sound::SPEED_SLOW).notes);
+    }
+    TEST_ASSERT_TRUE(cue(Sound::STATUS_CREEP_ON).notes != cue(Sound::STATUS_CREEP_OFF).notes);
     TEST_ASSERT_TRUE(gamesAllowed(alarms));
     TEST_ASSERT_FALSE(gamesAllowed(off));
     for(uint8_t i = 1; i < uint8_t(Sound::COUNT); i++){
