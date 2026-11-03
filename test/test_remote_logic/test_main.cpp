@@ -1025,7 +1025,7 @@ void test_uplink_frame_layout_and_guards(){
     TEST_ASSERT_FALSE(word & 0x8);
     TEST_ASSERT_EQUAL_UINT16(2, (word >> 5) & 0x3);
     TEST_ASSERT_TRUE(word & 0x80);
-    TEST_ASSERT_EQUAL_HEX16(0, word & 0x300);    //pushbuttons never sent
+    TEST_ASSERT_EQUAL_HEX16(0, word & 0x300);    //pushbuttons never sent, no creep at FAST
     TEST_ASSERT_TRUE(word & 0x800);
     TEST_ASSERT_EQUAL_UINT16(0x3, word >> 12);
     TEST_ASSERT_EQUAL_UINT8(255, frame[2]);
@@ -1037,6 +1037,22 @@ void test_uplink_frame_layout_and_guards(){
     Uplink::encode(controls, true, 0x13, 0xBEEF, frame);
     for(int i = 2; i < 6; i++) TEST_ASSERT_EQUAL_UINT8(127, frame[i]);
     TEST_ASSERT_EQUAL_HEX16(word, frame[0] | frame[1] << 8);
+}
+
+void test_uplink_creep_bit_only_at_medium(){
+    for(uint8_t state = 0; state < 4; state++){
+        for(int creep = 0; creep < 2; creep++){
+            UplinkControls controls;
+            controls.speedState = state;
+            controls.b_creep = creep;
+            uint8_t frame[8];
+            Uplink::encode(controls, false, 0, 0, frame);
+            uint16_t word = frame[0] | frame[1] << 8;
+            TEST_ASSERT_EQUAL(creep && state == uint8_t(SpeedMode::MEDIUM_SPEED), bool(word & 0x200));
+            TEST_ASSERT_EQUAL_HEX16(0, word & 0x100);     //bit 8 never: an old receiver's flight termination
+            TEST_ASSERT_EQUAL_UINT16(state, (word >> 5) & 0x3);
+        }
+    }
 }
 
 //——— SpeedFlick: the creep gesture [D-207 point 4] ———
@@ -2285,6 +2301,7 @@ int main(){
     RUN_TEST(test_stopwatch_edit_mode_set_clear_and_leave);
     RUN_TEST(test_stopwatch_edit_ignores_a_stick_already_out);
     RUN_TEST(test_stopwatch_sounds);
+    RUN_TEST(test_uplink_creep_bit_only_at_medium);
     RUN_TEST(test_flick_toggles_creep_both_ways);
     RUN_TEST(test_flick_leaving_middle_clears_creep);
     RUN_TEST(test_flick_from_fast_gives_slow);

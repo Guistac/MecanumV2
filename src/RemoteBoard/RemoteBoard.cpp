@@ -299,6 +299,8 @@ void RemoteBoard::updateOperatorLogic(){
     }
     playSound(RemoteSounds::forSpeedChange(previousSpeedState, speedState));
     previousSpeedState = speedState;
+    //[D-207 point 4] the creep flick, before sendData reads it: leaving middle clears creep in the same loop's frame
+    speedFlick.update(speedState, isLeftStickCentred() && isRightStickCentred(), now);
     if(b_direction != b_previousDirection){
         playSound(b_direction ? RemoteSounds::Sound::DIRECTION_SET : RemoteSounds::Sound::DIRECTION_CLEAR);
     }
@@ -684,6 +686,7 @@ void RemoteBoard::sendData(){
     //the games never enable a vehicle; disable always works [D-157]
     if(arcade.isActive()) controls.b_enable = false;
     controls.speedState = speedToggle.getState();
+    controls.b_creep = speedFlick.isCreep();        //sent only at MEDIUM (Uplink::encode) [D-207]
     controls.b_direction = directionToggle.getSwitchState();
     controls.b_leftStickPressed = leftJoystick.isPressed();
     controls.b_rightStickPressed = rightJoystick.isPressed();
